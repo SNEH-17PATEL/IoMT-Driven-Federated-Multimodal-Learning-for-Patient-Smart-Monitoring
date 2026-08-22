@@ -1,0 +1,15 @@
+streamlit>=1.35.0
+torch>=2.0.0
+numpy>=1.24.0
+pandas>=2.0.0
+# scaler.pkl and tfidf_vectorizer.pkl were fitted with scikit-learn 1.6.1.
+# The 1.x line maintains backward-compatible pickling for StandardScaler and
+# TfidfVectorizer, so loading across 1.x versions works (shows a warning, not an error).
+# Pin to <2.0.0 to avoid breaking changes in a future sklearn 2.0 release.
+scikit-learn>=1.6.0,<2.0.0
+joblib>=1.3.0
+shap>=0.44.0
+groq>=0.9.0
+python-dotenv>=1.0.0
+plotly>=5.18.0
+flwr[simulation]>=1.8.0
