@@ -384,7 +384,7 @@ def get_multiple_llm_responses(api_key, prompt, n=3):
     responses = []
     for _ in range(n):
         resp = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             messages=[
                 {
                     "role": "system",
