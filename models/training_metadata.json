@@ -1,0 +1,32 @@
+{
+  "num_rounds": 20,
+  "epochs_per_round": 10,
+  "batch_size": 64,
+  "base_lr": 0.001,
+  "lr_decay": 1.0,
+  "hospitals": 3,
+  "hospital_names": [
+    "General ICU",
+    "Mixed ICU",
+    "Cardiac/Trauma ICU"
+  ],
+  "aggregation": "FedAvg",
+  "split_type": "IID",
+  "train_samples": 38520,
+  "test_samples": 9631,
+  "input_features": 618,
+  "model_architecture": "618 \u2192 256 \u2192 128 \u2192 64 \u2192 1  (ReLU, no Dropout)",
+  "best_round": 20,
+  "final_mae": 2.0481,
+  "final_r2": 0.2512,
+  "pred_range_min": 0.37,
+  "pred_range_max": 18.54,
+  "oversample": false,
+  "loss_weights": "Linear (1 + SOFA\u00d73) \u2014 High Risk \u22482.4\u00d7 emphasis",
+  "optimizer": "AdamW (weight_decay=1e-4)",
+  "differential_privacy": false,
+  "dp_sensitivity": null,
+  "dp_sigma": null,
+  "dp_epsilon": null,
+  "dp_delta": null
+}
