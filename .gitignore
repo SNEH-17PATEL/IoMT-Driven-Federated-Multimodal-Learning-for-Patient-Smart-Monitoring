@@ -2,19 +2,22 @@
 # SENSITIVE — never push these
 # =============================================================
 .env
-.env.*
-!.env.example
+
 # =============================================================
 # DATA — too large for GitHub (191–197 MB each, limit = 100 MB)
 # Also derived from MIMIC-III (data use agreement applies)
-# To obtain: run notebooks/federated_learning.ipynb with BigQuery
 # =============================================================
-data/*.csv
+data/fl_training/*.csv
 
 # =============================================================
 # RUNTIME FILES — generated during app use, not source code
 # =============================================================
-models/prediction_history.csv   # written every time Run Prediction is clicked
+models/patient_vitals/*.csv
+models/prediction_history/*.csv
+
+# Keep directory placeholders so folders exist after a fresh clone
+!models/patient_vitals/.gitkeep
+!models/prediction_history/.gitkeep
 
 # =============================================================
 # PYTHON CACHE
