@@ -1,8 +1,6 @@
 # ICU Clinical Decision Support System
 ### Multimodal Intelligence System with Federated Learning for Continuous Patient Monitoring and Early Deterioration Detection
 
-A Final Year Capstone Project by Sneh Patel
-
 ---
 
 ## Table of Contents
