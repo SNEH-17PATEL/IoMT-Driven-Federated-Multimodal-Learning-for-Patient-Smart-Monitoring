@@ -8,10 +8,12 @@ Run one instance per hospital (in separate terminals) AFTER server.py is started
     python client.py --client_id 2
 
 Each client:
-  - Loads its own private dataset from data/client_<id>.csv
-  - Trains the model locally (10 epochs per round)
+  - Loads its own private dataset from data/fl_training/client_<id>.csv
+  - Trains the model locally (3 epochs per round, matching train_federated.py)
   - Sends only model weights to the server — NO patient data leaves
   - Receives updated global weights after each round
+
+All hyperparameters below mirror train_federated.py for consistency.
 """
 
 import argparse
@@ -35,16 +37,20 @@ parser.add_argument("--client_id", type=int, required=True,
 args = parser.parse_args()
 CLIENT_ID = args.client_id
 
-DATA_PATH    = "data/"
+DATA_PATH    = "data/fl_training/"   # matches train_federated.py DATA_PATH
 MODEL_PATH   = "models/"
 SERVER_ADDR  = "127.0.0.1:8080"
-EPOCHS       = 10
-BATCH_SIZE   = 64
 
-# ---- Differential Privacy ----
+# ── Training hyperparameters — keep in sync with train_federated.py ──
+EPOCHS       = 3      # epochs per FL round (sweet spot: 3 with FedYogi)
+BATCH_SIZE   = 64
+BASE_LR      = 0.001  # starting LR; decays per round (see HospitalClient.fit)
+LR_DECAY     = 0.99   # per-round LR multiplier; mirrors train_federated.py
+GRAD_CLIP    = 1.0    # gradient L2 norm clip; prevents single-batch spikes
+MU_FEDPROX   = 0.5    # FedProx proximal term weight; prevents client drift
+
+# ── Differential Privacy ──
 # Must match USE_DP / DP_SENSITIVITY / DP_SIGMA in train_federated.py.
-# When USE_DP=True, each client clips its model update and adds Gaussian
-# noise before sending weights to the server — ensuring (ε,δ)-DP per round.
 USE_DP          = False
 DP_SENSITIVITY  = 1.0
 DP_SIGMA        = 1.0
@@ -89,19 +95,25 @@ class HospitalClient(fl.client.NumPyClient):
         return get_weights(model)
 
     def fit(self, parameters, config):
-        # Save global weights BEFORE local training (needed for DP update computation)
+        # Save global weights BEFORE local training (needed for DP + FedProx)
         global_weights = [w.copy() for w in parameters]
-
         set_weights(model, parameters)
+
+        # Compute per-round decaying LR (mirrors train_federated.py)
+        server_round = config.get("server_round", 1)
+        lr = max(1e-4, BASE_LR * (LR_DECAY ** (server_round - 1)))
+
         loss = train_model(
             model, X_train, y_train,
-            epochs=EPOCHS, batch_size=BATCH_SIZE
+            epochs=EPOCHS, lr=lr,
+            batch_size=BATCH_SIZE, grad_clip=GRAD_CLIP,
+            global_params=parameters, mu=MU_FEDPROX,   # FedProx
         )
         metrics = evaluate_model(model, X_val, y_val)
 
         dp_tag = ""
         if USE_DP:
-            local_weights  = get_weights(model)
+            local_weights   = get_weights(model)
             weights_to_send = apply_dp_to_update(
                 local_weights, global_weights, DP_SENSITIVITY, DP_SIGMA
             )
@@ -110,8 +122,8 @@ class HospitalClient(fl.client.NumPyClient):
             weights_to_send = get_weights(model)
 
         print(
-            f"[Hospital {CLIENT_ID}] Trained — "
-            f"loss={loss:.4f} | "
+            f"[Hospital {CLIENT_ID}] Round {server_round} — "
+            f"lr={lr:.5f} | loss={loss:.4f} | "
             f"MAE={metrics['mae']:.3f} SOFA | "
             f"R²={metrics['r2']:.3f}{dp_tag}"
         )

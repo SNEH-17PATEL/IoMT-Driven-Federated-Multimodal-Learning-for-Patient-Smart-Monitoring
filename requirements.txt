@@ -13,3 +13,7 @@ groq>=0.9.0
 python-dotenv>=1.0.0
 plotly>=5.18.0
 flwr[simulation]>=1.8.0
+# BigQuery — required only for Phase 0 (data preprocessing from Google Cloud)
+# Skip installation if you already have client_0/1/2.csv
+google-cloud-bigquery>=3.11.0
+google-cloud-bigquery-storage>=2.20.0

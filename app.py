@@ -253,16 +253,17 @@ def load_training_metadata():
         with open(path) as f:
             return json.load(f)
     return {
-        "num_rounds": 20, "epochs_per_round": 10, "batch_size": 64,
+        "num_rounds": 100, "epochs_per_round": 3, "batch_size": 64,
         "hospitals": 3,
         "hospital_names": ["General ICU", "Mixed ICU", "Cardiac/Trauma ICU"],
-        "aggregation": "FedAvg", "split_type": "IID",
-        "train_samples": 38520, "test_samples": 9631,
-        "input_features": 618,
-        "model_architecture": "618 → 256 → 128 → 64 → 1  (ReLU)",
-        "best_round": 19,
-        "final_mae": 2.071, "final_r2": 0.222,
-        "pred_range_min": 0.60, "pred_range_max": 20.25,
+        "aggregation": "FedYogi (η=0.01, β1=0.9, β2=0.99) + FedProx (μ=0.5)",
+        "split_type": "IID",
+        "train_samples": 48150, "test_samples": 12038,
+        "input_features": 108,
+        "model_architecture": "108 → 128 → 64 → 32 → 1  (ReLU, no Dropout, FedProx)",
+        "best_round": 24,
+        "final_mae": 1.9608, "final_r2": 0.3357,
+        "pred_range_min": -0.26, "pred_range_max": 13.91,
         "differential_privacy": False,
         "dp_sensitivity": None, "dp_sigma": None,
         "dp_epsilon": None, "dp_delta": None,
@@ -870,7 +871,8 @@ for col in expected_cols:
 final_df = final_df[expected_cols].astype(float)
 
 # -- 6. SCALE --
-final_scaled = scaler.transform(final_df)
+# Clip to [-10, 10] — matches training (widened from -5 to preserve extremes).
+final_scaled = np.clip(scaler.transform(final_df), -10, 10)
 
 # -- 7. PREDICT --
 X_tensor = torch.tensor(final_scaled, dtype=torch.float32)
@@ -1818,12 +1820,12 @@ with tab4:
                 unsafe_allow_html=True)
 
     _layers = [
-        ("INPUT",  "618 features",  "Trend vitals + Latest vitals + CV + TF-IDF", "#1565c0","#e3f2fd"),
-        ("Linear", "618 → 256",     "Fully connected · ReLU activation",          "#2e7d32","#e8f5e9"),
-        ("Linear", "256 → 128",     "Fully connected · ReLU activation",          "#2e7d32","#e8f5e9"),
-        ("Linear", "128 →  64",     "Fully connected · ReLU activation",          "#2e7d32","#e8f5e9"),
-        ("Linear", " 64 →   1",     "Output layer · No activation (regression)",  "#6a1b9a","#f3e5f5"),
-        ("OUTPUT", "SOFA (0–24)",   "Predicted SOFA score · clip(0, 24)",         "#e65100","#fff3e0"),
+        ("INPUT",  "108 features",  "18 vitals (trends + latest + GCS) + 90 SOFA-vocab TF-IDF", "#1565c0","#e3f2fd"),
+        ("Linear", "108 → 128",    "Fully connected · ReLU activation",                         "#2e7d32","#e8f5e9"),
+        ("Linear", "128 →  64",    "Fully connected · ReLU activation",                         "#2e7d32","#e8f5e9"),
+        ("Linear", " 64 →  32",    "Fully connected · ReLU activation",                         "#2e7d32","#e8f5e9"),
+        ("Linear", " 32 →   1",    "Output layer · No activation (regression)",                 "#6a1b9a","#f3e5f5"),
+        ("OUTPUT", "SOFA (0–24)",  "Predicted SOFA score · clip(0, 24)",                        "#e65100","#fff3e0"),
     ]
 
     _arch_html = ""

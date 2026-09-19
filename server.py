@@ -27,7 +27,7 @@ from model_utils import ICUModel, set_weights
 # CONFIG
 # =============================================================
 MODEL_PATH  = "models/"
-NUM_ROUNDS  = 20
+NUM_ROUNDS  = 100    # mirrors train_federated.py (FedYogi typically finds best ~round 24)
 SERVER_ADDR = "127.0.0.1:8080"
 
 # =============================================================
@@ -121,7 +121,7 @@ _meta = {
     "aggregation":        "FedAvg",
     "best_round":         int(_best_round),
     "best_eval_loss":     round(_best_loss, 5),
-    "model_architecture": "618 → 256 → 128 → 64 → 1  (ReLU, no Dropout)",
+    "model_architecture": "108 → 128 → 64 → 32 → 1  (ReLU, no Dropout, FedProx)",
     "input_features":     int(input_dim),
     "source":             "server.py (real FL — MAE/R² not available here)",
     "completed_at":       datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

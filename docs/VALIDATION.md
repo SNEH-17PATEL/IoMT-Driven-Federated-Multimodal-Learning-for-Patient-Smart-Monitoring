@@ -85,9 +85,11 @@ from real patient lab values and vitals.
 **The key trust argument to a mentor or clinician:**
 > "Our model learned to predict SOFA from the same types of observations a nurse
 > records at the bedside — vital signs, GCS, clinical notes. It was validated on
-> 9,631 unseen ICU patients whose true SOFA scores were known. The fact that it
-> achieves MAE ≈ 2 SOFA points means that on average, its prediction is within 2
-> points of the real clinical score."
+> 12,038 unseen ICU patients (20% held-out test set) whose true SOFA scores were known.
+> The fact that it achieves MAE ≈ 1.96 SOFA points means that on average, its
+> prediction is within 2 points of the real clinical score. The model explains
+> 33.6% of SOFA variance from vital signs and clinical text alone — without
+> direct lab values."
 
 ---
 
@@ -101,12 +103,12 @@ The project implements the following validation at the time of model training
 ```
 MAE = average of |predicted_SOFA − actual_SOFA| across test set
 
-Our result: MAE = 2.05 SOFA points
+Our result: MAE = 1.9608 SOFA points (test set: 12,038 patients)
 ```
 
 **What this means in practice:**
-If the true SOFA is 10, our model predicts between 8 and 12 with average accuracy.
-On the 0–24 scale, an error of 2 points means the model is within one risk category
+If the true SOFA is 10, our model predicts between approximately 8 and 12 with average accuracy.
+On the 0–24 scale, an error of ~2 points means the model is within one risk category
 roughly 80% of the time.
 
 A doctor who sees "predicted SOFA = 8" knows the true score is approximately 6–10,
@@ -115,15 +117,16 @@ which places the patient firmly in the Moderate-to-High Risk zone.
 #### Metric 2 — R² (Coefficient of Determination)
 
 ```
-R² = 0.25
+R² = 0.3357
 
-Interpretation: The model explains 25% of the variance in SOFA scores across patients.
+Interpretation: The model explains 33.6% of the variance in SOFA scores across patients.
 ```
 
-R² of 0.25 is moderate for an indirect SOFA prediction task. Direct SOFA computation
-from lab values and GCS gives R² ≈ 1.0 (it is a formula). Our model predicts SOFA
-from PROXY inputs (vital signs + text), WITHOUT direct access to bilirubin, platelet
-count, or PaO₂/FiO₂ — which are the strongest SOFA predictors.
+R² of 0.3357 is strong for an indirect SOFA prediction task from vital signs + text alone.
+Direct SOFA computation from lab values and GCS gives R² ≈ 1.0 (it is a formula).
+Our model predicts SOFA from PROXY inputs (vital signs + text), WITHOUT direct access
+to bilirubin, platelet count, or PaO₂/FiO₂ — which are the strongest SOFA predictors.
+The improvement from our initial R²=0.09 baseline to R²=0.3357 represents 273% improvement.
 
 #### Metric 3 — Alert Threshold Calibration (Recall-Precision Trade-off)
 
@@ -268,14 +271,16 @@ than absolute accuracy.
 
 ### 2.1 What We Currently Do
 
-We call the same LLM prompt 3 independent times with `temperature=0.2` and compute a
-consistency score using three components:
+We call the same LLM prompt (`openai/gpt-oss-120b` via Groq) 3 independent times
+with `temperature=0.2` and compute a 3-component consistency score:
 
-| Component                   | Weight | What it measures                                               |
-|-----------------------------|--------|----------------------------------------------------------------|
-| TF-IDF cosine similarity    | 20%    | Word-level overlap between the 3 responses                     |
-| Intervention agreement      | 50%    | Do all 3 responses agree on which treatments to recommend?     |
-| Condition/diagnosis agreement | 30%  | Do all 3 responses identify the same clinical conditions?      |
+| Component                     | Weight | What it measures                                               |
+|-------------------------------|--------|----------------------------------------------------------------|
+| TF-IDF cosine similarity      | 20%    | Word-level overlap between the 3 responses                     |
+| Intervention agreement        | 50%    | Do all 3 responses agree on which treatments to recommend?     |
+| Condition/diagnosis agreement | 30%    | Do all 3 responses identify the same clinical conditions?      |
+
+**Combined score = 0.20 × TF-IDF + 0.50 × interventions + 0.30 × conditions**
 
 Reliability labels:
 - Score ≥ 0.80 → High ✅ (strong clinical consensus)
@@ -563,18 +568,18 @@ Under this framework:
 
 | Question                             | Answer                                                        |
 |--------------------------------------|---------------------------------------------------------------|
-| Why trust the SOFA score?            | Trained on 48,000+ real MIMIC-III ICU patients with known SOFA values |
-| How do you validate it?              | MAE = 2.05, R² = 0.25 on 9,631 held-out patients; alert threshold calibrated to maximise recall |
+| Why trust the SOFA score?            | Trained on 48,150 real MIMIC-III ICU patients with known SOFA values |
+| How do you validate it?              | MAE = 1.9608, R² = 0.3357 on 12,038 held-out patients; alert threshold calibrated to maximise recall |
 | What does SOFA = 16 mean?            | Severe multi-organ failure, ICU mortality > 70–80%, immediate intervention required |
 | How do doctors use it?               | As a severity indicator and trend tracker, not a diagnosis — it tells them HOW BAD, not WHAT CAUSED it |
-| Can the score be wrong?              | Yes — it is an estimate (±2 points on average). SHAP explainability shows which features drove it, allowing clinical sanity-checking |
+| Can the score be wrong?              | Yes — it is an estimate (~±2 points on average). SHAP explainability shows which features drove it, allowing clinical sanity-checking |
 | What else could validate it?         | Component-level vital rule check, confidence intervals, risk-category confusion matrix |
 
 ### Summary Answer to Mentor Question 2 (LLM Validation)
 
 | Question                             | Answer                                                        |
 |--------------------------------------|---------------------------------------------------------------|
-| How do you validate the LLM output?  | Self-consistency: 3 independent calls, check intervention + condition + word-level agreement |
+| How do you validate the LLM output?  | 3-component self-consistency (TF-IDF 20% + interventions 50% + conditions 30%) across 3 independent calls |
 | How is it "correct" validation?      | Correctly approximates whether the model's clinical reasoning is stable. Low = unreliable, High = stable. |
 | What if all 3 are wrong?             | Self-consistency alone cannot catch this. Factual grounding, SHAP-LLM coherence, and clinical hard rules are needed as additional layers |
 | Is self-consistency enough?          | Necessary but not sufficient. The clinical disclaimer and mandatory clinician review are the final safety layer |

@@ -213,12 +213,12 @@ The "deep" in DNN is what allows the model to learn hierarchical representations
 ### 2.3 Our DNN Architecture in Detail
 
 ```
-Input Layer:    618 features
-                (9 trend vitals + 9 latest vitals/CV + 600 TF-IDF)
+Input Layer:    108 features
+                (9 trend vitals + 9 latest vitals/CV + 90 SOFA-vocab TF-IDF)
                       │
               ┌───────▼────────┐
-              │  Linear Layer  │   W₁: shape (256, 618) = 158,208 parameters
-              │  618 → 256     │   b₁: shape (256,)     =     256 parameters
+              │  Linear Layer  │   W₁: shape (128, 108) = 13,824 parameters
+              │  108 → 128     │   b₁: shape (128,)     =    128 parameters
               └───────┬────────┘
                       │
               ┌───────▼────────┐
@@ -226,8 +226,8 @@ Input Layer:    618 features
               └───────┬────────┘
                       │
               ┌───────▼────────┐
-              │  Linear Layer  │   W₂: shape (128, 256) =  32,768 parameters
-              │  256 → 128     │   b₂: shape (128,)     =     128 parameters
+              │  Linear Layer  │   W₂: shape (64, 128)  =  8,192 parameters
+              │  128 → 64      │   b₂: shape (64,)      =     64 parameters
               └───────┬────────┘
                       │
               ┌───────▼────────┐
@@ -235,8 +235,8 @@ Input Layer:    618 features
               └───────┬────────┘
                       │
               ┌───────▼────────┐
-              │  Linear Layer  │   W₃: shape (64, 128)  =   8,192 parameters
-              │  128 → 64      │   b₃: shape (64,)      =      64 parameters
+              │  Linear Layer  │   W₃: shape (32, 64)   =  2,048 parameters
+              │  64 → 32       │   b₃: shape (32,)      =     32 parameters
               └───────┬────────┘
                       │
               ┌───────▼────────┐
@@ -244,30 +244,27 @@ Input Layer:    618 features
               └───────┬────────┘
                       │
               ┌───────▼────────┐
-              │  Linear Layer  │   W₄: shape (1, 64)    =      64 parameters
-              │  64 → 1        │   b₄: shape (1,)       =       1 parameter
+              │  Linear Layer  │   W₄: shape (1, 32)    =     32 parameters
+              │  32 → 1        │   b₄: shape (1,)       =      1 parameter
               └───────┬────────┘
                       │
               Output: Predicted SOFA score (single float, 0–24)
 
-Total trainable parameters: 158,208 + 256 + 32,768 + 128 + 8,192 + 64 + 64 + 1
-                           = 199,681 parameters
+Total trainable parameters: 13,824 + 128 + 8,192 + 64 + 2,048 + 32 + 32 + 1
+                           ≈ 24,321 parameters (~23k)
 ```
 
-**Why these specific layer sizes (618 → 256 → 128 → 64 → 1)?**
+**Why these specific layer sizes (108 → 128 → 64 → 32 → 1)?**
 
 This is a **progressively narrowing funnel** architecture:
-- 618 input features are first compressed to 256: the model learns which combinations of
-  features are most predictive
-- 256 → 128: further compression into clinical syndrome representations (sepsis pattern,
-  respiratory failure pattern, etc.)
-- 128 → 64: final distillation into abstract severity representations
-- 64 → 1: linear mapping from severity representation to SOFA score
+- 108 input features are first compressed to 128: captures feature interactions
+- 128 → 64: further compression into clinical syndrome representations
+- 64 → 32: final distillation into abstract severity representations
+- 32 → 1: linear mapping from severity representation to SOFA score
 
-The ratio decreases by roughly ×2 each layer (a common architectural choice). If the
-hidden layers were too large (e.g., 618 → 1000 → 500 → 250), the model would have too
-many parameters and overfit to the training data. Too small (618 → 32 → 16 → 1) and
-it cannot learn complex clinical patterns.
+The 2:1 samples-per-parameter ratio (48k samples / 23k params) is appropriate for
+tabular data generalisation. The old 618→256→128→64→1 architecture had only 0.5:1,
+leading to over-parameterisation. The right-sized architecture improves generalisation.
 
 ---
 
@@ -295,17 +292,22 @@ training data — the model would barely learn about them.
 Our **Weighted MSE** gives more importance to high-SOFA patients:
 
 ```python
-weight = 1 + target × 3.0
+weight = 1 + target × 0.5
 
-SOFA = 0  → weight ≈ 0.08  (after batch normalisation)
+SOFA = 0  → weight ≈ 0.33  (after batch normalisation)
 SOFA = 4  → weight ≈ 1.0   (approximate mean — baseline)
-SOFA = 10 → weight ≈ 2.4   (2.4× more gradient signal)
-SOFA = 20 → weight ≈ 4.7   (4.7× more gradient signal)
+SOFA = 10 → weight ≈ 2.0   (2.0× more gradient signal)
+SOFA = 20 → weight ≈ 3.7   (3.7× more gradient signal)
 
 loss = mean(weight × (y_pred − y_true)²)
 ```
 
-This means the model receives much stronger training signal for critical patients,
+Note: the original weight multiplier was 3.0 but was reduced to 0.5. With 3.0,
+low-SOFA patients (63% of data) received only 7% of fair gradient signal — the
+model barely trained on the majority class, causing a training/evaluation mismatch.
+With 0.5, low-SOFA patients get 33% of fair signal while still emphasising High Risk.
+
+This means the model receives stronger training signal for critical patients,
 improving sensitivity for the patients that matter most clinically.
 
 #### Step 3: Backward Pass (Backpropagation)
@@ -396,20 +398,21 @@ Round 1:
   Server initialises random weights W⁰ (same for all 3 hospitals)
   Server sends W⁰ to Hospital 0, Hospital 1, Hospital 2
 
-  Hospital 0: train on its ~15,889 patients → gets W⁰_H0 (updated weights)
-  Hospital 1: train on its ~15,890 patients → gets W⁰_H1
-  Hospital 2: train on its ~16,372 patients → gets W⁰_H2
+  Hospital 0: train 3 local epochs with AdamW + FedProx → gets W⁰_H0
+  Hospital 1: train 3 local epochs with AdamW + FedProx → gets W⁰_H1
+  Hospital 2: train 3 local epochs with AdamW + FedProx → gets W⁰_H2
 
-  FedAvg: W¹ = (15,889 × W⁰_H0 + 15,890 × W⁰_H1 + 16,372 × W⁰_H2) / 48,151
-  (weighted average by number of patients)
+  FedAvg: W_avg = (15,889 × W⁰_H0 + 15,890 × W⁰_H1 + 16,371 × W⁰_H2) / 48,150
+  FedYogi server update: applies adaptive momentum to W_avg → W¹
 
 Round 2:
   Server sends W¹ to all 3 hospitals
   Each hospital continues training from W¹ ...
 
-...repeat for 20 rounds...
+...repeat for 100 rounds...
 
-Final: W²⁰ (federated model) = knowledge from all 3 hospitals, zero patient data shared
+Final: W¹⁰⁰ (federated model) = knowledge from all 3 hospitals, zero patient data shared
+Best model: saved from round 24 (lowest server validation loss = 6.5523 → R²=0.3357)
 ```
 
 **Why this works for DNN but NOT for ensembles:**
@@ -603,7 +606,7 @@ Concatenate: 18 vital features + 768 BERT embedding → 786 features → DNN.
 
 | Model                  | FL Compatible | SHAP Method    | Performance (R²) | Complexity | Why Not Used          |
 |------------------------|---------------|----------------|------------------|------------|-----------------------|
-| **PyTorch DNN** ✅     | ✅ Yes (FedAvg)| DeepExplainer  | 0.25             | Medium     | **Current choice**    |
+| **PyTorch DNN** ✅     | ✅ Yes (FedYogi+FedProx)| DeepExplainer | **0.3357**  | Medium     | **Current choice**    |
 | LightGBM + XGBoost     | ❌ No (FedAvg) | TreeExplainer  | ~0.35–0.40*      | Low        | FL incompatible       |
 | Random Forest           | ❌ No         | TreeExplainer  | ~0.25–0.30*      | Low        | FL incompatible, 0%  |
 | LSTM/GRU               | ✅ Yes         | GradientExplainer | ~0.28–0.32* | High       | Integration complexity|
@@ -628,14 +631,17 @@ A **weighted ensemble** of three classical ML models:
 
 ### Q2: What is used now?
 A **PyTorch Deep Neural Network (DNN)**:
-- Architecture: 618 → 256 → 128 → 64 → 1 (fully connected, ReLU activations)
-- 199,681 trainable parameters
-- AdamW optimizer with weight decay
-- Weighted MSE loss (gives more gradient weight to high-SOFA patients)
+- Architecture: 108 → 128 → 64 → 32 → 1 (fully connected, ReLU activations)
+- ~23,000 trainable parameters
+- AdamW optimizer with weight decay (1e-4)
+- Weighted MSE loss (weight = 1 + SOFA × 0.5)
+- FedProx client regularisation (μ=0.5) — prevents client drift
+- FedYogi server optimizer (η=0.01) — adaptive server-side momentum
 - No Dropout (FL incompatible)
 - SHAP via DeepExplainer
-- Trained via Flower FL framework (FedAvg across 3 simulated hospitals)
+- Trained via Flower FL framework across 3 simulated hospitals
 - Predicts raw SOFA directly (no ×24 multiplication)
+- **Performance: R²=0.3357, MAE=1.9608 SOFA points**
 
 ### Q3: Why switch to PyTorch DNN?
 

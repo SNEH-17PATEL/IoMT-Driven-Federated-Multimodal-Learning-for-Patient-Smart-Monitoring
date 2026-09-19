@@ -90,11 +90,11 @@ The following pre-trained artifacts are loaded at startup (once, cached):
 
 | Artifact                         | What it contains                              |
 |----------------------------------|-----------------------------------------------|
-| `models/federated_model.pth`     | Trained DNN weights (618→256→128→64→1)        |
-| `models/scaler.pkl`              | StandardScaler fitted on 618 training features|
-| `models/tfidf_vectorizer.pkl`    | TF-IDF fitted on MIMIC-III clinical notes     |
-| `models/feature_columns.pkl`     | Ordered list of 618 feature column names      |
-| `models/shap_background.npy`     | 300 random background samples for SHAP        |
+| `models/federated_model.pth`     | Trained DNN weights (108→128→64→32→1)         |
+| `models/scaler.pkl`              | StandardScaler fitted on 108 training features|
+| `models/tfidf_vectorizer.pkl`    | TF-IDF (90-term SOFA vocabulary whitelist)    |
+| `models/feature_columns.pkl`     | Ordered list of 108 feature column names      |
+| `models/shap_background.npy`     | 300 background samples for SHAP, shape(300,108)|
 
 ---
 
@@ -234,22 +234,31 @@ TF-IDF (Term Frequency–Inverse Document Frequency) is a classical NLP method t
 converts a text document into a bag-of-words numeric vector.
 
 - **TF (Term Frequency):** How often does a word appear in THIS document?
-  - "septic" appearing 3 times → higher TF than if it appeared once.
 - **IDF (Inverse Document Frequency):** How rare is this word across ALL training notes?
-  - "the" appears everywhere → low IDF → downweighted.
-  - "vasopressor" is rare but medically specific → high IDF → upweighted.
-- **TF-IDF weight = TF × IDF:** Words that are both frequent in this note AND rare
-  across all notes get the highest weights.
+- **TF-IDF weight = TF × IDF:** Words both frequent here AND rare overall get highest weights.
 
-### Configuration
+### Configuration — SOFA Vocabulary Whitelist
 
-- **Number of features:** 600 (top 600 most discriminative n-grams from MIMIC-III)
-- **n-gram range:** (1, 2) — single words AND two-word phrases
-  - Unigrams: "septic", "oxygen", "creatinine"
-  - Bigrams: "septic shock", "acute kidney", "mechanical ventilation"
-  - Bigrams capture clinical phrases that have different meaning from individual words
-    ("failure" alone is ambiguous; "renal failure" is specific)
-- **Fitted on:** MIMIC-III discharge summaries and nursing notes (~48,000 ICU stays)
+Rather than data-driven selection (which picks statistically variable terms like
+"tablet", "sig", "refills" that reflect documentation style), we use an explicit
+**90-term SOFA vocabulary whitelist**. Every term directly corresponds to one of
+the 6 SOFA organ components:
+
+- **Respiratory:** intubated, ventilator, bipap, cpap, hypoxia, respiratory failure, extubated
+- **Coagulation:** plt, platelets, coagulopathy, inr, ptt, hemorrhage, thrombocytopenia
+- **Hepatic:** bilirubin, bili, totbili, liver, jaundice, hepatic, cirrhosis
+- **Cardiovascular:** vasopressor, pressors, levophed, norepinephrine, septic shock, hypotension
+- **CNS:** sedated, sedation, coma, altered, confused, gcs, encephalopathy, delirium
+- **Renal:** creatinine, creat, renal, kidney, dialysis, aki, oliguria, urine output
+- **Sepsis/Lab:** sepsis, septic, bacteremia, lactate, wbc, hco, angap, etc.
+
+**Configuration:**
+- **Number of features:** 90 (SOFA whitelist)
+- **n-gram range:** (1, 2) — unigrams + bigrams
+- **Corpus:** All 283,208 MIMIC-III clinical notes (NOTES_SAMPLE_SIZE=283,208)
+- **Text limit:** 10,000 characters per admission (NOTES_TEXT_LIMIT=10,000)
+  - Longer limit captures lab value mentions in progress notes: "creatinine 2.8",
+    "bilirubin elevated at 4.5", "oliguria persists"
 - **Saved as:** `models/tfidf_vectorizer.pkl`
 
 ### Transformation
@@ -257,33 +266,31 @@ converts a text document into a bag-of-words numeric vector.
 ```
 Input:  clinical_note (string)
         Example: "67-year-old male. SpO2 declining despite high-flow O2 therapy.
-                  History of COPD and hypertension. Creatinine elevated. Urine output low."
+                  Creatinine elevated. Urine output low. On vasopressors."
 
 Process:
-  tfidf.transform([clinical_note])   # applies fitted vocabulary + IDF weights
-  → sparse matrix of shape (1, 600)
+  tfidf.transform([clinical_note])   # applies 90-term SOFA vocabulary + IDF weights
+  → sparse matrix of shape (1, 90)
   → convert to dense array and wrap in DataFrame
 
-Output: tfidf_df — DataFrame of shape (1, 600)
-  Columns: 600 n-gram strings (e.g., "septic", "acute kidney", "o2 therapy", ...)
-  Values:  floats ≥ 0.0 (most are 0 — only present n-grams are non-zero)
+Output: tfidf_df — DataFrame of shape (1, 90)
+  Columns: 90 SOFA-vocabulary terms
+  Values:  floats ≥ 0.0 (most are 0 — only present terms are non-zero)
 
   Example non-zero entries for this note:
     "creatinine":       0.42
-    "o2 therapy":       0.38
-    "copd":             0.35
-    "urine output":     0.31
-    "high flow":        0.28
-    (all other 595 columns = 0.0)
+    "urine output":     0.38
+    "vasopressor":      0.35
+    "hypoxia":          0.28
+    (all other 86 columns = 0.0)
 ```
 
 **Why TF-IDF and not a transformer (BERT/BioBERT)?**
-TF-IDF is fast (< 1 ms), deterministic, and produces a fixed-size 600-d vector that
-concatenates cleanly with the tabular vital features. A transformer would produce
-768-d or 1024-d contextual embeddings that require additional alignment architecture
-(cross-modal attention, projection layers) and are much slower. For MIMIC-III SOFA
-prediction, TF-IDF on clinical notes was shown in the literature to achieve comparable
-predictive performance to BERT-based methods on this specific task.
+TF-IDF is fast (< 1 ms), deterministic, and produces a fixed-size 90-d vector.
+A transformer produces 768-d embeddings that require additional alignment architecture
+and are much slower. With the SOFA vocabulary whitelist, TF-IDF achieves strong
+predictive performance (contributes to R²=0.3357) because every feature is
+clinically grounded.
 
 ---
 
@@ -301,8 +308,8 @@ vector that the DNN expects.
 | Latest vitals+CV  | 9        | latest_HR, latest_RR, latest_SpO2, latest_Temp,|
 |                   |          | latest_SBP, latest_DBP, latest_MAP,             |
 |                   |          | GCS_eye_opening, stress_score                   |
-| TF-IDF text       | 600      | 600 clinical n-gram columns                     |
-| **Total**         | **618**  |                                                 |
+| TF-IDF text       | 90       | 90 SOFA-vocabulary whitelist columns            |
+| **Total**         | **108**  |                                                 |
 
 ### Fusion Process
 
@@ -318,16 +325,16 @@ Step A: Merge trend and latest into one DataFrame
 
 Step B: Horizontal concatenation with TF-IDF
   final_df = pd.concat([input_df, tfidf_df], axis=1).fillna(0)
-  Shape: (1, 618)
+  Shape: (1, 108)
 
 Step C: Column alignment to training order
   - Load the exact column order from feature_columns.pkl (saved during training)
   - Add any missing columns as 0 (handles edge case where the clinical note
-    contains no n-grams from the trained vocabulary)
+    contains no vocabulary terms)
   - Reorder columns to match training exactly: final_df = final_df[expected_cols]
-  Shape: (1, 618) — columns in the exact order the scaler and model expect
+  Shape: (1, 108) — columns in the exact order the scaler and model expect
 
-Output: final_df — DataFrame of shape (1, 618), dtype float64
+Output: final_df — DataFrame of shape (1, 108), dtype float64
 ```
 
 **Why is column alignment critical?**
@@ -348,19 +355,20 @@ interactions (e.g., "high HR_mean AND 'septic' in the note → especially danger
 feature dominates the model's gradients due to its natural unit magnitude.
 
 ```
-Input:  final_df — DataFrame (1, 618), raw clinical values
-        scaler   — sklearn StandardScaler fitted on 48,000+ MIMIC-III training rows
+Input:  final_df — DataFrame (1, 108), raw clinical values
+        scaler   — sklearn StandardScaler fitted on 48,150 MIMIC-III training rows
 
 Process:
-  final_scaled = scaler.transform(final_df)
+  final_scaled = np.clip(scaler.transform(final_df), -10, 10)
 
   For each feature j:
-    scaled[j] = (value[j] - mean_j) / std_j
+    scaled[j] = clip((value[j] - mean_j) / std_j, -10, 10)
 
-  Where mean_j and std_j were computed across all training patients during training.
+  Where mean_j and std_j were computed across all training patients.
+  Clipping to [-10, 10] prevents extreme z-scores from rare TF-IDF terms.
 
-Output: final_scaled — numpy array of shape (1, 618), dtype float64
-        All values are now z-scores (mean≈0, std≈1 across training data)
+Output: final_scaled — numpy array of shape (1, 108), dtype float64
+        All values are now z-scores clipped to [-10, 10]
 
   Examples:
     HR_mean = 101.5 bpm  → scaled ≈ +1.8 (1.8 std above training mean)
@@ -395,20 +403,21 @@ to produce a predicted SOFA score.
 ### Architecture
 
 ```
-Input layer:    618 neurons  (one per feature)
-Hidden layer 1: 256 neurons  + ReLU activation
-Hidden layer 2: 128 neurons  + ReLU activation
-Hidden layer 3:  64 neurons  + ReLU activation
+Input layer:    108 neurons  (one per feature)
+Hidden layer 1: 128 neurons  + ReLU activation
+Hidden layer 2:  64 neurons  + ReLU activation
+Hidden layer 3:  32 neurons  + ReLU activation
 Output layer:     1 neuron   (linear — no activation)
 ```
 
+Total parameters: ~23,000
+
 ### What each layer does
 
-**Linear(618 → 256):**
-Each of the 256 neurons computes a weighted sum of all 618 inputs:
-  `h₁ = W₁ × x + b₁`   (W₁ is a 256×618 weight matrix)
-This layer creates 256 latent representations that capture combinations of vital
-signs and text features.
+**Linear(108 → 128):**
+Each of the 128 neurons computes a weighted sum of all 108 inputs:
+  `h₁ = W₁ × x + b₁`   (W₁ is a 128×108 weight matrix)
+This layer creates 128 latent representations capturing combinations of vital signs and SOFA-vocabulary text features.
 
 **ReLU:**
 `output = max(0, h₁)` — sets negative values to zero.
@@ -428,7 +437,7 @@ No activation function — allows the output to be any real number (unrestricted
 ```
 Input:
   X_tensor = torch.tensor(final_scaled, dtype=torch.float32)
-  Shape: (1, 618)
+  Shape: (1, 108)
 
 Process:
   model.eval()          # disable training mode (no gradient tracking)
@@ -436,9 +445,9 @@ Process:
       raw_pred = model(X_tensor).numpy().flatten()[0]
 
   Internal computation:
-    h1 = ReLU(W1 @ x + b1)   # shape: (1, 256)
-    h2 = ReLU(W2 @ h1 + b2)  # shape: (1, 128)
-    h3 = ReLU(W3 @ h2 + b3)  # shape: (1, 64)
+    h1 = ReLU(W1 @ x + b1)   # shape: (1, 128)
+    h2 = ReLU(W2 @ h1 + b2)  # shape: (1, 64)
+    h3 = ReLU(W3 @ h2 + b3)  # shape: (1, 32)
     y  = W4 @ h3 + b4         # shape: (1, 1)
 
 Output:
@@ -449,21 +458,20 @@ Output:
 ### Why No Dropout?
 
 Dropout was tested (p=0.3/0.2 → R²=0.057, p=0.1/0.05 → R²=-0.067) but caused
-Federated Learning divergence. The reason: each hospital client trains with different
-random Dropout masks, so Hospital 0 might drop neurons 5, 23, 187 while Hospital 1
-drops neurons 12, 67, 201. Their gradient updates conflict because they are
-effectively training different sub-networks. FedAvg averages these conflicting updates
-and cannot converge. Regularisation is achieved instead with AdamW weight decay (1e-4).
+Federated Learning divergence. Each hospital client trains with different random
+Dropout masks — their gradient updates conflict and FedAvg cannot converge.
+Regularisation is achieved instead with AdamW weight decay (1e-4) and FedProx.
 
 ### Training Details (for context)
 
 The model was trained using Federated Learning across 3 simulated hospitals:
 - **Loss function:** Weighted MSE — `loss = mean(w × (pred − target)²)`
-  where `w = 1 + target × 3.0` (high-SOFA patients get 2–5× more gradient weight)
+  where `w = 1 + target × 0.5` (high-SOFA patients get ~2× more gradient weight)
 - **Optimizer:** AdamW (Adam with decoupled weight decay = 1e-4)
-- **Aggregation:** FedAvg — server averages weight matrices from all 3 hospitals
-- **Rounds:** 20 FL rounds, 10 local epochs per round
-- **Final performance:** MAE = 2.05 SOFA points, R² = 0.25
+- **Client regularisation:** FedProx (μ=0.5) — proximal term prevents client drift
+- **Server optimizer:** FedYogi — adaptive server-side momentum accumulation
+- **Rounds:** 100 FL rounds, 3 local epochs per round
+- **Final performance:** MAE = 1.9608 SOFA points, R² = 0.3357
 
 ---
 
@@ -545,9 +553,9 @@ For a predicted SOFA of 6.17 with a baseline of 3.8 (model's average prediction)
 ### SHAP Background (300 samples)
 
 ```
-Input:  models/shap_background.npy — numpy array of shape (300, 618)
+Input:  models/shap_background.npy — numpy array of shape (300, 108)
         These are 300 randomly selected rows from the MIMIC-III training data,
-        already StandardScaler-normalised (same scale as inference input).
+        already StandardScaler-normalised and clipped to ±10 (same scale as inference input).
 
 Purpose: The background represents the "baseline patient" distribution.
          SHAP computes: "What would the model predict if I replaced this feature
@@ -563,7 +571,7 @@ Input:
   explainer — shap.DeepExplainer(model, bg_tensor)
               Created at startup using the 300 background samples as a PyTorch tensor.
 
-  X_tensor  — shape (1, 618), the scaled inference input for this patient
+  X_tensor  — shape (1, 108), the scaled inference input for this patient
 
 Process:
   shap_raw = explainer.shap_values(X_tensor)
@@ -576,7 +584,7 @@ Process:
      attribute the prediction difference to each feature
 
 Output:
-  shap_vals — numpy array of shape (618,)
+  shap_vals — numpy array of shape (108,)
   Each value is a signed float:
     Positive (+) → this feature INCREASED the predicted SOFA (worsening risk)
     Negative (−) → this feature DECREASED the predicted SOFA (protective/neutral)
@@ -599,7 +607,7 @@ values) are used so they see "SpO₂ = 84%" not "SpO₂ = -3.2 (z-score)".
 ### SHAP Feature Filtering
 
 ```
-Input:  shap_vals (618,), expected_cols (618 feature names)
+Input:  shap_vals (108,), expected_cols (108 feature names)
 
 Process:
   1. Build a DataFrame with columns: [feature, original_value, impact, abs_impact]
@@ -771,7 +779,7 @@ Process:
     response_i = Groq API call with:
       model       = "openai/gpt-oss-120b"  (accessed via Groq API)
       temperature = 0.2    (low randomness → similar responses)
-      max_tokens  = 1500   (enough for complete 4-section report)
+      max_tokens  = 2500   (enough for complete 4-section report)
       messages    = [system_message, user_message]
 
 Output:
@@ -810,12 +818,7 @@ Component 2: Clinical Intervention Agreement (50% weight)
   - For each of 7 intervention categories (vasopressors, antibiotics, fluid,
     oxygen, monitoring, labs, renal support) check which synonym terms appear in
     each of the 3 responses
-  - For each category: count = number of responses mentioning it
   - Agreement score = max(count, 3-count) / 3
-    Examples:
-      All 3 mention vasopressors → max(3, 0)/3 = 1.0 (full agreement)
-      0 mention vasopressors     → max(0, 3)/3 = 1.0 (all agree it's not needed)
-      1 of 3 mentions it         → max(1, 2)/3 = 0.67 (partial disagreement)
   - Average across all 7 categories
 
 Component 3: Clinical Condition Agreement (30% weight)
@@ -843,7 +846,7 @@ Input:  consistency — float [0, 1]
   consistency ≥ 0.80 → "High ✅"
     "All 3 LLM responses agree on clinical findings, diagnoses, and interventions."
 
-  consistency ≥ 0.60 → "Moderate ⚠️"
+  consistency ≥ 0.60 → "Moderate ⚠️"  (0.60–0.80)
     "Responses agree on core findings with some variation in secondary recommendations."
 
   consistency < 0.60 → "Low ❌"
@@ -915,10 +918,10 @@ Inputs: training_meta (loaded from training_metadata.json)
 
 Displays:
   - FL protocol ASCII diagram (server ↔ 3 hospital clients)
-  - Training configuration table (rounds, epochs, batch size)
-  - Performance metrics (MAE, R²)
+  - Training configuration table (100 rounds, 3 epochs, FedYogi + FedProx)
+  - Performance metrics (MAE=1.9608, R²=0.3357)
   - Privacy configuration (DP enabled/disabled, ε, δ)
-  - Model architecture description
+  - Model architecture (108→128→64→32→1)
 ```
 
 ---
@@ -953,22 +956,23 @@ Displays:
                       ▼                               │
               ┌────────────────┐                      │
               │ FEATURE FUSION │ ◄────────────────────┘
-              │ 9 + 9 + 600    │
-              │ = 618 features │
+              │ 9 + 9 + 90     │
+              │ = 108 features │
               └───────┬────────┘
                       │
                       ▼
               ┌────────────────┐
               │ STANDARD SCALER│
               │ z-score norm.  │
-              │ (618 features) │
+              │ + clip(±10)    │
+              │ (108 features) │
               └───────┬────────┘
                       │
                       ▼
               ┌────────────────┐
               │  FEDERATED DNN │
-              │ 618→256→128    │
-              │    →64→1       │
+              │ 108→128→64     │
+              │    →32→1       │
               │ (ReLU layers)  │
               └───────┬────────┘
                       │
@@ -1038,11 +1042,11 @@ duration of the session (`@st.cache_resource` prevents reloading on every intera
 
 | Artifact                      | Size    | Loaded by         | Purpose                              |
 |-------------------------------|---------|-------------------|--------------------------------------|
-| `models/federated_model.pth`  | ~1.5 MB | `torch.load()`    | DNN weights for inference            |
-| `models/scaler.pkl`           | ~8 KB   | `joblib.load()`   | StandardScaler for 618 features      |
-| `models/tfidf_vectorizer.pkl` | ~2 MB   | `joblib.load()`   | TF-IDF vocabulary + IDF weights      |
-| `models/feature_columns.pkl`  | ~40 KB  | `joblib.load()`   | Ordered list of 618 column names     |
-| `models/shap_background.npy`  | ~1.4 MB | `np.load()`       | 300×618 background tensor for SHAP   |
+| `models/federated_model.pth`  | ~0.3 MB | `torch.load()`    | DNN weights (108→128→64→32→1)        |
+| `models/scaler.pkl`           | ~8 KB   | `joblib.load()`   | StandardScaler for 108 features      |
+| `models/tfidf_vectorizer.pkl` | ~2 MB   | `joblib.load()`   | TF-IDF (90-term SOFA vocabulary)     |
+| `models/feature_columns.pkl`  | ~40 KB  | `joblib.load()`   | Ordered list of 108 column names     |
+| `models/shap_background.npy`  | ~1.4 MB | `np.load()`       | 300×108 background tensor for SHAP   |
 
 Additionally:
 | Artifact                          | Loaded when      | Purpose                          |
@@ -1063,11 +1067,11 @@ Additionally:
 | After sliding window   | 7 × 20 rows   | DataFrame (temporal buffer)   |
 | After trend features   | 9             | Floats (mean, std, min)       |
 | After latest features  | 9             | Raw floats + GCS + stress     |
-| After TF-IDF           | 600           | Float weights                 |
-| **After fusion**       | **618**       | Single flat float vector      |
-| After StandardScaler   | 618           | Z-scores (mean≈0, std≈1)      |
+| After TF-IDF           | 90            | Float weights (SOFA vocab)    |
+| **After fusion**       | **108**       | Single flat float vector      |
+| After StandardScaler   | 108           | Z-scores clipped to ±10       |
 | After DNN              | 1             | Raw SOFA prediction (float)   |
-| After SHAP             | 618           | Attribution values (floats)   |
+| After SHAP             | 108           | Attribution values (floats)   |
 | After filtering        | 7             | Top clinical SHAP features    |
 | After LLM              | 3             | Full text clinical reports    |
 | After consistency      | 1             | Reliability score [0, 1]      |

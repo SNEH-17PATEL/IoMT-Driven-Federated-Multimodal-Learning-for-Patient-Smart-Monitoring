@@ -15,33 +15,37 @@ class ICUModel(nn.Module):
     """
     Fully connected DNN for SOFA score prediction.
 
-    Input:  618 features — 9 trend vitals + 7 latest vitals + 2 CV + 600 TF-IDF
+    Input:  ~100 features — 9 trend vitals + 7 latest vitals + 2 CV + ~80 SOFA-vocab TF-IDF
     Output: raw SOFA score in the 0–24 range (NOT normalised; no ×24 needed).
 
     Architecture:
-        Linear(618 → 256) → ReLU
-        Linear(256 → 128) → ReLU
+        Linear(input_dim → 128) → ReLU
         Linear(128 → 64)  → ReLU
-        Linear( 64 →  1)
+        Linear( 64 → 32)  → ReLU
+        Linear( 32 →  1)
 
-    No Dropout — tested p=0.3/0.2 and p=0.1/0.05; both caused FL training
-    divergence (R²=0.057 and -0.067 vs 0.235 without Dropout). The root cause:
-    each hospital trains with different random Dropout masks, producing divergent
-    gradient directions that FedAvg cannot reconcile. This is a known limitation
-    of Dropout + FedAvg. Regularisation is handled instead by AdamW weight_decay.
-    Trained using AdamW (weight_decay=1e-4) + linear weighted MSE.
+    No LayerNorm: tested but collapsed prediction range to 0.22–7.04.
+        LayerNorm normalises each sample's activations to mean=0, std=1 within
+        the sample itself — this makes a SOFA=20 patient's activations look the
+        same scale as a SOFA=2 patient, destroying the wide-range regression
+        signal. High-SOFA predictions were capped at ~7, giving MAE=6.5 for
+        the ≥10 segment. Removed.
+
+    No Dropout — each hospital trains with different random masks, producing
+    divergent gradient directions that FedAvg cannot reconcile. Regularisation
+    is handled instead by AdamW weight_decay=1e-4 + FedProx.
     Saved weights: models/federated_model.pth
     """
     def __init__(self, input_dim):
         super(ICUModel, self).__init__()
         self.net = nn.Sequential(
-            nn.Linear(input_dim, 256),
-            nn.ReLU(),
-            nn.Linear(256, 128),
+            nn.Linear(input_dim, 128),
             nn.ReLU(),
             nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Linear(64, 1)
+            nn.Linear(64, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1)
         )
 
     def forward(self, x):
@@ -70,24 +74,27 @@ class ICUDataset(Dataset):
 
 def weighted_mse_loss(preds, targets):
     """
-    Linear weighted MSE: high-SOFA patients get more gradient weight.
+    Linear weighted MSE: mild emphasis on high-SOFA patients.
 
-    Formula: weight = 1 + target × 3
-      SOFA =  0  → weight ≈ 0.08  (after batch-mean normalisation)
+    Formula: weight = 1 + target × 0.5
+      SOFA =  0  → weight ≈ 0.33  (after batch-mean normalisation)
       SOFA =  4  → weight ≈ 1.0   (approx. mean SOFA in training data)
-      SOFA = 10  → weight ≈ 2.4   (High Risk: 2.4× more important)
-      SOFA = 20  → weight ≈ 4.7   (Very severe: 4.7× more important)
+      SOFA = 10  → weight ≈ 2.0   (High Risk: 2× more important)
+      SOFA = 20  → weight ≈ 3.7   (Very severe: 3.7× more important)
 
-    Why linear and not piecewise or exponential:
-      Piecewise (Low=1/Mod=5/High=20) combined with oversampling was tested
-      but caused the model to abandon low-risk accuracy for high-risk patients,
-      worsening overall R² from 0.22 to -0.82. Linear weighting provides a
-      smooth, stable gradient that the FedAvg aggregation handles well.
+    Why 0.5 multiplier (reduced from 3.0):
+      With multiplier=3.0, low-SOFA patients (63% of data) receive only ~7% of
+      fair gradient signal after batch-mean normalisation.  The model barely
+      trains on the majority class, yet the server evaluation metric (unweighted
+      MSE) is dominated by low-SOFA patients.  Training and evaluation objectives
+      work against each other → oscillating server loss → poor model selection.
+      Reducing to 0.5 gives low-SOFA patients ≥33% of fair gradient signal
+      while still providing meaningful emphasis on high-SOFA cases.
 
     Batch-mean normalisation keeps the loss magnitude comparable to plain MSE
     so the learning rate needs no retuning.
     """
-    weights = 1.0 + targets * 3.0
+    weights = 1.0 + targets * 0.5
     weights = weights / weights.mean()
     return (weights * (preds - targets) ** 2).mean()
 
@@ -110,16 +117,17 @@ def get_sample_weights(y):
 # =============================================================
 
 def train_model(model, X, y, epochs=10, lr=0.001, batch_size=64,
-                grad_clip=None, oversample=True):
+                grad_clip=None, oversample=True, global_params=None, mu=0.0):
     """
-    Mini-batch training with AdamW, piecewise weighted MSE, and optional
-    oversampling of minority (high-SOFA) patients.
+    Mini-batch training with AdamW, linear weighted MSE, optional oversampling,
+    and optional FedProx proximal regularisation.
 
-    oversample=True (default):
-        Uses WeightedRandomSampler so that high-risk patients appear ~28%
-        of every batch instead of their natural 6%. Combined with the
-        piecewise loss weights, this gives High-Risk predictions ~94× more
-        gradient signal than plain MSE training.
+    global_params / mu (FedProx):
+        When global_params (list of numpy arrays) and mu > 0 are provided,
+        adds a proximal term  (μ/2) × ||w_local − w_global||²  to every
+        mini-batch loss.  This penalises each hospital's model for drifting
+        too far from the global model during local training, directly fixing
+        the FedAvg oscillation caused by client drift.
 
     AdamW (vs plain Adam):
         Adam with decoupled weight decay regularises the weights more
@@ -142,6 +150,11 @@ def train_model(model, X, y, epochs=10, lr=0.001, batch_size=64,
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
 
+    # FedProx: snapshot global weights as tensors once before training starts
+    global_tensors = None
+    if global_params is not None and mu > 0.0:
+        global_tensors = [torch.tensor(w, dtype=torch.float32) for w in global_params]
+
     final_loss = 0.0
     for _ in range(epochs):
         epoch_loss = 0.0
@@ -149,6 +162,14 @@ def train_model(model, X, y, epochs=10, lr=0.001, batch_size=64,
             optimizer.zero_grad()
             preds = model(X_batch)
             loss  = weighted_mse_loss(preds, y_batch)
+
+            if global_tensors is not None:
+                prox = sum(
+                    ((p - gp) ** 2).sum()
+                    for p, gp in zip(model.parameters(), global_tensors)
+                )
+                loss = loss + (mu / 2.0) * prox
+
             loss.backward()
             if grad_clip is not None:
                 torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
