@@ -241,7 +241,31 @@ icu_monitor/
 
 ## Running the Application
 
-### Launch the Streamlit app
+### Option A — Web Dashboard (React + FastAPI) — recommended
+
+A React/Tailwind dashboard (`frontend/`) backed by a FastAPI service (`backend/`)
+that serves the exact same prediction/SHAP/LLM pipeline as `app.py`, plus a new
+**Live Federated Learning Demo** tab that runs a real FedAvg training loop
+(synthetic demo data — see the tab for why) live in the browser.
+
+**1. Start the backend** (from the project root, same virtualenv as above):
+
+```bash
+uvicorn backend.main:app --reload --port 8000
+```
+
+**2. Start the frontend** (first time only: `cd frontend && npm install`):
+
+```bash
+cd frontend
+npm run dev
+```
+
+Opens at **http://localhost:5173** (proxies `/api` and `/ws` to the backend on
+port 8000). Requires `GROQ_API_KEY` in a `.env` file at the project root, same
+as the Streamlit app.
+
+### Option B — Streamlit app (original / legacy)
 
 ```bash
 cd icu_monitor

@@ -1,0 +1,310 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+:root {
+  color-scheme: dark;
+
+  /* surfaces */
+  --bg: #06080c;
+  --bg-1: #0a0d13;
+  --bg-2: #10141c;
+  --bg-3: #171d29;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.16);
+
+  /* text */
+  --text: #e8edf4;
+  --text-dim: #8b94a3;
+  --text-faint: #545d6c;
+
+  /* brand / telemetry accent */
+  --accent: #22d3ee;
+  --accent-2: #67e8f9;
+  --violet: #a78bfa;
+  --amber: #ffb020;
+
+  /* risk semantics */
+  --low: #2de6a3;
+  --mod: #ffb020;
+  --high: #ff3b5c;
+
+  --glow-low: 45, 230, 163;
+  --glow-mod: 255, 176, 32;
+  --glow-high: 255, 59, 92;
+  --glow-accent: 34, 211, 238;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* =============================================================
+   CONSOLE BACKDROP — near-black canvas, faint blueprint grid,
+   drifting radar-scan band, soft accent glows. Replaces the old
+   pastel "aurora" gradient look.
+   ============================================================= */
+.console-field {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  background: var(--bg);
+}
+.console-field::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse 65% 50% at 18% -8%, rgba(34, 211, 238, 0.10), transparent 60%),
+    radial-gradient(ellipse 55% 45% at 100% 8%, rgba(167, 139, 250, 0.08), transparent 60%),
+    radial-gradient(ellipse 60% 40% at 50% 115%, rgba(45, 230, 163, 0.05), transparent 60%);
+}
+.console-grid {
+  position: absolute;
+  inset: -2px;
+  background-image: linear-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 46px 46px;
+  -webkit-mask-image: radial-gradient(ellipse 85% 65% at 50% 10%, black 35%, transparent 80%);
+  mask-image: radial-gradient(ellipse 85% 65% at 50% 10%, black 35%, transparent 80%);
+}
+.console-scan {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 160px;
+  background: linear-gradient(to bottom, transparent, rgba(34, 211, 238, 0.05), transparent);
+  animation: scanDrift 11s linear infinite;
+}
+@keyframes scanDrift {
+  0% {
+    transform: translateY(-160px);
+  }
+  100% {
+    transform: translateY(110vh);
+  }
+}
+.console-noise {
+  position: absolute;
+  inset: 0;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='90' height='90'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* =============================================================
+   ANIMATIONS
+   ============================================================= */
+@keyframes livePulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(var(--glow-high), 0.65);
+  }
+  70% {
+    box-shadow: 0 0 0 12px rgba(var(--glow-high), 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(var(--glow-high), 0);
+  }
+}
+@keyframes softPulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(0.85);
+  }
+}
+@keyframes blinkSoft {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+@keyframes floatY {
+  0%,
+  100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+@keyframes shimmer {
+  0% {
+    background-position: -400px 0;
+  }
+  100% {
+    background-position: 400px 0;
+  }
+}
+@keyframes dashFlow {
+  to {
+    stroke-dashoffset: -24;
+  }
+}
+@keyframes spinSlow {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes flicker {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  92% {
+    opacity: 1;
+  }
+  93% {
+    opacity: 0.4;
+  }
+  94% {
+    opacity: 1;
+  }
+}
+
+.live-dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  background: var(--high);
+  border-radius: 999px;
+  animation: livePulse 1.7s infinite;
+}
+.live-badge {
+  animation: blinkSoft 2.4s infinite;
+}
+.animate-float {
+  animation: floatY 4.5s ease-in-out infinite;
+}
+.animate-spin-slow {
+  animation: spinSlow 6s linear infinite;
+}
+.animate-flicker {
+  animation: flicker 5s ease-in-out infinite;
+}
+
+.shimmer {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0) 0%, rgba(255, 255, 255, 0.06) 50%, rgba(255, 255, 255, 0) 100%);
+  background-size: 800px 100%;
+  animation: shimmer 1.6s infinite;
+}
+
+.font-display {
+  font-family: "Space Grotesk", var(--font-sans);
+}
+
+.gradient-text {
+  background: linear-gradient(90deg, var(--accent), var(--violet));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.flow-dash {
+  stroke-dasharray: 6 6;
+  animation: dashFlow 1s linear infinite;
+}
+
+/* =============================================================
+   PANEL SURFACES — hairline-bordered dark cards, the console's
+   basic unit, replacing the old frosted-glass pastel cards.
+   ============================================================= */
+.panel {
+  background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
+  border: 1px solid var(--line);
+}
+.panel-raised {
+  background: var(--bg-2);
+  border: 1px solid var(--line-strong);
+}
+.panel-inset {
+  background: var(--bg-1);
+  border: 1px solid var(--line);
+}
+
+.glow-low {
+  box-shadow: 0 0 0 1px rgba(var(--glow-low), 0.25), 0 8px 30px -10px rgba(var(--glow-low), 0.35);
+}
+.glow-mod {
+  box-shadow: 0 0 0 1px rgba(var(--glow-mod), 0.25), 0 8px 30px -10px rgba(var(--glow-mod), 0.35);
+}
+.glow-high {
+  box-shadow: 0 0 0 1px rgba(var(--glow-high), 0.3), 0 8px 30px -10px rgba(var(--glow-high), 0.4);
+}
+.glow-accent {
+  box-shadow: 0 0 0 1px rgba(var(--glow-accent), 0.25), 0 8px 30px -10px rgba(var(--glow-accent), 0.35);
+}
+
+/* HUD corner brackets */
+.hud-corner {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+  opacity: 0.5;
+}
+.hud-corner.tl {
+  top: 8px;
+  left: 8px;
+  border-top: 1.5px solid currentColor;
+  border-left: 1.5px solid currentColor;
+}
+.hud-corner.tr {
+  top: 8px;
+  right: 8px;
+  border-top: 1.5px solid currentColor;
+  border-right: 1.5px solid currentColor;
+}
+.hud-corner.bl {
+  bottom: 8px;
+  left: 8px;
+  border-bottom: 1.5px solid currentColor;
+  border-left: 1.5px solid currentColor;
+}
+.hud-corner.br {
+  bottom: 8px;
+  right: 8px;
+  border-bottom: 1.5px solid currentColor;
+  border-right: 1.5px solid currentColor;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--bg-3);
+  border-radius: 999px;
+  border: 2px solid var(--bg);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent);
+  opacity: 0.6;
+}
