@@ -38,12 +38,35 @@ st.set_page_config(
 # GLOBAL CSS — ICU monitoring aesthetic
 # =============================================================
 st.markdown("""
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:ital,wght@0,400;0,500;0,600;0,700;0,800;1,500&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
+/* ── Dark "clinical command console" tokens ── */
+:root {
+    --bg: #06080c;
+    --bg-1: #0a0d13;
+    --bg-2: #10141c;
+    --bg-3: #171d29;
+    --line: rgba(255,255,255,0.08);
+    --line-strong: rgba(255,255,255,0.16);
+    --text: #e8edf4;
+    --text-dim: #8b94a3;
+    --text-faint: #545d6c;
+    --accent: #22d3ee;
+    --violet: #a78bfa;
+    --low: #2de6a3;
+    --mod: #ffb020;
+    --high: #ff3b5c;
+}
+html, body, [class*="css"] { font-family: 'Inter', -apple-system, sans-serif; }
+.stApp { background: var(--bg); }
+h1, h2, h3, .sofa-num { font-family: 'Space Grotesk', 'Inter', sans-serif; }
 /* ── Animations ── */
 @keyframes livePulse {
-    0%   { box-shadow: 0 0 0 0 rgba(255,51,51,0.7); }
-    70%  { box-shadow: 0 0 0 10px rgba(255,51,51,0); }
-    100% { box-shadow: 0 0 0 0 rgba(255,51,51,0); }
+    0%   { box-shadow: 0 0 0 0 rgba(255,59,92,0.7); }
+    70%  { box-shadow: 0 0 0 10px rgba(255,59,92,0); }
+    100% { box-shadow: 0 0 0 0 rgba(255,59,92,0); }
 }
 @keyframes blink {
     0%,100% { opacity:1; }
@@ -53,87 +76,84 @@ st.markdown("""
     from { opacity:0; transform:translateY(-8px); }
     to   { opacity:1; transform:translateY(0); }
 }
-
 /* ── LIVE badge ── */
 .live-dot {
     display:inline-block; width:11px; height:11px;
-    background:#ff3333; border-radius:50%;
+    background:var(--high); border-radius:50%;
     animation: livePulse 1.6s infinite;
     vertical-align:middle; margin-right:6px;
 }
 .live-badge {
-    background:linear-gradient(90deg,#ff3333,#cc0000);
-    color:white; font-size:12px; font-weight:800;
-    padding:3px 10px; border-radius:20px;
+    background:rgba(255,59,92,0.12);
+    border:1px solid rgba(255,59,92,0.4);
+    color:var(--high); font-size:12px; font-weight:800;
+    padding:3px 10px; border-radius:6px;
     letter-spacing:1.5px; vertical-align:middle; margin-right:8px;
     animation: blink 2s infinite;
 }
-
 /* ── Monitoring banner ── */
 .monitor-banner {
-    background:linear-gradient(135deg,#0f2027 0%,#203a43 50%,#2c5364 100%);
-    color:white; padding:14px 22px; border-radius:12px;
-    border-left:6px solid #00d2ff;
+    background:linear-gradient(180deg,var(--bg-2),var(--bg-1));
+    border:1px solid var(--line);
+    color:var(--text); padding:14px 22px; border-radius:12px;
+    border-left:4px solid var(--accent);
     animation:slideIn 0.3s ease; margin-bottom:4px;
 }
-.monitor-banner b { color:#00d2ff; }
-
+.monitor-banner b { color:var(--accent); }
 /* ── Patient selector cards ── */
 .pcard {
-    border-radius:16px; padding:22px 20px; margin:6px 0;
+    border-radius:14px; padding:22px 20px; margin:6px 0;
+    background:linear-gradient(180deg,var(--bg-2),var(--bg-1));
     animation:slideIn 0.4s ease; transition:transform 0.15s;
 }
 .pcard:hover { transform:translateY(-2px); }
-.pcard-low  { border:3px solid #28a745; background:linear-gradient(140deg,#e8fce8,#c8f7d0); }
-.pcard-mod  { border:3px solid #f0a500; background:linear-gradient(140deg,#fffbf0,#fff0b3); }
-.pcard-high { border:3px solid #dc3545; background:linear-gradient(140deg,#fff5f5,#ffd0d0); }
-.pcard h3   { margin:0 0 6px 0; font-size:20px; }
-.pcard p    { margin:4px 0; color:#444; font-size:13px; }
-.pcard .tag { display:inline-block; border-radius:20px; padding:2px 10px;
+.pcard-low  { border:1.5px solid rgba(45,230,163,0.4); }
+.pcard-mod  { border:1.5px solid rgba(255,176,32,0.4); }
+.pcard-high { border:1.5px solid rgba(255,59,92,0.4); }
+.pcard h3   { margin:0 0 6px 0; font-size:20px; color:var(--text); }
+.pcard p    { margin:4px 0; color:var(--text-dim); font-size:13px; }
+.pcard .tag { display:inline-block; border-radius:6px; padding:2px 10px;
               font-size:11px; font-weight:700; letter-spacing:0.5px; }
-.tag-low    { background:#d4edda; color:#155724; }
-.tag-mod    { background:#fff3cd; color:#856404; }
-.tag-high   { background:#f8d7da; color:#721c24; }
-
+.tag-low    { background:rgba(45,230,163,0.12); color:var(--low); }
+.tag-mod    { background:rgba(255,176,32,0.12); color:var(--mod); }
+.tag-high   { background:rgba(255,59,92,0.12); color:var(--high); }
 /* ── Vital sign cards ── */
 .vcard {
-    border-radius:12px; padding:14px 10px;
+    border-radius:10px; padding:14px 10px;
     text-align:center; min-height:120px;
+    background:var(--bg-1);
     display:flex; flex-direction:column;
     justify-content:space-between; margin:3px;
     transition: transform 0.1s;
 }
 .vcard:hover { transform:scale(1.02); }
-.v-ok   { background:linear-gradient(145deg,#e8fce8,#d4f8d4); border:2px solid #4caf50; }
-.v-bad  { background:linear-gradient(145deg,#fee8e8,#fdd0d0); border:2px solid #f44336; }
-.v-warn { background:linear-gradient(145deg,#fff8e1,#ffe8a0); border:2px solid #ff9800; }
-.vnum   { font-size:32px; font-weight:900; color:#1a1a2e; line-height:1; }
-.vlabel { font-size:10px; font-weight:700; color:#555;
+.v-ok   { border:1.5px solid rgba(45,230,163,0.4); }
+.v-bad  { border:1.5px solid rgba(255,59,92,0.4); }
+.v-warn { border:1.5px solid rgba(255,176,32,0.4); }
+.vnum   { font-size:32px; font-weight:900; color:var(--text); line-height:1; font-family:'JetBrains Mono',monospace; }
+.vlabel { font-size:10px; font-weight:700; color:var(--text-faint);
           text-transform:uppercase; letter-spacing:0.6px; }
-.vunit  { font-size:10px; color:#888; }
-.vstatus-ok  { font-size:11px; font-weight:700; color:#2e7d32; }
-.vstatus-bad { font-size:11px; font-weight:700; color:#c62828; }
-.vrange { font-size:9px; color:#999; }
-
+.vunit  { font-size:10px; color:var(--text-faint); }
+.vstatus-ok  { font-size:11px; font-weight:700; color:var(--low); }
+.vstatus-bad { font-size:11px; font-weight:700; color:var(--high); }
+.vrange { font-size:9px; color:var(--text-faint); }
 /* ── SOFA gauge box ── */
 .sofa-gauge {
-    border-radius:20px; padding:28px 20px; text-align:center;
-    box-shadow:0 6px 24px rgba(0,0,0,0.12);
+    border-radius:16px; padding:28px 20px; text-align:center;
+    background:var(--bg-1);
     animation:slideIn 0.4s ease;
 }
-.sofa-num { font-size:80px; font-weight:900; line-height:1; }
+.sofa-num { font-size:80px; font-weight:900; line-height:1; font-family:'JetBrains Mono',monospace; }
 .sofa-denom { font-size:22px; font-weight:600; opacity:0.7; }
 .sofa-risk  { font-size:18px; font-weight:800; margin-top:6px; letter-spacing:0.3px; }
 .sofa-sev   { font-size:12px; opacity:0.75; margin-top:2px; }
-
 /* ── Countdown / next reading bar ── */
 .cdbar {
-    background:linear-gradient(90deg,#0f2027,#2c5364);
-    color:white; border-radius:12px; padding:12px 20px;
-    margin-top:16px; border:1.5px solid #00d2ff;
+    background:var(--bg-2);
+    color:var(--text); border-radius:10px; padding:12px 20px;
+    margin-top:16px; border:1px solid var(--line-strong);
     display:flex; align-items:center; gap:12px; font-size:13px;
 }
-
 /* ── Alert banner override ── */
 div[data-testid="stAlert"] > div {
     border-radius: 12px !important;
@@ -331,11 +351,11 @@ st.caption(
 if st.session_state.selected_patient is None:
     st.markdown("""
     <div style="text-align:center; padding:10px 0 24px 0;">
-        <div style="font-size:38px; font-weight:900; color:#1a1a2e; letter-spacing:-1px;">
+        <div style="font-size:38px; font-weight:900; color:#e8edf4; letter-spacing:-1px;">
             🏥 Select Patient to Monitor
         </div>
-        <div style="font-size:15px; color:#555; margin-top:8px;">
-            AI reads vitals every <strong>30 seconds</strong> — generating SOFA predictions,
+        <div style="font-size:15px; color:#8b94a3; margin-top:8px;">
+            AI reads vitals every <strong style="color:#e8edf4;">30 seconds</strong> — generating SOFA predictions,
             SHAP explainability & clinical AI reports automatically.
         </div>
     </div>
@@ -361,11 +381,11 @@ if st.session_state.selected_patient is None:
                     <span style="font-size:28px;">{icon}</span>
                     <span class="tag {tag_cls}">{risk_label_txt}</span>
                 </div>
-                <h3 style="margin:10px 0 4px 0;">Patient {pid}</h3>
-                <p style="font-size:14px;font-weight:600;color:#333;">{pcfg['description'].split(' — ')[0]}</p>
-                <p style="font-size:12px;color:#666;margin-top:4px;">{desc}</p>
-                <div style="margin-top:12px;padding:8px;background:rgba(255,255,255,0.6);
-                            border-radius:8px;font-size:12px;">
+                <h3 style="margin:10px 0 4px 0;color:#e8edf4;">Patient {pid}</h3>
+                <p style="font-size:14px;font-weight:600;color:#e8edf4;">{pcfg['description'].split(' — ')[0]}</p>
+                <p style="font-size:12px;color:#8b94a3;margin-top:4px;">{desc}</p>
+                <div style="margin-top:12px;padding:8px;background:rgba(255,255,255,0.06);
+                            border-radius:8px;font-size:12px;color:#c5cbd4;">
                     <b>Expected SOFA:</b> {sofa_range} &nbsp;|&nbsp;
                     <b>30 readings</b> × 10-min intervals
                 </div>
@@ -465,7 +485,7 @@ st.markdown(f"""
             </div>
             <div style="text-align:center;">
                 <div style="color:#7fb3c8; font-size:10px; text-transform:uppercase; letter-spacing:0.8px;">Time</div>
-                <div style="color:#00d2ff; font-weight:800; font-size:20px; font-family:monospace; line-height:1.1;">{_now}</div>
+                <div style="color:#22d3ee; font-weight:800; font-size:20px; font-family:monospace; line-height:1.1;">{_now}</div>
             </div>
         </div>
     </div>
@@ -483,7 +503,7 @@ _top_cd.markdown(f"""
     <span style="color:#4a7a8a;">|</span>
     <span>{patient_cfg['icon']} {patient_cfg['name']}</span>
     <span style="color:#4a7a8a;">|</span>
-    <span>Reading <b style="color:#00d2ff;">{cur_idx + 1}/{total_rows}</b></span>
+    <span>Reading <b style="color:#22d3ee;">{cur_idx + 1}/{total_rows}</b></span>
     <span style="color:#4a7a8a;">|</span>
     <span style="color:#aaa; font-style:italic;">⚙ Processing data…</span>
 </div>
@@ -573,13 +593,13 @@ def build_trend_chart(df):
       Row 2: Systolic BP | Diastolic BP | MAP | (empty)
     """
     VITAL_PANELS = [
-        ("HR",   "Heart Rate",       "bpm",   "#e74c3c", 60,   100),
-        ("RR",   "Respiratory Rate", "br/min","#3498db", 12,   20),
-        ("SpO2", "SpO₂",            "%",     "#2ecc71", 95,   100),
-        ("Temp", "Temperature",      "°C",    "#f39c12", 36.5, 37.5),
-        ("SBP",  "Systolic BP",      "mmHg",  "#9b59b6", 100,  120),
-        ("DBP",  "Diastolic BP",     "mmHg",  "#1abc9c", 60,   80),
-        ("MAP",  "MAP",              "mmHg",  "#e67e22", 70,   100),
+        ("HR",   "Heart Rate",       "bpm",   "#ff6b85", 60,   100),
+        ("RR",   "Respiratory Rate", "br/min","#67e8f9", 12,   20),
+        ("SpO2", "SpO₂",            "%",     "#2de6a3", 95,   100),
+        ("Temp", "Temperature",      "°C",    "#ffb020", 36.5, 37.5),
+        ("SBP",  "Systolic BP",      "mmHg",  "#a78bfa", 100,  120),
+        ("DBP",  "Diastolic BP",     "mmHg",  "#22d3ee", 60,   80),
+        ("MAP",  "MAP",              "mmHg",  "#f472b6", 70,   100),
     ]
 
     fig = make_subplots(
@@ -597,7 +617,7 @@ def build_trend_chart(df):
 
         fig.add_hrect(
             y0=lo, y1=hi,
-            fillcolor="rgba(80,200,120,0.15)",
+            fillcolor="rgba(45,230,163,0.12)",
             line_width=0,
             row=row, col=c
         )
@@ -619,15 +639,19 @@ def build_trend_chart(df):
     fig.update_layout(
         title_text=(
             "Vital Signs — Last 20 Readings  "
-            "<span style='color:green;font-size:12px'>■ green band = normal range</span>"
+            "<span style='color:#2de6a3;font-size:12px'>■ green band = normal range</span>"
         ),
         title_font_size=13,
+        title_font_color="#e8edf4",
         height=440,
         margin=dict(l=0, r=0, t=65, b=5),
-        plot_bgcolor="white",
-        paper_bgcolor="white",
+        plot_bgcolor="#0a0d13",
+        paper_bgcolor="#0a0d13",
+        font=dict(color="#8b94a3"),
     )
-    fig.update_xaxes(title_text="Reading →", title_font_size=9)
+    fig.update_xaxes(title_text="Reading →", title_font_size=9, gridcolor="rgba(255,255,255,0.08)", zerolinecolor="rgba(255,255,255,0.08)")
+    fig.update_yaxes(gridcolor="rgba(255,255,255,0.08)", zerolinecolor="rgba(255,255,255,0.08)")
+    fig.update_annotations(font_color="#c5cbd4")
 
     return fig
 
@@ -1087,9 +1111,8 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # ---- TAB 1: RISK ASSESSMENT ----
 with tab1:
     # ── Colour palette for current SOFA ──
-    _sbg  = "#e8fce8" if sofa_score < 5 else "#fffbf0" if sofa_score < 10 else "#fff0f0"
-    _sbrd = "#28a745" if sofa_score < 5 else "#f0a500" if sofa_score < 10 else "#dc3545"
-    _stxt = "#1b5e20" if sofa_score < 5 else "#7a4100" if sofa_score < 10 else "#b71c1c"
+    _sbrd = "#2de6a3" if sofa_score < 5 else "#ffb020" if sofa_score < 10 else "#ff3b5c"
+    _stxt = _sbrd
     _m    = training_meta
 
     # ── Two-column header: SOFA gauge  |  Severity bar + model stats ──
@@ -1097,8 +1120,7 @@ with tab1:
 
     with col_gauge:
         st.markdown(f"""
-        <div class="sofa-gauge" style="background:linear-gradient(135deg,{_sbg},white);
-             border:4px solid {_sbrd}; height:220px; justify-content:center;">
+        <div class="sofa-gauge" style="border:1.5px solid {_sbrd}66; height:220px; justify-content:center;">
             <div style="font-size:11px;font-weight:700;color:{_sbrd};letter-spacing:2.5px;
                         text-transform:uppercase;">Predicted SOFA Score</div>
             <div class="sofa-num" style="color:{_stxt};font-size:88px;">{sofa_score:.1f}
@@ -1107,7 +1129,7 @@ with tab1:
             <div style="font-size:17px;font-weight:800;color:{_sbrd};margin-top:2px;">
                 {risk_icon} {risk_text}
             </div>
-            <div style="font-size:12px;color:{_stxt};opacity:0.75;margin-top:6px;">
+            <div style="font-size:12px;color:#8b94a3;margin-top:6px;">
                 Severity: {int((sofa_score/24)*100)}%
                 &nbsp;·&nbsp; Window: {len(vitals_df)}/20 readings
             </div>
@@ -1122,27 +1144,27 @@ with tab1:
         _hi_w   = 300 - _low_w - _mod_w
         _marker = _pct * 300          # marker x-position
         st.markdown(f"""
-        <div style="background:#f8fafc;border-radius:14px;padding:18px 20px;
-                    border:1.5px solid #e2e8f0;margin-bottom:10px;">
-            <div style="font-size:11px;font-weight:700;color:#64748b;letter-spacing:1px;
+        <div style="background:#0a0d13;border-radius:14px;padding:18px 20px;
+                    border:1px solid rgba(255,255,255,0.08);margin-bottom:10px;">
+            <div style="font-size:11px;font-weight:700;color:#8b94a3;letter-spacing:1px;
                         text-transform:uppercase;margin-bottom:10px;">
                 📊 SOFA Severity Scale — Current Reading
             </div>
             <svg width="100%" viewBox="0 0 300 52" xmlns="http://www.w3.org/2000/svg">
                 <!-- Zone bars -->
-                <rect x="0"   y="14" width="{_low_w:.1f}" height="22" fill="#28a745" rx="5"/>
-                <rect x="{_low_w:.1f}" y="14" width="{_mod_w:.1f}" height="22" fill="#f0a500"/>
-                <rect x="{_low_w+_mod_w:.1f}" y="14" width="{_hi_w:.1f}" height="22" fill="#dc3545" rx="5"/>
+                <rect x="0"   y="14" width="{_low_w:.1f}" height="22" fill="#2de6a3" rx="5"/>
+                <rect x="{_low_w:.1f}" y="14" width="{_mod_w:.1f}" height="22" fill="#ffb020"/>
+                <rect x="{_low_w+_mod_w:.1f}" y="14" width="{_hi_w:.1f}" height="22" fill="#ff3b5c" rx="5"/>
                 <!-- Marker needle -->
                 <polygon points="{_marker:.1f},8 {_marker-5:.1f},14 {_marker+5:.1f},14"
-                         fill="white" stroke="#1a1a2e" stroke-width="1.2"/>
-                <rect x="{_marker-2.5:.1f}" y="12" width="5" height="26" fill="white"
-                      rx="2.5" stroke="#1a1a2e" stroke-width="1"/>
+                         fill="#06080c" stroke="{_sbrd}" stroke-width="1.2"/>
+                <rect x="{_marker-2.5:.1f}" y="12" width="5" height="26" fill="#06080c"
+                      rx="2.5" stroke="{_sbrd}" stroke-width="1"/>
                 <!-- Zone labels -->
-                <text x="4"   y="50" font-size="9" fill="#28a745" font-weight="600">LOW (0–4)</text>
-                <text x="{_low_w+4:.1f}" y="50" font-size="9" fill="#e07800" font-weight="600">MOD (5–9)</text>
-                <text x="{_low_w+_mod_w+4:.1f}" y="50" font-size="9" fill="#dc3545" font-weight="600">HIGH (≥10)</text>
-                <text x="295" y="50" font-size="9" fill="#888" text-anchor="end">24</text>
+                <text x="4"   y="50" font-size="9" fill="#2de6a3" font-weight="600">LOW (0–4)</text>
+                <text x="{_low_w+4:.1f}" y="50" font-size="9" fill="#ffb020" font-weight="600">MOD (5–9)</text>
+                <text x="{_low_w+_mod_w+4:.1f}" y="50" font-size="9" fill="#ff3b5c" font-weight="600">HIGH (≥10)</text>
+                <text x="295" y="50" font-size="9" fill="#545d6c" text-anchor="end">24</text>
                 <!-- Current SOFA label -->
                 <text x="{min(max(_marker, 20), 280):.1f}" y="8" font-size="9" fill="{_sbrd}"
                       text-anchor="middle" font-weight="700">▼ {sofa_score:.1f}</text>
@@ -1153,37 +1175,41 @@ with tab1:
         # ── Model accuracy mini-tiles (2×2 grid) ──
         st.markdown(f"""
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;">
-            <div style="background:linear-gradient(135deg,#e8f4fd,#d0eaf8);border-radius:10px;
-                        padding:12px 8px;text-align:center;border:1px solid #90cdf4;">
-                <div style="font-size:9px;font-weight:700;color:#2b6cb0;letter-spacing:0.7px;
+            <div style="background:#0a0d13;border-radius:10px;
+                        padding:12px 8px;text-align:center;border:1px solid rgba(255,255,255,0.1);
+                        box-shadow:inset 0 2px 0 0 #22d3ee;">
+                <div style="font-size:9px;font-weight:700;color:#8b94a3;letter-spacing:0.7px;
                             text-transform:uppercase;">Model MAE</div>
-                <div style="font-size:22px;font-weight:900;color:#1a365d;line-height:1.1;">
+                <div style="font-size:22px;font-weight:900;color:#22d3ee;line-height:1.1;">
                     {_m['final_mae']:.2f}</div>
-                <div style="font-size:9px;color:#4a90d9;">SOFA pts</div>
+                <div style="font-size:9px;color:#8b94a3;">SOFA pts</div>
             </div>
-            <div style="background:linear-gradient(135deg,#f0fff4,#c6f6d5);border-radius:10px;
-                        padding:12px 8px;text-align:center;border:1px solid #9ae6b4;">
-                <div style="font-size:9px;font-weight:700;color:#276749;letter-spacing:0.7px;
+            <div style="background:#0a0d13;border-radius:10px;
+                        padding:12px 8px;text-align:center;border:1px solid rgba(255,255,255,0.1);
+                        box-shadow:inset 0 2px 0 0 #2de6a3;">
+                <div style="font-size:9px;font-weight:700;color:#8b94a3;letter-spacing:0.7px;
                             text-transform:uppercase;">R² Score</div>
-                <div style="font-size:22px;font-weight:900;color:#1a4731;line-height:1.1;">
+                <div style="font-size:22px;font-weight:900;color:#2de6a3;line-height:1.1;">
                     {_m['final_r2']:.3f}</div>
-                <div style="font-size:9px;color:#38a169;">variance</div>
+                <div style="font-size:9px;color:#8b94a3;">variance</div>
             </div>
-            <div style="background:linear-gradient(135deg,#fffaf0,#feebc8);border-radius:10px;
-                        padding:12px 8px;text-align:center;border:1px solid #f6ad55;">
-                <div style="font-size:9px;font-weight:700;color:#7b341e;letter-spacing:0.7px;
+            <div style="background:#0a0d13;border-radius:10px;
+                        padding:12px 8px;text-align:center;border:1px solid rgba(255,255,255,0.1);
+                        box-shadow:inset 0 2px 0 0 #ffb020;">
+                <div style="font-size:9px;font-weight:700;color:#8b94a3;letter-spacing:0.7px;
                             text-transform:uppercase;">Trained on</div>
-                <div style="font-size:22px;font-weight:900;color:#7b341e;line-height:1.1;">
+                <div style="font-size:22px;font-weight:900;color:#ffb020;line-height:1.1;">
                     {_m['train_samples']//1000}K</div>
-                <div style="font-size:9px;color:#c05621;">patients</div>
+                <div style="font-size:9px;color:#8b94a3;">patients</div>
             </div>
-            <div style="background:linear-gradient(135deg,#faf5ff,#e9d8fd);border-radius:10px;
-                        padding:12px 8px;text-align:center;border:1px solid #d6bcfa;">
-                <div style="font-size:9px;font-weight:700;color:#553c9a;letter-spacing:0.7px;
+            <div style="background:#0a0d13;border-radius:10px;
+                        padding:12px 8px;text-align:center;border:1px solid rgba(255,255,255,0.1);
+                        box-shadow:inset 0 2px 0 0 #a78bfa;">
+                <div style="font-size:9px;font-weight:700;color:#8b94a3;letter-spacing:0.7px;
                             text-transform:uppercase;">FL Rounds</div>
-                <div style="font-size:22px;font-weight:900;color:#44337a;line-height:1.1;">
+                <div style="font-size:22px;font-weight:900;color:#a78bfa;line-height:1.1;">
                     {_m['num_rounds']}</div>
-                <div style="font-size:9px;color:#805ad5;">{_m['hospitals']} hospitals</div>
+                <div style="font-size:9px;color:#8b94a3;">{_m['hospitals']} hospitals</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -1212,17 +1238,17 @@ System re-assesses every 30 seconds — watch the SOFA trajectory over readings.
     st.divider()
 
     # ── Trend Summary ──
-    st.markdown("<div style='font-size:18px;font-weight:800;color:#1a1a2e;margin-bottom:10px;'>📈 Vital Sign Trends</div>",
+    st.markdown("<div style='font-size:18px;font-weight:800;color:#e8edf4;margin-bottom:10px;'>📈 Vital Sign Trends</div>",
                 unsafe_allow_html=True)
     _dir_style = {
-        "increasing": ("🔺", "#dc3545", "#fff0f0"),
-        "decreasing": ("🔻", "#28a745", "#f0fff4"),
-        "stable":     ("➡", "#0066cc", "#f0f4ff"),
+        "increasing": ("🔺", "#ff3b5c", "rgba(255,59,92,0.1)"),
+        "decreasing": ("🔻", "#2de6a3", "rgba(45,230,163,0.1)"),
+        "stable":     ("➡", "#22d3ee", "rgba(34,211,238,0.1)"),
     }
     _rng_style = {
-        "high":   ("HIGH",   "#dc3545", "#fff0f0"),
-        "low":    ("LOW",    "#ff9800", "#fff8e1"),
-        "normal": ("NORMAL", "#28a745", "#f0fff4"),
+        "high":   ("HIGH",   "#ff3b5c", "rgba(255,59,92,0.1)"),
+        "low":    ("LOW",    "#ffb020", "rgba(255,176,32,0.1)"),
+        "normal": ("NORMAL", "#2de6a3", "rgba(45,230,163,0.1)"),
     }
 
     def _trend_badge(line):
@@ -1231,35 +1257,35 @@ System re-assesses every 30 seconds — watch the SOFA trajectory over readings.
             rng, dirn = rest.split(" & ")
         except Exception:
             return f"<span style='font-size:13px;'>{line}</span>"
-        d_icon, d_col, _ = _dir_style.get(dirn.strip(), ("•", "#555", "#eee"))
-        r_lbl, r_col, r_bg = _rng_style.get(rng.strip(), (rng.upper(), "#555", "#eee"))
+        d_icon, d_col, _ = _dir_style.get(dirn.strip(), ("•", "#8b94a3", "rgba(255,255,255,0.05)"))
+        r_lbl, r_col, r_bg = _rng_style.get(rng.strip(), (rng.upper(), "#8b94a3", "rgba(255,255,255,0.05)"))
         return (
-            f"<span style='font-size:13px;font-weight:700;color:#1a1a2e;min-width:60px;"
+            f"<span style='font-size:13px;font-weight:700;color:#e8edf4;min-width:60px;"
             f"display:inline-block;'>{vital}</span>"
-            f"<span style='margin:0 6px;color:#bbb;'>→</span>"
+            f"<span style='margin:0 6px;color:#545d6c;'>→</span>"
             f"<span style='background:{r_bg};color:{r_col};border:1.5px solid {r_col};"
             f"border-radius:5px;padding:2px 9px;font-size:11px;font-weight:800;"
             f"margin-right:5px;letter-spacing:0.3px;'>{r_lbl}</span>"
-            f"<span style='background:#f0f4ff;border-radius:5px;padding:2px 9px;"
-            f"font-size:11px;font-weight:700;color:{d_col};border:1px solid #c8d8f8;'>"
+            f"<span style='background:rgba(255,255,255,0.05);border-radius:5px;padding:2px 9px;"
+            f"font-size:11px;font-weight:700;color:{d_col};border:1px solid rgba(255,255,255,0.1);'>"
             f"{d_icon} {dirn.strip()}</span>"
         )
 
     _trend_html = ""
     for i, line in enumerate(trend_lines):
-        _trend_html += f"<div style='padding:6px 10px;background:{'#fafafa' if i%2==0 else 'white'};" \
+        _trend_html += f"<div style='padding:6px 10px;background:{'rgba(255,255,255,0.03)' if i%2==0 else 'transparent'};" \
                        f"border-radius:6px;margin:3px 0;'>{_trend_badge(line)}</div>"
 
     tl, tr = st.columns(2)
     with tl:
         for i, line in enumerate(trend_lines[:4]):
-            st.markdown(f"<div style='padding:6px 10px;background:{'#fafafa' if i%2==0 else 'white'};"
-                        f"border-radius:6px;margin:3px 0;border-left:3px solid #e2e8f0;'>"
+            st.markdown(f"<div style='padding:6px 10px;background:{'rgba(255,255,255,0.03)' if i%2==0 else 'transparent'};"
+                        f"border-radius:6px;margin:3px 0;border-left:3px solid rgba(255,255,255,0.1);'>"
                         f"{_trend_badge(line)}</div>", unsafe_allow_html=True)
     with tr:
         for i, line in enumerate(trend_lines[4:]):
-            st.markdown(f"<div style='padding:6px 10px;background:{'#fafafa' if i%2==0 else 'white'};"
-                        f"border-radius:6px;margin:3px 0;border-left:3px solid #e2e8f0;'>"
+            st.markdown(f"<div style='padding:6px 10px;background:{'rgba(255,255,255,0.03)' if i%2==0 else 'transparent'};"
+                        f"border-radius:6px;margin:3px 0;border-left:3px solid rgba(255,255,255,0.1);'>"
                         f"{_trend_badge(line)}</div>", unsafe_allow_html=True)
 
     # ── Prediction History (colour-coded by risk) ──
@@ -1278,11 +1304,11 @@ System re-assesses every 30 seconds — watch the SOFA trajectory over readings.
                 def _color_risk_row(row):
                     risk_val = str(row.get("Risk", ""))
                     if "High" in risk_val:
-                        bg = "background-color: #fff0f0"
+                        bg = "background-color: rgba(255,59,92,0.1); color: #e8edf4"
                     elif "Moderate" in risk_val:
-                        bg = "background-color: #fffbf0"
+                        bg = "background-color: rgba(255,176,32,0.1); color: #e8edf4"
                     else:
-                        bg = "background-color: #f0fff4"
+                        bg = "background-color: rgba(45,230,163,0.1); color: #e8edf4"
                     return [bg] * len(row)
 
                 _styled = _ph_display.style.apply(_color_risk_row, axis=1)
@@ -1310,10 +1336,10 @@ with tab2:
         # Section 1: SHAP Impact Bars
         # ─────────────────────────────────────────────────────────────
         st.markdown("""
-        <div style="font-size:18px;font-weight:800;color:#1a1a2e;margin-bottom:6px;">
+        <div style="font-size:18px;font-weight:800;color:#e8edf4;margin-bottom:6px;">
             🔬 SHAP Feature Impact Analysis
         </div>
-        <div style="font-size:12px;color:#666;margin-bottom:14px;">
+        <div style="font-size:12px;color:#8b94a3;margin-bottom:14px;">
             How much each feature <em>shifted</em> this patient's predicted SOFA away from baseline.
             Wider bar = stronger influence. Colour = direction.
         </div>
@@ -1338,23 +1364,22 @@ with tab2:
                 _ico = "🔬"
 
             _inc   = _imp > 0
-            _bcol  = "#dc3545" if _inc else "#28a745"
-            _dcol  = "#c62828" if _inc else "#2e7d32"
-            _rbg   = "linear-gradient(90deg,#fff5f5,#fff9f9)" if _inc else "linear-gradient(90deg,#f5fff8,#f8fff9)"
+            _bcol  = "#ff3b5c" if _inc else "#2de6a3"
+            _dcol  = _bcol
+            _rbg   = "rgba(255,59,92,0.06)" if _inc else "rgba(45,230,163,0.06)"
             _dico  = "↑" if _inc else "↓"
             _dtxt  = "Increases Risk" if _inc else "Reduces Risk"
             _bw    = int(_abimp / _max_imp * 100)
 
             st.markdown(f"""
             <div style="background:{_rbg};border-left:5px solid {_bcol};border-radius:0 10px 10px 0;
-                        padding:12px 16px;margin:5px 0;display:flex;align-items:center;gap:14px;
-                        box-shadow:0 1px 4px rgba(0,0,0,0.06);">
+                        padding:12px 16px;margin:5px 0;display:flex;align-items:center;gap:14px;">
                 <div style="font-size:22px;line-height:1;">{_ico}</div>
                 <div style="min-width:150px;flex-shrink:0;">
-                    <div style="font-size:13px;font-weight:700;color:#1a1a2e;">{_lbl}</div>
-                    <div style="font-size:11px;color:#777;margin-top:2px;">{_val}</div>
+                    <div style="font-size:13px;font-weight:700;color:#e8edf4;">{_lbl}</div>
+                    <div style="font-size:11px;color:#8b94a3;margin-top:2px;">{_val}</div>
                 </div>
-                <div style="flex:1;background:#e8e8e8;border-radius:6px;height:14px;overflow:hidden;min-width:80px;">
+                <div style="flex:1;background:rgba(255,255,255,0.08);border-radius:6px;height:14px;overflow:hidden;min-width:80px;">
                     <div style="width:{_bw}%;background:{_bcol};height:100%;border-radius:6px;"></div>
                 </div>
                 <div style="min-width:110px;text-align:right;flex-shrink:0;">
@@ -1370,7 +1395,7 @@ with tab2:
         # Section 2: Clinical Interpretations (two-column cards)
         # ─────────────────────────────────────────────────────────────
         st.markdown("""
-        <div style="font-size:18px;font-weight:800;color:#1a1a2e;margin-bottom:10px;">
+        <div style="font-size:18px;font-weight:800;color:#e8edf4;margin-bottom:10px;">
             💡 Clinical Interpretations
         </div>
         """, unsafe_allow_html=True)
@@ -1378,17 +1403,17 @@ with tab2:
         _ci_left, _ci_right = st.columns(2)
         for _i, _exp in enumerate(clinical_explanations):
             _is_inc = "increasing risk" in _exp
-            _ci_bg  = "linear-gradient(135deg,#fff5f5,#fff9f9)" if _is_inc else "linear-gradient(135deg,#f5fff8,#f8fff9)"
-            _ci_brd = "#dc3545" if _is_inc else "#28a745"
+            _ci_bg  = "rgba(255,59,92,0.06)" if _is_inc else "rgba(45,230,163,0.06)"
+            _ci_brd = "#ff3b5c" if _is_inc else "#2de6a3"
             _ci_ico = "↑" if _is_inc else "↓"
-            _ci_col = "#c62828" if _is_inc else "#2e7d32"
+            _ci_col = _ci_brd
             _html = (
                 f"<div style='background:{_ci_bg};border:1.5px solid {_ci_brd};"
                 f"border-radius:8px;padding:10px 14px;margin:5px 0;"
                 f"display:flex;align-items:flex-start;gap:10px;'>"
                 f"<span style='font-size:18px;font-weight:900;color:{_ci_col};"
                 f"line-height:1.2;flex-shrink:0;'>{_ci_ico}</span>"
-                f"<span style='font-size:12px;color:#1a1a2e;line-height:1.5;'>{_exp}</span>"
+                f"<span style='font-size:12px;color:#e8edf4;line-height:1.5;'>{_exp}</span>"
                 f"</div>"
             )
             (_ci_left if _i % 2 == 0 else _ci_right).markdown(_html, unsafe_allow_html=True)
@@ -1399,48 +1424,47 @@ with tab2:
         # Section 3: Key Risk Factors (icon chips)
         # ─────────────────────────────────────────────────────────────
         st.markdown("""
-        <div style="font-size:18px;font-weight:800;color:#1a1a2e;margin-bottom:10px;">
+        <div style="font-size:18px;font-weight:800;color:#e8edf4;margin-bottom:10px;">
             ⚠️ Key Risk Factors
         </div>
         """, unsafe_allow_html=True)
 
         if key_risks:
             _RISK_ICONS = {
-                "Low oxygen levels":              ("💧", "#1565c0", "#e3f2fd", "#90caf9"),
-                "Respiratory distress":           ("🫁", "#7b1fa2", "#f3e5f5", "#ce93d8"),
-                "Organ failure":                  ("🚨", "#b71c1c", "#ffebee", "#ef9a9a"),
-                "Sepsis / Infection":             ("🦠", "#e65100", "#fff3e0", "#ffcc80"),
-                "Respiratory failure (intubated)":("😮‍💨", "#880e4f", "#fce4ec", "#f48fb1"),
-                "Haemodynamic instability":       ("💔", "#b71c1c", "#ffebee", "#ef9a9a"),
-                "Hypotension":                    ("📉", "#4a148c", "#ede7f6", "#b39ddb"),
-                "Abnormal heart rate":            ("❤️", "#c62828", "#ffebee", "#ef9a9a"),
-                "Altered mental status":          ("🧠", "#1a237e", "#e8eaf6", "#9fa8da"),
-                "Neurological deterioration":     ("🧠", "#1a237e", "#e8eaf6", "#9fa8da"),
-                "High physiological stress":      ("😰", "#e65100", "#fff3e0", "#ffcc80"),
+                "Low oxygen levels":              ("💧", "#60a5fa", "rgba(96,165,250,0.1)", "rgba(96,165,250,0.4)"),
+                "Respiratory distress":           ("🫁", "#c084fc", "rgba(192,132,252,0.1)", "rgba(192,132,252,0.4)"),
+                "Organ failure":                  ("🚨", "#ff3b5c", "rgba(255,59,92,0.1)", "rgba(255,59,92,0.4)"),
+                "Sepsis / Infection":              ("🦠", "#ffb020", "rgba(255,176,32,0.1)", "rgba(255,176,32,0.4)"),
+                "Respiratory failure (intubated)":("😮‍💨", "#f472b6", "rgba(244,114,182,0.1)", "rgba(244,114,182,0.4)"),
+                "Haemodynamic instability":       ("💔", "#ff3b5c", "rgba(255,59,92,0.1)", "rgba(255,59,92,0.4)"),
+                "Hypotension":                    ("📉", "#a78bfa", "rgba(167,139,250,0.1)", "rgba(167,139,250,0.4)"),
+                "Abnormal heart rate":            ("❤️", "#ff6b85", "rgba(255,107,133,0.1)", "rgba(255,107,133,0.4)"),
+                "Altered mental status":          ("🧠", "#818cf8", "rgba(129,140,248,0.1)", "rgba(129,140,248,0.4)"),
+                "Neurological deterioration":     ("🧠", "#818cf8", "rgba(129,140,248,0.1)", "rgba(129,140,248,0.4)"),
+                "High physiological stress":      ("😰", "#ffb020", "rgba(255,176,32,0.1)", "rgba(255,176,32,0.4)"),
             }
 
             _chips_html = '<div style="display:flex;flex-wrap:wrap;gap:10px;margin:4px 0;">'
             for _risk in key_risks:
                 _rico, _tcol, _rbg2, _rbrd = _RISK_ICONS.get(
-                    _risk, ("⚠️", "#b71c1c", "#ffebee", "#ef9a9a")
+                    _risk, ("⚠️", "#ff3b5c", "rgba(255,59,92,0.1)", "rgba(255,59,92,0.4)")
                 )
                 _chips_html += (
                     f"<div style='background:{_rbg2};border:2px solid {_rbrd};"
                     f"border-radius:10px;padding:10px 18px;"
-                    f"display:inline-flex;align-items:center;gap:10px;"
-                    f"box-shadow:0 2px 8px rgba(0,0,0,0.08);'>"
+                    f"display:inline-flex;align-items:center;gap:10px;'>"
                     f"<span style='font-size:20px;'>{_rico}</span>"
                     f"<div>"
                     f"<div style='font-size:13px;font-weight:800;color:{_tcol};'>{_risk}</div>"
-                    f"<div style='font-size:10px;color:#888;'>SHAP-identified risk factor</div>"
+                    f"<div style='font-size:10px;color:#8b94a3;'>SHAP-identified risk factor</div>"
                     f"</div></div>"
                 )
             _chips_html += "</div>"
             st.markdown(_chips_html, unsafe_allow_html=True)
         else:
             st.markdown(
-                "<div style='padding:12px;background:#f0fff4;border-radius:8px;"
-                "border:1px solid #9ae6b4;color:#276749;font-size:13px;'>"
+                "<div style='padding:12px;background:rgba(45,230,163,0.08);border-radius:8px;"
+                "border:1px solid rgba(45,230,163,0.4);color:#2de6a3;font-size:13px;'>"
                 "✅ No specific clinical risk factors flagged by the model for this reading.</div>",
                 unsafe_allow_html=True
             )
@@ -1485,20 +1509,20 @@ with tab3:
 
     # ── Section colours for parsed LLM output ──
     _SEC_CFG = {
-        "CURRENT CONDITION":  ("📋", "#1565c0", "#e8f4fd", "#90caf9",
+        "CURRENT CONDITION":  ("📋", "#22d3ee", "rgba(34,211,238,0.06)", "rgba(34,211,238,0.4)",
                                "Patient status right now"),
-        "PROBABLE CAUSE":     ("🔍", "#bf360c", "#fff8f5", "#ffab91",
+        "PROBABLE CAUSE":     ("🔍", "#ffb020", "rgba(255,176,32,0.06)", "rgba(255,176,32,0.4)",
                                "Why this is happening"),
-        "RISK FORECAST":      ("🔮", "#6a1b9a", "#f5f0ff", "#ce93d8",
+        "RISK FORECAST":      ("🔮", "#a78bfa", "rgba(167,139,250,0.06)", "rgba(167,139,250,0.4)",
                                "Predicted trajectory if untreated"),
-        "IMMEDIATE ACTIONS":  ("🚨", "#b71c1c", "#fff5f5", "#ef9a9a",
+        "IMMEDIATE ACTIONS":  ("🚨", "#ff3b5c", "rgba(255,59,92,0.06)", "rgba(255,59,92,0.4)",
                                "Critical interventions — next 30 minutes"),
     }
 
     # ── Reliability palette ──
-    _rel_col = "#28a745" if consistency >= 0.80 else "#f0a500" if consistency >= 0.60 else "#dc3545"
-    _rel_bg  = "#e8fce8" if consistency >= 0.80 else "#fffbf0" if consistency >= 0.60 else "#fff0f0"
-    _rel_brd = "#9ae6b4" if consistency >= 0.80 else "#fbd38d" if consistency >= 0.60 else "#feb2b2"
+    _rel_col = "#2de6a3" if consistency >= 0.80 else "#ffb020" if consistency >= 0.60 else "#ff3b5c"
+    _rel_bg  = "rgba(45,230,163,0.06)" if consistency >= 0.80 else "rgba(255,176,32,0.06)" if consistency >= 0.60 else "rgba(255,59,92,0.06)"
+    _rel_brd = "rgba(45,230,163,0.4)" if consistency >= 0.80 else "rgba(255,176,32,0.4)" if consistency >= 0.60 else "rgba(255,59,92,0.4)"
     _rel_ico = "✅" if consistency >= 0.80 else "⚠️" if consistency >= 0.60 else "❌"
     _rel_lbl = "High Reliability" if consistency >= 0.80 else \
                "Moderate Reliability" if consistency >= 0.60 else "Low Reliability"
@@ -1519,21 +1543,20 @@ with tab3:
         _rvalid.append(False)
 
     _r_icons_html = "".join(
-        f"<div style='text-align:center;background:white;border-radius:8px;padding:6px 10px;"
-        f"border:2px solid {'#28a745' if v else '#dc3545'};min-width:52px;'>"
-        f"<div style='font-size:16px;font-weight:900;color:{'#28a745' if v else '#dc3545'};'>"
+        f"<div style='text-align:center;background:#0a0d13;border-radius:8px;padding:6px 10px;"
+        f"border:2px solid {'#2de6a3' if v else '#ff3b5c'};min-width:52px;'>"
+        f"<div style='font-size:16px;font-weight:900;color:{'#2de6a3' if v else '#ff3b5c'};'>"
         f"{'✓' if v else '✗'}</div>"
-        f"<div style='font-size:9px;color:#888;margin-top:2px;'>R{n+1}</div>"
+        f"<div style='font-size:9px;color:#8b94a3;margin-top:2px;'>R{n+1}</div>"
         f"</div>"
         for n, v in enumerate(_rvalid)
     )
 
     # ── Reliability banner ──
     st.markdown(f"""
-    <div style="background:linear-gradient(135deg,{_rel_bg},white);
+    <div style="background:{_rel_bg};
                 border:2px solid {_rel_brd};border-radius:14px;
-                padding:18px 22px;margin-bottom:14px;
-                box-shadow:0 3px 12px rgba(0,0,0,0.07);">
+                padding:18px 22px;margin-bottom:14px;">
         <div style="display:flex;justify-content:space-between;align-items:center;
                     flex-wrap:wrap;gap:16px;">
             <div>
@@ -1544,17 +1567,17 @@ with tab3:
                 <div style="font-size:22px;font-weight:900;color:{_rel_col};margin-bottom:6px;">
                     {_rel_ico} {_rel_lbl}
                 </div>
-                <div style="font-size:12px;color:#444;max-width:440px;line-height:1.5;">
+                <div style="font-size:12px;color:#8b94a3;max-width:440px;line-height:1.5;">
                     {_rel_msg}
                 </div>
             </div>
             <div style="display:flex;flex-direction:column;align-items:flex-end;gap:10px;">
                 <div style="text-align:center;">
-                    <div style="font-size:10px;color:#888;text-transform:uppercase;
+                    <div style="font-size:10px;color:#8b94a3;text-transform:uppercase;
                                 letter-spacing:0.6px;">Consistency Score</div>
                     <div style="font-size:52px;font-weight:900;color:{_rel_col};
                                 line-height:1;">{consistency:.2f}</div>
-                    <div style="font-size:10px;color:#888;">across 3 independent responses</div>
+                    <div style="font-size:10px;color:#8b94a3;">across 3 independent responses</div>
                 </div>
                 <div style="display:flex;gap:6px;">{_r_icons_html}</div>
             </div>
@@ -1589,13 +1612,12 @@ with tab3:
     if _sections:
         for _sname, _scontent in _sections.items():
             _sico, _stcol, _ssbg, _ssbrd, _ssub = _SEC_CFG.get(
-                _sname, ("📄", "#555", "#f8f8f8", "#ccc", "")
+                _sname, ("📄", "#8b94a3", "rgba(255,255,255,0.03)", "rgba(255,255,255,0.15)", "")
             )
             # Section header as styled div
             st.markdown(f"""
             <div style="background:{_ssbg};border-left:6px solid {_stcol};
-                        border-radius:0 10px 10px 0;padding:12px 16px 6px;margin-top:14px;
-                        box-shadow:0 2px 6px rgba(0,0,0,0.05);">
+                        border-radius:0 10px 10px 0;padding:12px 16px 6px;margin-top:14px;">
                 <div style="display:flex;align-items:center;gap:10px;">
                     <span style="font-size:20px;">{_sico}</span>
                     <div>
@@ -1628,10 +1650,10 @@ with tab3:
         ):
             for _i, _resp in enumerate(responses):
                 _is_valid = _resp_valid(_resp)
-                _card_bg  = "#f8fafc" if _is_valid else "#fff8f0"
-                _card_brd = "#e2e8f0" if _is_valid else "#f6ad55"
+                _card_bg  = "#0a0d13" if _is_valid else "rgba(255,176,32,0.06)"
+                _card_brd = "rgba(255,255,255,0.12)" if _is_valid else "rgba(255,176,32,0.4)"
                 _hdr_ico  = f"✓ Response {_i+1}" if _is_valid else f"⚠ Response {_i+1} — incomplete"
-                _hdr_col  = "#1a1a2e" if _is_valid else "#c05621"
+                _hdr_col  = "#e8edf4" if _is_valid else "#ffb020"
 
                 st.markdown(f"""
                 <div style="background:{_card_bg};border:1.5px solid {_card_brd};
@@ -1649,13 +1671,13 @@ with tab3:
     # ── Clinical Disclaimer ──
     st.divider()
     st.markdown("""
-    <div style="background:#e8f4fd;border:1.5px solid #90caf9;border-left:5px solid #1565c0;
+    <div style="background:rgba(34,211,238,0.06);border:1.5px solid rgba(34,211,238,0.4);border-left:5px solid #22d3ee;
                 border-radius:0 10px 10px 0;padding:14px 18px;">
-        <div style="font-size:13px;font-weight:700;color:#1565c0;margin-bottom:4px;">
+        <div style="font-size:13px;font-weight:700;color:#22d3ee;margin-bottom:4px;">
             ⚕️ Clinical Disclaimer
         </div>
-        <div style="font-size:12px;color:#1a1a2e;line-height:1.6;">
-            This system is a <strong>decision support tool only</strong>. It does not diagnose
+        <div style="font-size:12px;color:#c5cbd4;line-height:1.6;">
+            This system is a <strong style="color:#e8edf4;">decision support tool only</strong>. It does not diagnose
             disease or replace the clinical judgment of qualified healthcare professionals.
             All AI-generated outputs must be reviewed by a licensed clinician before any
             clinical action is taken.
@@ -1669,14 +1691,15 @@ with tab4:
 
     # ── Tab header banner ──
     st.markdown("""
-    <div style="background:linear-gradient(135deg,#0f2027,#203a43,#2c5364);
+    <div style="background:linear-gradient(135deg,#0a0d13,#10141c,#171d29);
+                border:1px solid rgba(255,255,255,0.08);
                 border-radius:14px;padding:20px 24px;margin-bottom:20px;">
         <div style="font-size:22px;font-weight:900;color:white;margin-bottom:4px;">
             🔒 Federated Learning — How This Model Was Trained
         </div>
-        <div style="font-size:13px;color:#7fb3c8;line-height:1.5;">
+        <div style="font-size:13px;color:#8b94a3;line-height:1.5;">
             Privacy-preserving collaborative AI across 3 hospital ICUs.
-            Patient data <strong style="color:#00d2ff;">never leaves</strong> each hospital —
+            Patient data <strong style="color:#22d3ee;">never leaves</strong> each hospital —
             only model weights are shared.
         </div>
     </div>
@@ -1684,19 +1707,19 @@ with tab4:
 
     # ── FL Protocol Diagram (HTML, replacing ASCII art) ──
     st.markdown(
-        '<div style="background:linear-gradient(135deg,#0f2027,#1a2f3a,#1e3a4a);'
-        'border-radius:16px;padding:28px 24px;color:white;border:1.5px solid #2a4a5a;">'
+        '<div style="background:linear-gradient(135deg,#0a0d13,#10141c,#171d29);'
+        'border-radius:16px;padding:28px 24px;color:white;border:1.5px solid rgba(255,255,255,0.1);">'
 
         '<div style="display:flex;justify-content:center;margin-bottom:12px;">'
-        '<div style="background:rgba(0,210,255,0.12);border:2px solid #00d2ff;'
+        '<div style="background:rgba(0,210,255,0.12);border:2px solid #22d3ee;'
         'border-radius:12px;padding:14px 32px;text-align:center;'
         'box-shadow:0 0 20px rgba(0,210,255,0.15);">'
         '<div style="font-size:20px;margin-bottom:4px;">🖥</div>'
-        '<div style="font-size:13px;font-weight:800;color:#00d2ff;letter-spacing:0.5px;">Global FL Server</div>'
+        '<div style="font-size:13px;font-weight:800;color:#22d3ee;letter-spacing:0.5px;">Global FL Server</div>'
         '<div style="font-size:11px;color:#7fb3c8;margin-top:2px;">Flower Framework · FedAvg Aggregation</div>'
         '</div></div>'
 
-        '<div style="text-align:center;color:#00d2ff;font-size:12px;margin:8px 0;font-weight:600;">'
+        '<div style="text-align:center;color:#22d3ee;font-size:12px;margin:8px 0;font-weight:600;">'
         '① Share global weights ↓↓↓</div>'
 
         '<div style="display:flex;justify-content:center;gap:14px;margin:8px 0;">'
@@ -1707,7 +1730,7 @@ with tab4:
         '<div style="font-size:12px;font-weight:700;color:#81c784;">Hospital 0</div>'
         '<div style="font-size:10px;color:#aaa;">General ICU</div>'
         '<div style="font-size:11px;color:#4caf50;font-weight:600;margin-top:4px;">~15,889 patients</div>'
-        '<div style="font-size:10px;color:#666;margin-top:6px;background:rgba(0,0,0,0.3);'
+        '<div style="font-size:10px;color:#8b94a3;margin-top:6px;background:rgba(0,0,0,0.3);'
         'border-radius:4px;padding:4px;">🔒 PRIVATE data</div></div>'
 
         '<div style="background:rgba(240,165,0,0.12);border:1.5px solid #f0a500;'
@@ -1716,7 +1739,7 @@ with tab4:
         '<div style="font-size:12px;font-weight:700;color:#ffd54f;">Hospital 1</div>'
         '<div style="font-size:10px;color:#aaa;">Mixed ICU</div>'
         '<div style="font-size:11px;color:#f0a500;font-weight:600;margin-top:4px;">~15,890 patients</div>'
-        '<div style="font-size:10px;color:#666;margin-top:6px;background:rgba(0,0,0,0.3);'
+        '<div style="font-size:10px;color:#8b94a3;margin-top:6px;background:rgba(0,0,0,0.3);'
         'border-radius:4px;padding:4px;">🔒 PRIVATE data</div></div>'
 
         '<div style="background:rgba(220,53,69,0.12);border:1.5px solid #dc3545;'
@@ -1725,14 +1748,14 @@ with tab4:
         '<div style="font-size:12px;font-weight:700;color:#ef9a9a;">Hospital 2</div>'
         '<div style="font-size:10px;color:#aaa;">Cardiac/Trauma ICU</div>'
         '<div style="font-size:11px;color:#dc3545;font-weight:600;margin-top:4px;">~16,372 patients</div>'
-        '<div style="font-size:10px;color:#666;margin-top:6px;background:rgba(0,0,0,0.3);'
+        '<div style="font-size:10px;color:#8b94a3;margin-top:6px;background:rgba(0,0,0,0.3);'
         'border-radius:4px;padding:4px;">🔒 PRIVATE data</div></div>'
 
         '</div>'
 
         '<div style="text-align:center;color:#7fb3c8;font-size:11px;margin:10px 0;line-height:1.7;">'
         '② Train locally on private data (no external access)<br>'
-        '<span style="color:#00d2ff;font-weight:600;">'
+        '<span style="color:#22d3ee;font-weight:600;">'
         '③ Send ONLY model weights — zero patient records shared ↑↑↑</span></div>'
 
         '<div style="display:flex;justify-content:center;margin:8px 0;">'
@@ -1749,18 +1772,18 @@ with tab4:
     st.divider()
 
     # ── Training Configuration (coloured stat tiles) ──
-    st.markdown("<div style='font-size:18px;font-weight:800;color:#1a1a2e;margin-bottom:12px;'>⚙️ Training Configuration</div>",
+    st.markdown("<div style='font-size:18px;font-weight:800;color:#e8edf4;margin-bottom:12px;'>⚙️ Training Configuration</div>",
                 unsafe_allow_html=True)
 
     _cfg_tiles = [
-        ("FL Rounds",         str(m["num_rounds"]),         "#1565c0","#e3f2fd","#90caf9", "rounds of federation"),
-        ("Hospitals",          str(m["hospitals"]),           "#6a1b9a","#f3e5f5","#ce93d8", "ICU sites"),
-        ("Epochs / Round",     str(m["epochs_per_round"]),   "#2e7d32","#e8f5e9","#a5d6a7", "local training epochs"),
-        ("Aggregation",        m["aggregation"],              "#e65100","#fff3e0","#ffcc80", "weight averaging method"),
-        ("Training Samples",   f"{m['train_samples']:,}",    "#00695c","#e0f2f1","#80cbc4", "real ICU patients"),
-        ("Test Samples",       f"{m['test_samples']:,}",      "#558b2f","#f1f8e9","#c5e1a5", "held-out patients"),
-        ("Best Round",         str(m["best_round"]),          "#f57f17","#fffde7","#fff176", "lowest eval loss"),
-        ("Split Type",         m["split_type"],               "#4527a0","#ede7f6","#b39ddb", "data distribution"),
+        ("FL Rounds",         str(m["num_rounds"]),         "#22d3ee","#0a0d13","rgba(255,255,255,0.1)", "rounds of federation"),
+        ("Hospitals",          str(m["hospitals"]),           "#a78bfa","#0a0d13","rgba(255,255,255,0.1)", "ICU sites"),
+        ("Epochs / Round",     str(m["epochs_per_round"]),   "#2de6a3","#0a0d13","rgba(255,255,255,0.1)", "local training epochs"),
+        ("Aggregation",        m["aggregation"],              "#ffb020","#0a0d13","rgba(255,255,255,0.1)", "weight averaging method"),
+        ("Training Samples",   f"{m['train_samples']:,}",    "#2dd4bf","#0a0d13","rgba(255,255,255,0.1)", "real ICU patients"),
+        ("Test Samples",       f"{m['test_samples']:,}",      "#84cc16","#0a0d13","rgba(255,255,255,0.1)", "held-out patients"),
+        ("Best Round",         str(m["best_round"]),          "#fbbf24","#0a0d13","rgba(255,255,255,0.1)", "lowest eval loss"),
+        ("Split Type",         m["split_type"],               "#818cf8","#0a0d13","rgba(255,255,255,0.1)", "data distribution"),
     ]
 
     _t1, _t2, _t3, _t4 = st.columns(4)
@@ -1770,31 +1793,31 @@ with tab4:
         for _col, (_lbl, _val, _tc, _bg, _brd, _sub) in zip(_cols, _tiles):
             with _col:
                 st.markdown(f"""
-                <div style="background:linear-gradient(135deg,{_bg},white);border:1.5px solid {_brd};
+                <div style="background:{_bg};border:1px solid {_brd};
                             border-radius:10px;padding:14px 12px;text-align:center;
-                            box-shadow:0 2px 8px rgba(0,0,0,0.06);margin-bottom:8px;">
-                    <div style="font-size:9px;font-weight:700;color:{_tc};text-transform:uppercase;
+                            box-shadow:inset 0 2px 0 0 {_tc};margin-bottom:8px;">
+                    <div style="font-size:9px;font-weight:700;color:#8b94a3;text-transform:uppercase;
                                 letter-spacing:0.6px;">{_lbl}</div>
                     <div style="font-size:26px;font-weight:900;color:{_tc};line-height:1.1;
                                 margin:4px 0;">{_val}</div>
-                    <div style="font-size:9px;color:#888;">{_sub}</div>
+                    <div style="font-size:9px;color:#8b94a3;">{_sub}</div>
                 </div>
                 """, unsafe_allow_html=True)
 
     st.divider()
 
     # ── Global Model Performance ──
-    st.markdown("<div style='font-size:18px;font-weight:800;color:#1a1a2e;margin-bottom:12px;'>📊 Global Model Performance</div>",
+    st.markdown("<div style='font-size:18px;font-weight:800;color:#e8edf4;margin-bottom:12px;'>📊 Global Model Performance</div>",
                 unsafe_allow_html=True)
 
     _perf_tiles = [
-        ("Mean Abs. Error",     f"{m['final_mae']:.3f}", "SOFA points", "#1565c0","#e3f2fd","#90caf9",
+        ("Mean Abs. Error",     f"{m['final_mae']:.3f}", "SOFA points", "#22d3ee","#0a0d13","rgba(255,255,255,0.1)",
          "Average prediction error on 9,631 held-out ICU patients"),
-        ("R² Score",            f"{m['final_r2']:.3f}",  "variance",   "#2e7d32","#e8f5e9","#a5d6a7",
+        ("R² Score",            f"{m['final_r2']:.3f}",  "variance",   "#2de6a3","#0a0d13","rgba(255,255,255,0.1)",
          "Proportion of variance explained by the model"),
-        ("Pred Range Min",      f"{m['pred_range_min']:.1f}", "SOFA", "#00695c","#e0f2f1","#80cbc4",
+        ("Pred Range Min",      f"{m['pred_range_min']:.1f}", "SOFA", "#2dd4bf","#0a0d13","rgba(255,255,255,0.1)",
          "Lowest predicted SOFA across test set"),
-        ("Pred Range Max",      f"{m['pred_range_max']:.1f}", "SOFA", "#e65100","#fff3e0","#ffcc80",
+        ("Pred Range Max",      f"{m['pred_range_max']:.1f}", "SOFA", "#ffb020","#0a0d13","rgba(255,255,255,0.1)",
          "Highest predicted SOFA across test set"),
     ]
 
@@ -1802,43 +1825,43 @@ with tab4:
     for _col, (_lbl, _val, _unit, _tc, _bg, _brd, _desc) in zip([_p1,_p2,_p3,_p4], _perf_tiles):
         with _col:
             st.markdown(f"""
-            <div style="background:linear-gradient(135deg,{_bg},white);border:2px solid {_brd};
+            <div style="background:{_bg};border:1px solid {_brd};
                         border-radius:12px;padding:18px 12px;text-align:center;
-                        box-shadow:0 3px 10px rgba(0,0,0,0.07);">
-                <div style="font-size:9px;font-weight:700;color:{_tc};text-transform:uppercase;
+                        box-shadow:inset 0 2px 0 0 {_tc};">
+                <div style="font-size:9px;font-weight:700;color:#8b94a3;text-transform:uppercase;
                             letter-spacing:0.7px;margin-bottom:4px;">{_lbl}</div>
                 <div style="font-size:34px;font-weight:900;color:{_tc};line-height:1;">{_val}</div>
-                <div style="font-size:10px;color:#888;">{_unit}</div>
-                <div style="font-size:9px;color:#aaa;margin-top:6px;line-height:1.4;">{_desc}</div>
+                <div style="font-size:10px;color:#8b94a3;">{_unit}</div>
+                <div style="font-size:9px;color:#8b94a3;margin-top:6px;line-height:1.4;">{_desc}</div>
             </div>
             """, unsafe_allow_html=True)
 
     st.divider()
 
     # ── Model Architecture ──
-    st.markdown("<div style='font-size:18px;font-weight:800;color:#1a1a2e;margin-bottom:12px;'>🧠 Model Architecture (PyTorch DNN)</div>",
+    st.markdown("<div style='font-size:18px;font-weight:800;color:#e8edf4;margin-bottom:12px;'>🧠 Model Architecture (PyTorch DNN)</div>",
                 unsafe_allow_html=True)
 
     _layers = [
-        ("INPUT",  "108 features",  "18 vitals (trends + latest + GCS) + 90 SOFA-vocab TF-IDF", "#1565c0","#e3f2fd"),
-        ("Linear", "108 → 128",    "Fully connected · ReLU activation",                         "#2e7d32","#e8f5e9"),
-        ("Linear", "128 →  64",    "Fully connected · ReLU activation",                         "#2e7d32","#e8f5e9"),
-        ("Linear", " 64 →  32",    "Fully connected · ReLU activation",                         "#2e7d32","#e8f5e9"),
-        ("Linear", " 32 →   1",    "Output layer · No activation (regression)",                 "#6a1b9a","#f3e5f5"),
-        ("OUTPUT", "SOFA (0–24)",  "Predicted SOFA score · clip(0, 24)",                        "#e65100","#fff3e0"),
+        ("INPUT",  "108 features",  "18 vitals (trends + latest + GCS) + 90 SOFA-vocab TF-IDF", "#22d3ee","rgba(34,211,238,0.06)"),
+        ("Linear", "108 → 128",    "Fully connected · ReLU activation",                         "#2de6a3","rgba(45,230,163,0.06)"),
+        ("Linear", "128 →  64",    "Fully connected · ReLU activation",                         "#2de6a3","rgba(45,230,163,0.06)"),
+        ("Linear", " 64 →  32",    "Fully connected · ReLU activation",                         "#2de6a3","rgba(45,230,163,0.06)"),
+        ("Linear", " 32 →   1",    "Output layer · No activation (regression)",                 "#a78bfa","rgba(167,139,250,0.06)"),
+        ("OUTPUT", "SOFA (0–24)",  "Predicted SOFA score · clip(0, 24)",                        "#ffb020","rgba(255,176,32,0.06)"),
     ]
 
     _arch_html = ""
     for _i, (_ltype, _ldim, _ldesc, _tc, _bg) in enumerate(_layers):
-        _arrow = "<div style='text-align:center;font-size:18px;color:#888;margin:2px 0;'>↓</div>" if _i < len(_layers)-1 else ""
+        _arrow = "<div style='text-align:center;font-size:18px;color:#545d6c;margin:2px 0;'>↓</div>" if _i < len(_layers)-1 else ""
         _arch_html += f"""
         <div style="background:{_bg};border:1.5px solid {_tc};border-radius:8px;
                     padding:10px 16px;display:flex;align-items:center;gap:12px;">
-            <div style="background:{_tc};color:white;border-radius:5px;padding:3px 8px;
+            <div style="background:{_tc};color:#06080c;border-radius:5px;padding:3px 8px;
                         font-size:10px;font-weight:800;letter-spacing:0.5px;
                         white-space:nowrap;">{_ltype}</div>
             <div style="font-size:14px;font-weight:700;color:{_tc};min-width:80px;">{_ldim}</div>
-            <div style="font-size:11px;color:#555;">{_ldesc}</div>
+            <div style="font-size:11px;color:#8b94a3;">{_ldesc}</div>
         </div>{_arrow}"""
 
     _la, _lb = st.columns([3, 2])
@@ -1846,56 +1869,56 @@ with tab4:
         st.markdown(_arch_html, unsafe_allow_html=True)
     with _lb:
         st.markdown(f"""
-        <div style="background:#f8fafc;border:1.5px solid #e2e8f0;border-radius:12px;
-                    padding:16px;font-size:12px;color:#444;line-height:1.8;height:100%;">
-            <div style="font-size:13px;font-weight:700;color:#1a1a2e;margin-bottom:8px;">
+        <div style="background:#0a0d13;border:1px solid rgba(255,255,255,0.1);border-radius:12px;
+                    padding:16px;font-size:12px;color:#c5cbd4;line-height:1.8;height:100%;">
+            <div style="font-size:13px;font-weight:700;color:#e8edf4;margin-bottom:8px;">
                 🔧 Training Details
             </div>
-            <b>Optimizer:</b> AdamW (weight_decay=1e-4)<br>
-            <b>Loss:</b> Weighted MSE — high-SOFA patients get up to 4.7× gradient weight<br>
-            <b>No Dropout</b> — causes FL divergence; regularised by AdamW instead<br>
-            <b>Parameters:</b> 199,681 total trainable weights<br>
-            <b>FL Framework:</b> Flower (flwr) with FedAvg aggregation<br>
-            <b>Best round:</b> {m['best_round']} of {m['num_rounds']}
+            <b style="color:#e8edf4;">Optimizer:</b> AdamW (weight_decay=1e-4)<br>
+            <b style="color:#e8edf4;">Loss:</b> Weighted MSE — high-SOFA patients get up to 4.7× gradient weight<br>
+            <b style="color:#e8edf4;">No Dropout</b> — causes FL divergence; regularised by AdamW instead<br>
+            <b style="color:#e8edf4;">Parameters:</b> 199,681 total trainable weights<br>
+            <b style="color:#e8edf4;">FL Framework:</b> Flower (flwr) with FedAvg aggregation<br>
+            <b style="color:#e8edf4;">Best round:</b> {m['best_round']} of {m['num_rounds']}
         </div>
         """, unsafe_allow_html=True)
 
     st.divider()
 
     # ── Differential Privacy ──
-    st.markdown("<div style='font-size:18px;font-weight:800;color:#1a1a2e;margin-bottom:12px;'>🔐 Differential Privacy</div>",
+    st.markdown("<div style='font-size:18px;font-weight:800;color:#e8edf4;margin-bottom:12px;'>🔐 Differential Privacy</div>",
                 unsafe_allow_html=True)
 
     if m.get("differential_privacy"):
         st.markdown(f"""
-        <div style="background:linear-gradient(135deg,#e8f5e9,white);border:2px solid #4caf50;
-                    border-left:6px solid #2e7d32;border-radius:0 12px 12px 0;padding:16px 20px;">
-            <div style="font-size:14px;font-weight:800;color:#2e7d32;margin-bottom:8px;">
+        <div style="background:rgba(45,230,163,0.06);border:2px solid rgba(45,230,163,0.4);
+                    border-left:6px solid #2de6a3;border-radius:0 12px 12px 0;padding:16px 20px;">
+            <div style="font-size:14px;font-weight:800;color:#2de6a3;margin-bottom:8px;">
                 ✅ Differential Privacy ENABLED
             </div>
-            <div style="display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:#444;">
-                <span><b>σ (noise multiplier):</b> {m['dp_sigma']}</span>
-                <span><b>S (sensitivity):</b> {m['dp_sensitivity']}</span>
-                <span><b>ε (privacy budget):</b> ≈{m['dp_epsilon']}</span>
-                <span><b>δ:</b> {m['dp_delta']}</span>
+            <div style="display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:#c5cbd4;">
+                <span><b style="color:#e8edf4;">σ (noise multiplier):</b> {m['dp_sigma']}</span>
+                <span><b style="color:#e8edf4;">S (sensitivity):</b> {m['dp_sensitivity']}</span>
+                <span><b style="color:#e8edf4;">ε (privacy budget):</b> ≈{m['dp_epsilon']}</span>
+                <span><b style="color:#e8edf4;">δ:</b> {m['dp_delta']}</span>
             </div>
         </div>
         """, unsafe_allow_html=True)
     else:
         _dp_steps = [
-            ("①", "Compute update", "local_weights − global_weights", "#1565c0"),
-            ("②", "Clip L2 norm",   "Bounds any patient's max influence (sensitivity S)", "#e65100"),
-            ("③", "Add noise",      "Gaussian N(0, (σ·S)²) to every weight parameter", "#6a1b9a"),
-            ("④", "Transmit",       "Server receives noisy update — cannot trace individuals", "#2e7d32"),
+            ("①", "Compute update", "local_weights − global_weights", "#22d3ee"),
+            ("②", "Clip L2 norm",   "Bounds any patient's max influence (sensitivity S)", "#ffb020"),
+            ("③", "Add noise",      "Gaussian N(0, (σ·S)²) to every weight parameter", "#a78bfa"),
+            ("④", "Transmit",       "Server receives noisy update — cannot trace individuals", "#2de6a3"),
         ]
         st.markdown("""
-        <div style="background:linear-gradient(135deg,#fff8f0,white);border:1.5px solid #ffcc80;
-                    border-left:5px solid #f0a500;border-radius:0 12px 12px 0;
+        <div style="background:rgba(255,176,32,0.06);border:1.5px solid rgba(255,176,32,0.4);
+                    border-left:5px solid #ffb020;border-radius:0 12px 12px 0;
                     padding:14px 18px;margin-bottom:12px;">
-            <div style="font-size:13px;font-weight:700;color:#e65100;">
+            <div style="font-size:13px;font-weight:700;color:#ffb020;">
                 ⚙️ Differential Privacy: Disabled in current build
             </div>
-            <div style="font-size:11px;color:#666;margin-top:4px;">
+            <div style="font-size:11px;color:#8b94a3;margin-top:4px;">
                 Model trained with plain FedAvg (no noise). Enable: set
                 <code>USE_DP = True</code> in train_federated.py and retrain.
             </div>
@@ -1905,18 +1928,18 @@ with tab4:
         _dp_html = '<div style="display:flex;flex-direction:column;gap:8px;">'
         for _step, _title, _desc, _tc in _dp_steps:
             _dp_html += (
-                f"<div style='display:flex;align-items:flex-start;gap:12px;background:#f8fafc;"
-                f"border:1px solid #e2e8f0;border-radius:8px;padding:10px 14px;'>"
-                f"<div style='background:{_tc};color:white;border-radius:50%;width:24px;height:24px;"
+                f"<div style='display:flex;align-items:flex-start;gap:12px;background:#0a0d13;"
+                f"border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:10px 14px;'>"
+                f"<div style='background:{_tc};color:#06080c;border-radius:50%;width:24px;height:24px;"
                 f"display:flex;align-items:center;justify-content:center;font-size:11px;"
                 f"font-weight:800;flex-shrink:0;'>{_step}</div>"
                 f"<div><div style='font-size:12px;font-weight:700;color:{_tc};'>{_title}</div>"
-                f"<div style='font-size:11px;color:#666;margin-top:2px;'>{_desc}</div></div>"
+                f"<div style='font-size:11px;color:#8b94a3;margin-top:2px;'>{_desc}</div></div>"
                 f"</div>"
             )
         _dp_html += "</div>"
         st.markdown(
-            "<div style='font-size:12px;font-weight:700;color:#1a1a2e;margin-bottom:8px;'>What DP would add:</div>",
+            "<div style='font-size:12px;font-weight:700;color:#e8edf4;margin-bottom:8px;'>What DP would add:</div>",
             unsafe_allow_html=True
         )
         st.markdown(_dp_html, unsafe_allow_html=True)
@@ -1924,17 +1947,17 @@ with tab4:
     st.divider()
 
     # ── Feature Vector Breakdown (visual bars) ──
-    st.markdown("<div style='font-size:18px;font-weight:800;color:#1a1a2e;margin-bottom:12px;'>🔢 Feature Vector Breakdown — 618 total</div>",
+    st.markdown("<div style='font-size:18px;font-weight:800;color:#e8edf4;margin-bottom:12px;'>🔢 Feature Vector Breakdown — 618 total</div>",
                 unsafe_allow_html=True)
 
     _feat_rows = [
-        ("📈 Trend Vitals",         9,   618, "#1565c0","#e3f2fd",
+        ("📈 Trend Vitals",         9,   618, "#22d3ee","rgba(34,211,238,0.06)",
          "HR_mean, HR_std, RR_mean, SpO₂_mean, SpO₂_min, Temp_mean, SBP_mean, DBP_mean, MAP_mean"),
-        ("📊 Latest Vitals",         7,   618, "#2e7d32","#e8f5e9",
+        ("📊 Latest Vitals",         7,   618, "#2de6a3","rgba(45,230,163,0.06)",
          "latest_HR, latest_RR, latest_SpO₂, latest_Temp, latest_SBP, latest_DBP, latest_MAP"),
-        ("👁️ Computer Vision",       2,   618, "#6a1b9a","#f3e5f5",
+        ("👁️ Computer Vision",       2,   618, "#a78bfa","rgba(167,139,250,0.06)",
          "GCS Eye Opening (1–4 scale), Stress Score (0–10)"),
-        ("📝 Clinical NLP (TF-IDF)", 600, 618, "#e65100","#fff3e0",
+        ("📝 Clinical NLP (TF-IDF)", 600, 618, "#ffb020","rgba(255,176,32,0.06)",
          "600 clinical bigrams: hypotension, respiratory, intubated, vasopressor … (MIMIC-III vocab)"),
     ]
 
@@ -1942,18 +1965,18 @@ with tab4:
         _fw = _fcount / _ftotal * 100
         st.markdown(f"""
         <div style="background:{_fbg};border-left:5px solid {_ftc};border-radius:0 10px 10px 0;
-                    padding:12px 16px;margin:6px 0;box-shadow:0 1px 4px rgba(0,0,0,0.05);">
+                    padding:12px 16px;margin:6px 0;">
             <div style="display:flex;justify-content:space-between;align-items:center;
                         margin-bottom:6px;">
                 <div style="font-size:13px;font-weight:700;color:{_ftc};">{_flabel}</div>
                 <div style="font-size:14px;font-weight:900;color:{_ftc};">
-                    {_fcount} <span style="font-size:10px;color:#888;">/ 618 features ({_fw:.1f}%)</span>
+                    {_fcount} <span style="font-size:10px;color:#8b94a3;">/ 618 features ({_fw:.1f}%)</span>
                 </div>
             </div>
-            <div style="background:#ddd;border-radius:6px;height:10px;margin-bottom:6px;overflow:hidden;">
+            <div style="background:rgba(255,255,255,0.08);border-radius:6px;height:10px;margin-bottom:6px;overflow:hidden;">
                 <div style="width:{_fw:.0f}%;background:{_ftc};height:100%;border-radius:6px;"></div>
             </div>
-            <div style="font-size:10px;color:#666;">{_fex}</div>
+            <div style="font-size:10px;color:#8b94a3;">{_fex}</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -1972,16 +1995,16 @@ for _rem in range(30, 0, -1):
         <span style="color:#4a7a8a;">|</span>
         <span>{patient_cfg['icon']} {patient_cfg['name']}</span>
         <span style="color:#4a7a8a;">|</span>
-        <span>Reading <b style="color:#00d2ff;">{cur_idx + 1}/{total_rows}</b></span>
+        <span>Reading <b style="color:#22d3ee;">{cur_idx + 1}/{total_rows}</b></span>
         <span style="color:#4a7a8a;">|</span>
-        <span>Next reading in <b style="color:#00d2ff; font-family:monospace;">{_rem:02d}s</b></span>
+        <span>Next reading in <b style="color:#22d3ee; font-family:monospace;">{_rem:02d}s</b></span>
     </div>
     """, unsafe_allow_html=True)
     _top_bar.progress(_pct)
     time.sleep(1)
 
 _top_cd.markdown(f"""
-<div class="cdbar" style="margin-top:4px; margin-bottom:2px; border-color:#28a745;">
+<div class="cdbar" style="margin-top:4px; margin-bottom:2px; border-color:#2de6a3;">
     <span style="font-size:15px;">✅</span>
     <span style="font-weight:700;">Fetching next reading…</span>
     <span style="color:#4a7a8a;">|</span>
