@@ -21,7 +21,10 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from dotenv import load_dotenv
 
-from model_utils import ICUModel, get_trend, classify_range
+from model_utils import (
+    ICUModel, get_trend, classify_range,
+    train_model, evaluate_model, get_weights, set_weights,
+)
 
 load_dotenv()
 
@@ -521,20 +524,16 @@ def _vcard(label, value, fmt, unit, lo, hi):
     val_fmt = f"{value:{fmt}}"
     if lo <= value <= hi:
         cls = "v-ok";  s_cls = "vstatus-ok";  s_txt = "✓ Normal"
-        rng = f"Normal: {lo}–{hi} {unit}"
     elif value < lo:
         cls = "v-bad"; s_cls = "vstatus-bad"; s_txt = "⚠ Below Normal"
-        rng = f"Normal: {lo}–{hi} {unit}"
     else:
         cls = "v-bad"; s_cls = "vstatus-bad"; s_txt = "⚠ Above Normal"
-        rng = f"Normal: {lo}–{hi} {unit}"
     return f"""
     <div class="vcard {cls}">
         <div class="vlabel">{label}</div>
         <div class="vnum">{val_fmt}</div>
         <div class="vunit">{unit}</div>
         <div class="{s_cls}">{s_txt}</div>
-        <div class="vrange">{rng}</div>
     </div>"""
 
 gcs_labels = {4: "Spontaneous", 3: "To Voice", 2: "To Pain", 1: "No Response"}
@@ -542,20 +541,18 @@ _lo_hi = NORMAL_RANGES
 
 row1_html = "".join([
     _vcard("❤️ Heart Rate",      HR,   ".0f", "bpm",    *_lo_hi["HR"]),
-    _vcard("🫁 Resp. Rate",       RR,   ".0f", "br/min", *_lo_hi["RR"]),
-    _vcard("💧 SpO₂",            SpO2, ".1f", "%",      _lo_hi["SpO2"][0], _lo_hi["SpO2"][1]),
+    _vcard("🫁 Breathing Rate",   RR,   ".0f", "br/min", *_lo_hi["RR"]),
+    _vcard("💧 Blood Oxygen",    SpO2, ".1f", "%",      _lo_hi["SpO2"][0], _lo_hi["SpO2"][1]),
     _vcard("🌡️ Temperature",     Temp, ".1f", "°C",     *_lo_hi["Temp"]),
 ])
 row2_html = "".join([
-    _vcard("🩸 Systolic BP",     SBP,  ".0f", "mmHg",   *_lo_hi["SBP"]),
-    _vcard("🩸 Diastolic BP",    DBP,  ".0f", "mmHg",   *_lo_hi["DBP"]),
-    _vcard("📉 Mean Art. Press.", MAP,  ".0f", "mmHg",   *_lo_hi["MAP"]),
+    _vcard("🩸 Blood Pressure (Top)",    SBP,  ".0f", "mmHg",   *_lo_hi["SBP"]),
+    _vcard("🩸 Blood Pressure (Bottom)", DBP,  ".0f", "mmHg",   *_lo_hi["DBP"]),
+    _vcard("📉 Avg. Blood Pressure",     MAP,  ".0f", "mmHg",   *_lo_hi["MAP"]),
     f"""<div class="vcard v-ok">
-        <div class="vlabel">🧠 GCS Eye Opening</div>
-        <div class="vnum" style="font-size:22px;">{GCS_eye}<span style="font-size:14px;font-weight:500;">/4</span></div>
-        <div class="vunit">{gcs_labels.get(GCS_eye,'?')}</div>
-        <div class="vstatus-ok">Neurological</div>
-        <div class="vrange">Stress: {stress}/10</div>
+        <div class="vlabel">🧠 Alertness</div>
+        <div class="vnum" style="font-size:20px;">{gcs_labels.get(GCS_eye,'?')}</div>
+        <div class="vstatus-ok">{GCS_eye}/4</div>
     </div>""",
 ])
 
@@ -1099,13 +1096,14 @@ with st.spinner("Generating AI clinical assessment (3 independent responses for 
         llm_ok        = False
 
 # =============================================================
-# DISPLAY — FOUR TABS
+# DISPLAY — FIVE TABS
 # =============================================================
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📊 Risk Assessment",
     "🔍 Explainability",
     "🧠 AI Clinical Report",
-    "🔒 Federated Learning"
+    "🔒 Federated Learning",
+    "⚡ Watch AI Learn",
 ])
 
 # ---- TAB 1: RISK ASSESSMENT ----
@@ -1113,9 +1111,8 @@ with tab1:
     # ── Colour palette for current SOFA ──
     _sbrd = "#2de6a3" if sofa_score < 5 else "#ffb020" if sofa_score < 10 else "#ff3b5c"
     _stxt = _sbrd
-    _m    = training_meta
 
-    # ── Two-column header: SOFA gauge  |  Severity bar + model stats ──
+    # ── Two-column header: SOFA gauge  |  Severity bar ──
     col_gauge, col_right = st.columns([2, 3])
 
     with col_gauge:
@@ -1172,121 +1169,23 @@ with tab1:
         </div>
         """, unsafe_allow_html=True)
 
-        # ── Model accuracy mini-tiles (2×2 grid) ──
-        st.markdown(f"""
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;">
-            <div style="background:#0a0d13;border-radius:10px;
-                        padding:12px 8px;text-align:center;border:1px solid rgba(255,255,255,0.1);
-                        box-shadow:inset 0 2px 0 0 #22d3ee;">
-                <div style="font-size:9px;font-weight:700;color:#8b94a3;letter-spacing:0.7px;
-                            text-transform:uppercase;">Model MAE</div>
-                <div style="font-size:22px;font-weight:900;color:#22d3ee;line-height:1.1;">
-                    {_m['final_mae']:.2f}</div>
-                <div style="font-size:9px;color:#8b94a3;">SOFA pts</div>
-            </div>
-            <div style="background:#0a0d13;border-radius:10px;
-                        padding:12px 8px;text-align:center;border:1px solid rgba(255,255,255,0.1);
-                        box-shadow:inset 0 2px 0 0 #2de6a3;">
-                <div style="font-size:9px;font-weight:700;color:#8b94a3;letter-spacing:0.7px;
-                            text-transform:uppercase;">R² Score</div>
-                <div style="font-size:22px;font-weight:900;color:#2de6a3;line-height:1.1;">
-                    {_m['final_r2']:.3f}</div>
-                <div style="font-size:9px;color:#8b94a3;">variance</div>
-            </div>
-            <div style="background:#0a0d13;border-radius:10px;
-                        padding:12px 8px;text-align:center;border:1px solid rgba(255,255,255,0.1);
-                        box-shadow:inset 0 2px 0 0 #ffb020;">
-                <div style="font-size:9px;font-weight:700;color:#8b94a3;letter-spacing:0.7px;
-                            text-transform:uppercase;">Trained on</div>
-                <div style="font-size:22px;font-weight:900;color:#ffb020;line-height:1.1;">
-                    {_m['train_samples']//1000}K</div>
-                <div style="font-size:9px;color:#8b94a3;">patients</div>
-            </div>
-            <div style="background:#0a0d13;border-radius:10px;
-                        padding:12px 8px;text-align:center;border:1px solid rgba(255,255,255,0.1);
-                        box-shadow:inset 0 2px 0 0 #a78bfa;">
-                <div style="font-size:9px;font-weight:700;color:#8b94a3;letter-spacing:0.7px;
-                            text-transform:uppercase;">FL Rounds</div>
-                <div style="font-size:22px;font-weight:900;color:#a78bfa;line-height:1.1;">
-                    {_m['num_rounds']}</div>
-                <div style="font-size:9px;color:#8b94a3;">{_m['hospitals']} hospitals</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
     # ── High Risk Advisory ──
     if sofa_score >= ALERT_THRESHOLD:
         st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
-        with st.expander("🔴 High Risk Clinical Advisory — read before acting", expanded=True):
+        with st.expander("🔴 This score needs attention", expanded=True):
             st.markdown(f"""
-**Prediction uncertainty:** The federated model has a typical error of **±3.9 SOFA points**
-for High Risk patients. A predicted SOFA of **{sofa_score:.1f}** could reflect a true SOFA of
-**{max(0, sofa_score-4.0):.0f}–{min(24, sofa_score+4.0):.0f}**.
+This score can be off by a few points in either direction — it's a helpful signal,
+not an exact reading.
 
-**Alert threshold = {ALERT_THRESHOLD:.0f} (not 10):** Model under-predicts severe cases by ~2–3 SOFA
-points (only 6% of training data is High Risk). Threshold = 8 doubles recall (28% → 52%),
-false alarm rate on stable patients = 1.4%.
-
-**Clinical guidance:** AI report (Tab 3) → supporting context only.
-System re-assesses every 30 seconds — watch the SOFA trajectory over readings.
+**What to do:** check on the patient now, and contact their doctor or care team if
+anything feels wrong. Use the **AI Clinical Report** tab for more detail. A fresh
+reading comes in every 30 seconds — keep an eye on whether the score is going up or down.
 """)
 
     st.divider()
 
     # ── Vital Sign Trend Charts ──
     st.plotly_chart(build_trend_chart(vitals_df), use_container_width=True)
-    st.divider()
-
-    # ── Trend Summary ──
-    st.markdown("<div style='font-size:18px;font-weight:800;color:#e8edf4;margin-bottom:10px;'>📈 Vital Sign Trends</div>",
-                unsafe_allow_html=True)
-    _dir_style = {
-        "increasing": ("🔺", "#ff3b5c", "rgba(255,59,92,0.1)"),
-        "decreasing": ("🔻", "#2de6a3", "rgba(45,230,163,0.1)"),
-        "stable":     ("➡", "#22d3ee", "rgba(34,211,238,0.1)"),
-    }
-    _rng_style = {
-        "high":   ("HIGH",   "#ff3b5c", "rgba(255,59,92,0.1)"),
-        "low":    ("LOW",    "#ffb020", "rgba(255,176,32,0.1)"),
-        "normal": ("NORMAL", "#2de6a3", "rgba(45,230,163,0.1)"),
-    }
-
-    def _trend_badge(line):
-        try:
-            vital, rest = line.split(" → ")
-            rng, dirn = rest.split(" & ")
-        except Exception:
-            return f"<span style='font-size:13px;'>{line}</span>"
-        d_icon, d_col, _ = _dir_style.get(dirn.strip(), ("•", "#8b94a3", "rgba(255,255,255,0.05)"))
-        r_lbl, r_col, r_bg = _rng_style.get(rng.strip(), (rng.upper(), "#8b94a3", "rgba(255,255,255,0.05)"))
-        return (
-            f"<span style='font-size:13px;font-weight:700;color:#e8edf4;min-width:60px;"
-            f"display:inline-block;'>{vital}</span>"
-            f"<span style='margin:0 6px;color:#545d6c;'>→</span>"
-            f"<span style='background:{r_bg};color:{r_col};border:1.5px solid {r_col};"
-            f"border-radius:5px;padding:2px 9px;font-size:11px;font-weight:800;"
-            f"margin-right:5px;letter-spacing:0.3px;'>{r_lbl}</span>"
-            f"<span style='background:rgba(255,255,255,0.05);border-radius:5px;padding:2px 9px;"
-            f"font-size:11px;font-weight:700;color:{d_col};border:1px solid rgba(255,255,255,0.1);'>"
-            f"{d_icon} {dirn.strip()}</span>"
-        )
-
-    _trend_html = ""
-    for i, line in enumerate(trend_lines):
-        _trend_html += f"<div style='padding:6px 10px;background:{'rgba(255,255,255,0.03)' if i%2==0 else 'transparent'};" \
-                       f"border-radius:6px;margin:3px 0;'>{_trend_badge(line)}</div>"
-
-    tl, tr = st.columns(2)
-    with tl:
-        for i, line in enumerate(trend_lines[:4]):
-            st.markdown(f"<div style='padding:6px 10px;background:{'rgba(255,255,255,0.03)' if i%2==0 else 'transparent'};"
-                        f"border-radius:6px;margin:3px 0;border-left:3px solid rgba(255,255,255,0.1);'>"
-                        f"{_trend_badge(line)}</div>", unsafe_allow_html=True)
-    with tr:
-        for i, line in enumerate(trend_lines[4:]):
-            st.markdown(f"<div style='padding:6px 10px;background:{'rgba(255,255,255,0.03)' if i%2==0 else 'transparent'};"
-                        f"border-radius:6px;margin:3px 0;border-left:3px solid rgba(255,255,255,0.1);'>"
-                        f"{_trend_badge(line)}</div>", unsafe_allow_html=True)
 
     # ── Prediction History (colour-coded by risk) ──
     if os.path.exists(HISTORY_FILE):
@@ -1977,6 +1876,202 @@ with tab4:
                 <div style="width:{_fw:.0f}%;background:{_ftc};height:100%;border-radius:6px;"></div>
             </div>
             <div style="font-size:10px;color:#8b94a3;">{_fex}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+# ---- TAB 5: WATCH AI LEARN (LIVE FEDERATED LEARNING DEMO) ----
+with tab5:
+    st.markdown("""
+    <div style="background:linear-gradient(135deg,#171008,#10141c,#0a0d13);
+                border:1px solid rgba(255,255,255,0.08);
+                border-radius:14px;padding:20px 24px;margin-bottom:16px;">
+        <div style="font-size:22px;font-weight:900;color:white;margin-bottom:4px;">
+            ⚡ Watch the AI Learn — Live
+        </div>
+        <div style="font-size:13px;color:#8b94a3;line-height:1.5;">
+            Press Start below and watch, round by round, as three hospitals each train
+            the model on their own patients, then combine what they learned into one
+            smarter, shared AI — without any hospital ever sending patient data anywhere.
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div style="display:flex;align-items:flex-start;gap:8px;font-size:12px;color:#ffb020;
+                background:rgba(255,176,32,0.08);border:1px solid rgba(255,176,32,0.3);
+                border-radius:10px;padding:10px 14px;margin-bottom:16px;">
+        ⚠️ This demo uses made-up practice data so it trains instantly here — the real
+        hospital data is protected and far too large to ship in this repo. For the real
+        model's actual results, see the <b>Federated Learning</b> tab.
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Synthetic per-hospital data + FedAvg helpers (mirrors the real FL
+    #    training mechanics — model_utils.train_model / evaluate_model — but
+    #    on generated data so it can run live, inline, with no external
+    #    service or websocket needed) ──
+    _FL_HOSPITAL_NAMES = training_meta.get(
+        "hospital_names", ["General ICU", "Mixed ICU", "Cardiac/Trauma ICU"]
+    )
+    _FL_INPUT_DIM = len(feature_cols)
+    _FL_BIAS_FEATURES = {
+        "latest_HR": 2.6, "latest_SpO2": -3.0, "latest_RR": 1.8,
+        "stress_score": 1.4, "GCS_eye_opening": -2.2, "SBP_mean": -1.1,
+    }
+    _FL_BIAS_IDX = {
+        feature_cols.index(_n): _w for _n, _w in _FL_BIAS_FEATURES.items() if _n in feature_cols
+    }
+    _FL_COLORS = ["#2de6a3", "#ffb020", "#ff3b5c", "#22d3ee", "#a78bfa"]
+
+    def _fl_make_hospital_data(n_samples, seed):
+        rng = np.random.default_rng(seed)
+        X = rng.normal(0.0, 1.0, size=(n_samples, _FL_INPUT_DIM)).astype(np.float32)
+        y = np.full(n_samples, 4.0, dtype=np.float32)
+        for idx, weight in _FL_BIAS_IDX.items():
+            y += weight * X[:, idx]
+        y += rng.normal(0.0, 2.5, size=n_samples).astype(np.float32)
+        y = np.clip(y, 0, 24).astype(np.float32)
+        split = int(n_samples * 0.8)
+        return X[:split], y[:split], X[split:], y[split:]
+
+    def _fl_fedavg(weight_list, sample_counts):
+        total = sum(sample_counts)
+        avg = []
+        for layer_idx in range(len(weight_list[0])):
+            stacked = sum(w[layer_idx] * (n / total) for w, n in zip(weight_list, sample_counts))
+            avg.append(stacked)
+        return avg
+
+    def _fl_hospital_card(name, color, status, loss=None, mae=None, r2=None):
+        _badge = (
+            f"<span style='font-size:10px;font-weight:700;color:{color};'>⏳ training…</span>"
+            if status == "training" else
+            f"<span style='font-size:10px;font-weight:700;color:#8b94a3;'>idle</span>"
+        )
+        _loss_s = f"{loss:.4f}" if loss is not None else "—"
+        _mae_s  = f"{mae:.4f}" if mae is not None else "—"
+        _r2_s   = f"{r2:.4f}" if r2 is not None else "—"
+        return f"""
+        <div style="background:#0a0d13;border:1px solid rgba(255,255,255,0.1);border-radius:12px;
+                    padding:14px 16px;box-shadow:inset 0 2px 0 0 {color};">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                <span style="font-size:13px;font-weight:800;color:#e8edf4;">🏥 {name}</span>
+                {_badge}
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;text-align:center;">
+                <div><div style="font-size:9px;color:#8b94a3;text-transform:uppercase;">Loss</div>
+                     <div style="font-size:13px;font-weight:800;color:#e8edf4;font-family:'JetBrains Mono',monospace;">{_loss_s}</div></div>
+                <div><div style="font-size:9px;color:#8b94a3;text-transform:uppercase;">MAE</div>
+                     <div style="font-size:13px;font-weight:800;color:#e8edf4;font-family:'JetBrains Mono',monospace;">{_mae_s}</div></div>
+                <div><div style="font-size:9px;color:#8b94a3;text-transform:uppercase;">R²</div>
+                     <div style="font-size:13px;font-weight:800;color:#e8edf4;font-family:'JetBrains Mono',monospace;">{_r2_s}</div></div>
+            </div>
+        </div>
+        """
+
+    _fc1, _fc2, _fc3, _fc4 = st.columns([1, 1, 1, 1.3])
+    with _fc1:
+        _fl_rounds = st.selectbox("How many rounds", [8, 15, 25, 40], index=1, key="fl_rounds_sel")
+    with _fc2:
+        _fl_epochs = st.selectbox("Practice per round", [1, 2, 3], index=0, key="fl_epochs_sel")
+    with _fc3:
+        _fl_hsize = st.selectbox("Patients per hospital", [300, 500, 1000], index=1, key="fl_hsize_sel")
+    with _fc4:
+        st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+        _fl_start = st.button("▶ Start Watching", type="primary", use_container_width=True, key="fl_start_btn")
+
+    if _fl_start:
+        hospitals = []
+        for _i, _name in enumerate(_FL_HOSPITAL_NAMES):
+            _Xtr, _ytr, _Xval, _yval = _fl_make_hospital_data(_fl_hsize, seed=100 + _i)
+            hospitals.append({
+                "id": _i, "name": _name, "color": _FL_COLORS[_i % len(_FL_COLORS)],
+                "X_train": _Xtr, "y_train": _ytr, "X_val": _Xval, "y_val": _yval,
+            })
+        _global_X_val = np.concatenate([h["X_val"] for h in hospitals])
+        _global_y_val = np.concatenate([h["y_val"] for h in hospitals])
+
+        global_model = ICUModel(_FL_INPUT_DIM)
+        global_weights = get_weights(global_model)
+
+        _status_ph = st.empty()
+        _hosp_cols = st.columns(len(hospitals))
+        _hosp_ph = [c.empty() for c in _hosp_cols]
+        for _ph, _h in zip(_hosp_ph, hospitals):
+            _ph.markdown(_fl_hospital_card(_h["name"], _h["color"], "idle"), unsafe_allow_html=True)
+        _chart_ph = st.empty()
+        _summary_ph = st.empty()
+
+        _round_history = []
+        _best_mae, _best_round = float("inf"), 0
+
+        for _rnd in range(1, _fl_rounds + 1):
+            _status_ph.markdown(
+                f"<div style='font-size:14px;font-weight:800;color:#e8edf4;margin:6px 0;'>"
+                f"🔄 Round {_rnd} / {_fl_rounds}</div>", unsafe_allow_html=True
+            )
+
+            _local_weights, _sample_counts = [], []
+            for _ph, _h in zip(_hosp_ph, hospitals):
+                _ph.markdown(_fl_hospital_card(_h["name"], _h["color"], "training"), unsafe_allow_html=True)
+
+                _local_model = ICUModel(_FL_INPUT_DIM)
+                set_weights(_local_model, global_weights)
+                _loss = train_model(
+                    _local_model, _h["X_train"], _h["y_train"],
+                    epochs=_fl_epochs, lr=0.01, batch_size=64, grad_clip=1.0,
+                    oversample=False, global_params=global_weights, mu=0.3,
+                )
+                _metrics = evaluate_model(_local_model, _h["X_val"], _h["y_val"])
+
+                _local_weights.append(get_weights(_local_model))
+                _sample_counts.append(len(_h["X_train"]))
+
+                _ph.markdown(
+                    _fl_hospital_card(_h["name"], _h["color"], "idle",
+                                       loss=_loss, mae=_metrics["mae"], r2=_metrics["r2"]),
+                    unsafe_allow_html=True
+                )
+                time.sleep(0.35)
+
+            global_weights = _fl_fedavg(_local_weights, _sample_counts)
+            set_weights(global_model, global_weights)
+            _global_metrics = evaluate_model(global_model, _global_X_val, _global_y_val)
+
+            _is_best = _global_metrics["mae"] < _best_mae
+            if _is_best:
+                _best_mae, _best_round = _global_metrics["mae"], _rnd
+
+            _round_history.append({
+                "round": _rnd, "mae": round(float(_global_metrics["mae"]), 4),
+                "r2": round(float(_global_metrics["r2"]), 4),
+            })
+
+            _fig = make_subplots(specs=[[{"secondary_y": True}]])
+            _rx = [r["round"] for r in _round_history]
+            _fig.add_trace(go.Scatter(x=_rx, y=[r["mae"] for r in _round_history], name="Global MAE",
+                                       mode="lines+markers", line=dict(color="#ff6b85", width=2.5)),
+                            secondary_y=False)
+            _fig.add_trace(go.Scatter(x=_rx, y=[r["r2"] for r in _round_history], name="Global R²",
+                                       mode="lines+markers", line=dict(color="#22d3ee", width=2.5)),
+                            secondary_y=True)
+            _fig.update_layout(
+                title_text="Global Model — FedAvg Aggregation Across Rounds", title_font_size=13,
+                title_font_color="#e8edf4", height=300, margin=dict(l=0, r=0, t=45, b=5),
+                plot_bgcolor="#0a0d13", paper_bgcolor="#0a0d13", font=dict(color="#8b94a3"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            )
+            _fig.update_xaxes(title_text="Round", gridcolor="rgba(255,255,255,0.08)")
+            _fig.update_yaxes(title_text="MAE (lower is better)", secondary_y=False, gridcolor="rgba(255,255,255,0.08)")
+            _fig.update_yaxes(title_text="R² (higher is better)", secondary_y=True, gridcolor="rgba(255,255,255,0.08)")
+            _chart_ph.plotly_chart(_fig, use_container_width=True)
+
+        _summary_ph.markdown(f"""
+        <div style="background:rgba(45,230,163,0.08);border:1.5px solid rgba(45,230,163,0.4);
+                    border-radius:12px;padding:14px 18px;margin-top:8px;">
+            <span style="font-size:14px;font-weight:800;color:#2de6a3;">
+                ✅ Done — best round {_best_round}, MAE {_best_mae:.4f}
+            </span>
         </div>
         """, unsafe_allow_html=True)
 
