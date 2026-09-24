@@ -1,7 +1,7 @@
 [theme]
-base = "dark"
-primaryColor = "#22d3ee"
-backgroundColor = "#06080c"
-secondaryBackgroundColor = "#10141c"
-textColor = "#e8edf4"
-font = "sans serif"
+# Dark ICU theme — applied to both app.py and fl_dashboard.py
+primaryColor        = "#007BB5"     # Deep teal — buttons readable with white text (4.7:1 contrast)
+backgroundColor     = "#0a1628"     # Deep navy — main page background
+secondaryBackgroundColor = "#0e1f36" # Slightly lighter navy — sidebar, expanders
+textColor           = "#d0e0ec"     # Light blue-gray — all default text
+font                = "sans serif"

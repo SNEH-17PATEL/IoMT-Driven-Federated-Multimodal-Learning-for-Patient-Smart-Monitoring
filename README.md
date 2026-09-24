@@ -241,33 +241,35 @@ icu_monitor/
 
 ## Running the Application
 
-This is a single Streamlit app — no separate frontend/backend to run.
+### Launch the Streamlit app
 
 ```bash
+cd icu_monitor
 streamlit run app.py
 ```
 
-Opens at **http://localhost:8501**. Requires `GROQ_API_KEY` in a `.env` file at
-the project root (copy `.env.example` and fill in your key).
+Opens at **http://localhost:8501**
 
 ### Using the app
 
-1. On the **patient selector** screen, pick one of the three sample patients
-   (Low / Moderate / High Risk).
-2. The app then continuously monitors that patient: it reads a new vitals row
-   every **30 seconds**, runs the full prediction/SHAP/LLM pipeline, and
-   auto-refreshes.
-3. Review results across 5 tabs:
-   - **📊 Risk Assessment** — SOFA score, severity bar, vital sign trend charts, reading history
+1. Enter patient data in the **sidebar**:
+   - Clinical notes (free text: history, medications, observations)
+   - Vital signs: HR, RR, SpO₂, Temperature, SBP, DBP, MAP
+   - GCS Eye Opening (1–4)
+   - Stress Score (0–10)
+
+2. Click **🚀 Run Prediction**
+
+3. Review results across 4 tabs:
+   - **📊 Risk Assessment** — SOFA score, severity bar, vital sign trend chart, prediction history
    - **🔍 Explainability** — SHAP feature importance, clinical interpretations, key risk factors
    - **🧠 AI Clinical Report** — LLM assessment with consistency score and reliability rating
-   - **🔒 Federated Learning** — how the production model was trained (protocol, config, architecture, privacy)
-   - **⚡ Watch AI Learn** — a live, in-browser FedAvg training demo (synthetic data) so you can watch the round-by-round federated training mechanics happen in real time
+   - **🔒 Federated Learning** — FL training configuration, model architecture, DP status
 
-### Sidebar
+### Utility buttons (sidebar)
 
-- **⏹️ Stop Monitoring** — leave the current patient and return to the selector.
-- **ℹ️ Model Information** — expandable panel showing MAE, R², training details.
+- **🔄 Reset Patient History** — Clears the 20-reading sliding window. Use when switching to a new patient.
+- **ℹ️ Model Information** — Expandable panel showing MAE, R², training details.
 
 ---
 
