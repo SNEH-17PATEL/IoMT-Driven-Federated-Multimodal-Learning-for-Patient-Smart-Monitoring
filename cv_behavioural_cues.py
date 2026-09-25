@@ -54,6 +54,8 @@ Stress Score
 
     AU intensities are approximated from MediaPipe face blendshapes
     (browDown, cheekSquint, eyeSquint, noseSneer, mouthUpperUp, eyeBlink).
+    Smiling uses the same eye-squint / upper-lip muscles, so the PSPI is
+    scaled down by the `mouthSmile` blendshape (a broad smile → near 0).
     Restlessness/agitation (normalised head-movement energy) is blended in,
     then the result is scaled to 0–10 and smoothed with an EMA.
 
@@ -163,7 +165,10 @@ def pspi_from_blendshapes(bs: dict[str, float]) -> float:
     au10 = pair("mouthUpperUp") * 5.0                   # upper lip raiser
     au43 = 1.0 if pair("eyeBlink") > BLINK_CLOSED_THRESHOLD else 0.0  # eyes closed
 
-    return float(au4 + max(au6, au7) + max(au9, au10) + au43)
+    pspi = au4 + max(au6, au7) + max(au9, au10) + au43
+    # A smile (AU12) also squints the eyes and lifts the upper lip, which PSPI
+    # would read as pain; damp the score in proportion to smile strength.
+    return float(pspi * (1.0 - pair("mouthSmile")))
 
 
 def combine_stress(pspi: float, motion_energy: float) -> float:
@@ -608,6 +613,14 @@ def self_test() -> None:
         pained.update(FrameCues(i / fps, True, blendshapes=grimace_bs,
                                 nose_xy=(0.5 + jitter, 0.5 - jitter)))
     assert pained.result()["stress_score"] > 7.0, pained.result()
+
+    # A broad smile squints the eyes too, but must not read as pain. Values
+    # are the real blendshapes MediaPipe gave for a smiling portrait.
+    smile_bs = {"browDownLeft": 0.84, "browDownRight": 0.82, "eyeSquintLeft": 0.74,
+                "eyeSquintRight": 0.66, "mouthUpperUpLeft": 0.76, "mouthUpperUpRight": 0.76,
+                "eyeBlinkLeft": 0.27, "eyeBlinkRight": 0.26,
+                "mouthSmileLeft": 0.96, "mouthSmileRight": 0.93}
+    assert pspi_from_blendshapes(smile_bs) < 1.0, pspi_from_blendshapes(smile_bs)
 
     # EAR geometry: wide-open eye > nearly-closed eye.
     wide = np.array([[0, 0], [1, -1], [2, -1], [3, 0], [2, 1], [1, 1]], float)
