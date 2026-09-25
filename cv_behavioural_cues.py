@@ -19,9 +19,20 @@ GCS Eye Opening (camera only — no speech or stimulus input)
     Čech 2016) on MediaPipe face-mesh landmarks, cross-checked with the
     model's `eyeBlink` blendshape:
 
-        open     EAR ≥ 0.21 and the eyeBlink blendshape does not say "closed"
-        partial  lids apart but drooping (EAR ≥ 0.12) — heavy, drowsy eyes
+        open     EAR ≥ 70 % of the patient's normal open-eye EAR
+                 and the eyeBlink blendshape does not say "closed"
+        partial  lids apart but drooping (EAR ≥ 40 % of normal) — drowsy eyes
         closed   otherwise
+
+    Per-patient calibration: eye shape differs between people (a normal open
+    eye can be EAR 0.19 for one patient and 0.40 for another), so fixed
+    thresholds misjudge some patients. The first ~2 s of frames where the
+    blendshape says the eyes are clearly open are used to learn that
+    patient's normal open-eye EAR (median), and the thresholds are scaled
+    from it. Until then, or if the eyes are never seen open, the population
+    defaults (open ≥ 0.21, partial ≥ 0.12) are used. The learnt value is
+    returned as `baseline_ear` and can be passed back in (`--baseline-ear`)
+    to reuse it for the same patient in later sessions.
 
     Over a rolling 30 s window the eye behaviour is mapped to a GCS-style
     score (a behavioural proxy, since no voice/pain stimulus is applied):
@@ -98,6 +109,13 @@ EAR_OPEN_THRESHOLD = 0.21        # EAR above this → eyes fully open
 EAR_PARTIAL_THRESHOLD = 0.12     # EAR above this → lids at least partly apart
 BLINK_CLOSED_THRESHOLD = 0.55    # eyeBlink blendshape above this → closed
 
+CALIB_SAMPLES = 60               # clearly-open frames used to learn baseline (~2 s)
+CALIB_BLINK_MAX = 0.30           # only frames with eyeBlink below this are used
+CALIB_OPEN_RATIO = 0.70          # open    ≥ 70 % of the patient's baseline EAR
+CALIB_PARTIAL_RATIO = 0.40       # partial ≥ 40 % of the patient's baseline EAR
+CALIB_EAR_MIN = 0.15             # plausible range for a normal open-eye EAR;
+CALIB_EAR_MAX = 0.50             # outside it the defaults are kept
+
 GCS_WINDOW_S = 30.0              # rolling window the GCS score is judged over
 MIN_OBSERVATION_S = 10.0         # face video needed before the score is final
 SPONTANEOUS_OPEN_FRACTION = 0.70 # ≥ this fraction fully open → 4
@@ -155,13 +173,15 @@ def combine_stress(pspi: float, motion_energy: float) -> float:
     return 10.0 * (FACIAL_WEIGHT * facial + (1.0 - FACIAL_WEIGHT) * agitation)
 
 
-def eye_state(ear: float, blink_score: float | None) -> str:
+def eye_state(ear: float, blink_score: float | None,
+              open_threshold: float = EAR_OPEN_THRESHOLD,
+              partial_threshold: float = EAR_PARTIAL_THRESHOLD) -> str:
     """Frame-level eye state: 'open', 'partial' or 'closed'."""
     if blink_score is not None and blink_score > BLINK_CLOSED_THRESHOLD:
         return "closed"
-    if ear >= EAR_OPEN_THRESHOLD:
+    if ear >= open_threshold:
         return "open"
-    if ear >= EAR_PARTIAL_THRESHOLD:
+    if ear >= partial_threshold:
         return "partial"
     return "closed"
 
@@ -183,18 +203,52 @@ class GCSEyeEstimator:
     """
     Scores eye opening from camera behaviour alone over a rolling window.
     Feed frames in time order with `update`; read the score with `result`.
+
+    Pass `baseline_ear` (from `result()["baseline_ear"]` of an earlier session)
+    to reuse a patient's calibration instead of re-learning it.
     """
 
-    def __init__(self, window_s: float = GCS_WINDOW_S):
+    def __init__(self, window_s: float = GCS_WINDOW_S, baseline_ear: float | None = None):
         self.window_s = window_s
-        self.history: deque[tuple[float, str]] = deque()
+        # Raw measurements, so all frames are re-scored once calibration lands.
+        self.history: deque[tuple[float, float, float | None]] = deque()
+        self.calib_samples: list[float] = []
+        self.baseline_ear: float | None = None
+        self.calibration = "default"
+        self.open_threshold = EAR_OPEN_THRESHOLD
+        self.partial_threshold = EAR_PARTIAL_THRESHOLD
         self.last_state = "closed"
+        if baseline_ear is not None:
+            self._apply_baseline(baseline_ear, "saved")
+
+    def _apply_baseline(self, baseline: float, source: str) -> bool:
+        if not CALIB_EAR_MIN <= baseline <= CALIB_EAR_MAX:
+            return False  # implausible (e.g. learnt while eyes were half-shut)
+        self.baseline_ear = baseline
+        self.calibration = source
+        self.open_threshold = CALIB_OPEN_RATIO * baseline
+        self.partial_threshold = CALIB_PARTIAL_RATIO * baseline
+        return True
+
+    def _calibrate(self, cues: FrameCues) -> None:
+        """Learn this patient's open-eye EAR from frames that are clearly open."""
+        if self.calibration != "default" or len(self.calib_samples) >= CALIB_SAMPLES:
+            return
+        if cues.blink_score is None or cues.blink_score >= CALIB_BLINK_MAX:
+            return
+        self.calib_samples.append(cues.ear)
+        if len(self.calib_samples) == CALIB_SAMPLES:
+            self._apply_baseline(float(np.median(self.calib_samples)), "calibrated")
+
+    def _state(self, ear: float, blink: float | None) -> str:
+        return eye_state(ear, blink, self.open_threshold, self.partial_threshold)
 
     def update(self, cues: FrameCues) -> None:
         if not cues.face_present:
             return  # face not visible: unknown, not "closed"
-        self.last_state = eye_state(cues.ear, cues.blink_score)
-        self.history.append((cues.timestamp_s, self.last_state))
+        self._calibrate(cues)
+        self.last_state = self._state(cues.ear, cues.blink_score)
+        self.history.append((cues.timestamp_s, cues.ear, cues.blink_score))
         while cues.timestamp_s - self.history[0][0] > self.window_s:
             self.history.popleft()
 
@@ -203,27 +257,28 @@ class GCSEyeEstimator:
             return 0.0
         return self.history[-1][0] - self.history[0][0]
 
-    def _longest_opening_s(self) -> float:
+    def _longest_opening_s(self, states: list[str]) -> float:
         """Longest run of open/partial frames, in seconds."""
-        if len(self.history) < 2:
+        if len(states) < 2:
             return 0.0
-        frame_s = self._observed_s() / (len(self.history) - 1)
+        frame_s = self._observed_s() / (len(states) - 1)
         longest = run = 0
-        for _, state in self.history:
+        for state in states:
             run = run + 1 if state != "closed" else 0
             longest = max(longest, run)
         return longest * frame_s
 
     def result(self) -> dict:
-        n = len(self.history)
-        open_frac = sum(s == "open" for _, s in self.history) / n if n else 0.0
-        any_open_frac = sum(s != "closed" for _, s in self.history) / n if n else 0.0
+        states = [self._state(ear, blink) for _, ear, blink in self.history]
+        n = len(states)
+        open_frac = sum(s == "open" for s in states) / n if n else 0.0
+        any_open_frac = sum(s != "closed" for s in states) / n if n else 0.0
 
         if open_frac >= SPONTANEOUS_OPEN_FRACTION:
             score = 4
         elif any_open_frac >= INTERMITTENT_FRACTION:
             score = 3
-        elif self._longest_opening_s() >= MIN_FLICKER_S:
+        elif self._longest_opening_s(states) >= MIN_FLICKER_S:
             score = 2
         else:
             score = 1
@@ -234,6 +289,8 @@ class GCSEyeEstimator:
             "gcs_assessment_complete": self._observed_s() >= MIN_OBSERVATION_S,
             "eyes_open_fraction": round(open_frac, 2),
             "eyes_open_or_partial_fraction": round(any_open_frac, 2),
+            "eye_calibration": self.calibration,
+            "baseline_ear": round(self.baseline_ear, 3) if self.baseline_ear else None,
         }
 
 
@@ -362,9 +419,10 @@ class BehaviouralCueAnalyzer:
     """
 
     def __init__(self, model_path: str = DEFAULT_MODEL_PATH,
-                 extractor: FaceCueExtractor | None = None):
+                 extractor: FaceCueExtractor | None = None,
+                 baseline_ear: float | None = None):
         self.extractor = extractor or FaceCueExtractor(model_path)
-        self.gcs = GCSEyeEstimator()
+        self.gcs = GCSEyeEstimator(baseline_ear=baseline_ear)
         self.stress = StressEstimator()
         self.frames_total = 0
         self.frames_with_face = 0
@@ -396,14 +454,15 @@ class BehaviouralCueAnalyzer:
 
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
-def _draw_overlay(frame, cues: FrameCues, res: dict) -> None:
+def _draw_overlay(frame, cues: FrameCues, gcs: GCSEyeEstimator, res: dict) -> None:
     import cv2
-    eye = eye_state(cues.ear, cues.blink_score) if cues.face_present else "no face"
+    eye = gcs.last_state if cues.face_present else "no face"
     lines = [
         f"GCS eye: {res['GCS_eye_opening']} ({res['gcs_eye_label']})"
         + ("" if res["gcs_assessment_complete"] else " *provisional"),
         f"Stress: {res['stress_score']:.1f}/10   PSPI: {res['pspi_last']:.1f}",
         f"Eyes: {eye}   EAR: {cues.ear:.2f}   open: {res['eyes_open_fraction']:.0%}",
+        f"Calibration: {res['eye_calibration']}   baseline EAR: {res['baseline_ear']}",
         "q=quit",
     ]
     for i, text in enumerate(lines):
@@ -411,7 +470,8 @@ def _draw_overlay(frame, cues: FrameCues, res: dict) -> None:
                     0.6, (0, 255, 180), 2, cv2.LINE_AA)
 
 
-def run_capture(source: str, model_path: str, show: bool, max_seconds: float | None) -> dict:
+def run_capture(source: str, model_path: str, show: bool, max_seconds: float | None,
+                baseline_ear: float | None = None) -> dict:
     import cv2
 
     cap = cv2.VideoCapture(int(source) if source.isdigit() else source)
@@ -420,7 +480,7 @@ def run_capture(source: str, model_path: str, show: bool, max_seconds: float | N
     is_file = not source.isdigit()
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
 
-    analyzer = BehaviouralCueAnalyzer(model_path)
+    analyzer = BehaviouralCueAnalyzer(model_path, baseline_ear=baseline_ear)
     start = time.monotonic()
     frame_idx = 0
     try:
@@ -436,7 +496,7 @@ def run_capture(source: str, model_path: str, show: bool, max_seconds: float | N
             if max_seconds is not None and t >= max_seconds:
                 break
             if show:
-                _draw_overlay(frame, cues, analyzer.result())
+                _draw_overlay(frame, cues, analyzer.gcs, analyzer.result())
                 cv2.imshow("Behavioural cues", frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
@@ -496,6 +556,44 @@ def self_test() -> None:
     r = run([closed_eyes] * 900 + [open_eyes] * 900)
     assert r["GCS_eye_opening"] == 4, r
 
+    # Calibration: a patient with naturally narrow eyes (open EAR ≈ 0.19).
+    # Fixed thresholds call them only "partial" → 3; calibrated → 4.
+    def narrow_open(t):
+        return FrameCues(t, True, ear=0.19, blink_score=0.10, nose_xy=(0.5, 0.5))
+
+    fixed = GCSEyeEstimator()
+    fixed.calibration = "off"  # blocks calibration → old fixed-threshold behaviour
+    for i in range(600):
+        fixed.update(narrow_open(i / fps))
+    assert fixed.result()["GCS_eye_opening"] == 3, fixed.result()
+    r = run([narrow_open] * 600)
+    assert r["GCS_eye_opening"] == 4 and r["eye_calibration"] == "calibrated", r
+    assert r["baseline_ear"] == 0.19, r
+
+    # Wide-eyed patient (open EAR ≈ 0.40) who becomes drowsy (EAR 0.22).
+    # Fixed thresholds would still say "open" → 4; calibrated → 3.
+    def wide_open(t):
+        return FrameCues(t, True, ear=0.40, blink_score=0.05, nose_xy=(0.5, 0.5))
+
+    def drowsy(t):
+        return FrameCues(t, True, ear=0.22, blink_score=0.35, nose_xy=(0.5, 0.5))
+
+    r = run([wide_open] * 90 + [drowsy] * 810)
+    assert r["GCS_eye_opening"] == 3 and r["baseline_ear"] == 0.40, r
+
+    # Eyes never seen open → nothing to learn from → defaults are kept.
+    r = run([closed_eyes] * 450)
+    assert r["eye_calibration"] == "default" and r["baseline_ear"] is None, r
+
+    # A saved baseline from an earlier session is reused straight away.
+    saved = GCSEyeEstimator(baseline_ear=0.19)
+    for i in range(300):
+        saved.update(narrow_open(i / fps))
+    r = saved.result()
+    assert r["GCS_eye_opening"] == 4 and r["eye_calibration"] == "saved", r
+    # Implausible saved baselines are ignored.
+    assert GCSEyeEstimator(baseline_ear=0.05).calibration == "default"
+
     # Stress: relaxed face ~0, grimace with movement → high.
     relaxed = StressEstimator()
     for i in range(60):
@@ -526,6 +624,8 @@ def main() -> None:
     ap.add_argument("--model", default=DEFAULT_MODEL_PATH, help="path to face_landmarker.task")
     ap.add_argument("--show", action="store_true", help="show live overlay window")
     ap.add_argument("--max-seconds", type=float, default=None, help="stop after N seconds")
+    ap.add_argument("--baseline-ear", type=float, default=None,
+                    help="reuse a patient's saved baseline_ear instead of re-calibrating")
     ap.add_argument("--download-model", action="store_true", help="download the model and exit")
     ap.add_argument("--self-test", action="store_true", help="run scoring-logic tests and exit")
     args = ap.parse_args()
@@ -537,7 +637,7 @@ def main() -> None:
         download_model(args.model)
         return
 
-    result = run_capture(args.source, args.model, args.show, args.max_seconds)
+    result = run_capture(args.source, args.model, args.show, args.max_seconds, args.baseline_ear)
     print(json.dumps(result, indent=2))
 
 
