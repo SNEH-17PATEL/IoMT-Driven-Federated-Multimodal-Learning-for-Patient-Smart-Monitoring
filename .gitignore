@@ -2,6 +2,7 @@
 # SENSITIVE — never push these
 # =============================================================
 .env
+.env.local
 
 # =============================================================
 # DATA — too large for GitHub (191–197 MB each, limit = 100 MB)
@@ -18,6 +19,13 @@ models/prediction_history/*.csv
 # Keep directory placeholders so folders exist after a fresh clone
 !models/patient_vitals/.gitkeep
 !models/prediction_history/.gitkeep
+
+# =============================================================
+# COMPUTER VISION MODEL — auto-downloaded on first run (~12 MB)
+# Downloaded by cv_monitor.py from Google MediaPipe CDN.
+# Too large for git and regenerated automatically — not tracked.
+# =============================================================
+face_landmarker.task
 
 # =============================================================
 # PYTHON CACHE

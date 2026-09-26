@@ -1,7 +1,9 @@
+# ── Core app (Streamlit CDSS) ─────────────────────────────────────────────────
 streamlit>=1.35.0
 torch>=2.0.0
 numpy>=1.24.0
 pandas>=2.0.0
+
 # scaler.pkl and tfidf_vectorizer.pkl were fitted with scikit-learn 1.6.1.
 # The 1.x line maintains backward-compatible pickling for StandardScaler and
 # TfidfVectorizer, so loading across 1.x versions works (shows a warning, not an error).
@@ -12,8 +14,19 @@ shap>=0.44.0
 groq>=0.9.0
 python-dotenv>=1.0.0
 plotly>=5.18.0
+
+# ── Federated Learning ────────────────────────────────────────────────────────
 flwr[simulation]>=1.8.0
-# BigQuery — required only for Phase 0 (data preprocessing from Google Cloud)
-# Skip installation if you already have client_0/1/2.csv
+
+# ── Computer Vision Monitor (cv_monitor.py — run standalone) ─────────────────
+# Real-time Stress Score + GCS Eye Score from webcam.
+# MediaPipe 1.0+ Tasks API is used (requires face_landmarker.task model,
+# downloaded automatically on first run).
+opencv-python>=5.0.0
+mediapipe>=0.10.35
+
+# ── BigQuery — Phase 0 preprocessing only ────────────────────────────────────
+# Required only for running train_federated.py from scratch.
+# Skip if you already have data/fl_training/client_0/1/2.csv
 google-cloud-bigquery>=3.11.0
 google-cloud-bigquery-storage>=2.20.0
