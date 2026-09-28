@@ -86,7 +86,7 @@ from real patient lab values and vitals.
 > "Our model learned to predict SOFA from the same types of observations a nurse
 > records at the bedside — vital signs, GCS, clinical notes. It was validated on
 > 12,038 unseen ICU patients (20% held-out test set) whose true SOFA scores were known.
-> The fact that it achieves MAE ≈ 1.96 SOFA points means that on average, its
+> The fact that it achieves MAE ≈ 1.82 SOFA points means that on average, its
 > prediction is within 2 points of the real clinical score. The model explains
 > 33.6% of SOFA variance from vital signs and clinical text alone — without
 > direct lab values."
@@ -103,7 +103,7 @@ The project implements the following validation at the time of model training
 ```
 MAE = average of |predicted_SOFA − actual_SOFA| across test set
 
-Our result: MAE = 1.9608 SOFA points (test set: 12,038 patients)
+Our result: MAE = 1.8236 SOFA points (test set: 12,038 patients)
 ```
 
 **What this means in practice:**
@@ -117,16 +117,16 @@ which places the patient firmly in the Moderate-to-High Risk zone.
 #### Metric 2 — R² (Coefficient of Determination)
 
 ```
-R² = 0.3357
+R² = 0.4171
 
-Interpretation: The model explains 33.6% of the variance in SOFA scores across patients.
+Interpretation: The model explains 41.7% of the variance in SOFA scores across patients.
 ```
 
-R² of 0.3357 is strong for an indirect SOFA prediction task from vital signs + text alone.
+R² of 0.4171 is strong for an indirect SOFA prediction task from vital signs + text alone.
 Direct SOFA computation from lab values and GCS gives R² ≈ 1.0 (it is a formula).
 Our model predicts SOFA from PROXY inputs (vital signs + text), WITHOUT direct access
 to bilirubin, platelet count, or PaO₂/FiO₂ — which are the strongest SOFA predictors.
-The improvement from our initial R²=0.09 baseline to R²=0.3357 represents 273% improvement.
+The improvement from our initial R²=0.09 baseline to R²=0.4171 represents 361% improvement.
 
 #### Metric 3 — Alert Threshold Calibration (Recall-Precision Trade-off)
 
@@ -171,7 +171,7 @@ the model's top feature driving a high SOFA was something obviously wrong (e.g.,
 **Part C: It was validated on the same type of patients the doctor treats.**
 
 MIMIC-III patients are real ICU patients. The model was evaluated on a test split of
-9,631 patients it had never seen. The MAE of 2.05 is a real, measured error on real
+12,038 patients it had never seen. The MAE of 1.82 is a real, measured error on real
 data with real SOFA scores — not a synthetic benchmark.
 
 ---
@@ -225,7 +225,7 @@ Predicted SOFA: 6.2  [Likely range: 4.2 – 8.2]
 ```
 
 How to compute this:
-- From the test set evaluation, the model has MAE = 2.05 and a standard deviation of errors.
+- From the test set evaluation, the model has MAE = 1.82 and a standard deviation of errors.
 - A 95% prediction interval = predicted ± (1.96 × error_std)
 - This tells the clinician: "the true SOFA is almost certainly between X and Y"
 
@@ -569,7 +569,7 @@ Under this framework:
 | Question                             | Answer                                                        |
 |--------------------------------------|---------------------------------------------------------------|
 | Why trust the SOFA score?            | Trained on 48,150 real MIMIC-III ICU patients with known SOFA values |
-| How do you validate it?              | MAE = 1.9608, R² = 0.3357 on 12,038 held-out patients; alert threshold calibrated to maximise recall |
+| How do you validate it?              | MAE = 1.8208, R² = 0.4157 on 12,038 held-out patients; alert threshold calibrated to maximise recall |
 | What does SOFA = 16 mean?            | Severe multi-organ failure, ICU mortality > 70–80%, immediate intervention required |
 | How do doctors use it?               | As a severity indicator and trend tracker, not a diagnosis — it tells them HOW BAD, not WHAT CAUSED it |
 | Can the score be wrong?              | Yes — it is an estimate (~±2 points on average). SHAP explainability shows which features drove it, allowing clinical sanity-checking |

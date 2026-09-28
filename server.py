@@ -135,7 +135,8 @@ try:
             _existing = json.load(_f)
         # Keep MAE/R² from simulation run if available; only overwrite config fields
         for _k in ("final_mae", "final_r2", "train_samples", "test_samples",
-                   "pred_range_min", "pred_range_max"):
+                   "pred_range_min", "pred_range_max",
+                   "epochs_per_round", "split_type", "hospital_names", "tfidf_features"):
             if _k in _existing:
                 _meta[_k] = _existing[_k]
 except Exception:

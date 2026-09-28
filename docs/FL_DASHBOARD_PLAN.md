@@ -2,8 +2,8 @@
 
 **Project:** ICU CDSS — Multimodal Intelligence System with Federated Learning  
 **Interface:** `fl_dashboard.py` — standalone Streamlit app (separate from `app.py`)  
-**Status:** Planning phase — not yet implemented  
-**Last updated:** 2026-09-20
+**Status:** ✅ Fully implemented — `fl_dashboard.py` (1,480 lines)  
+**Last updated:** 2026-09-27
 
 ---
 
@@ -350,32 +350,43 @@ Collapsible `st.expander()` panels below each major section:
 
 ---
 
-## 11. Implementation Order (when ready to build)
+## 11. Implementation Order — Completed
 
-1. `fl_dashboard.py` skeleton — page config, CSS, layout columns
-2. Control panel — sliders, buttons, algorithm dropdown
-3. FL backend — `_FL_STATE` dict, background thread, FL loop with all phases
-4. Network visualization — static first (server + 3 hospital nodes), then add CSS animations
-5. Loss curves — Plotly line chart, updates each round
-6. Weight stats cards — per-client numbers after each training phase
-7. Weight histogram — before/after overlay, updates after aggregation phase
-8. Layer 1 heatmap — 108×128 weight matrix, updates each round
-9. Round history table — `st.dataframe` with colour coding
-10. Auto-refresh mechanism — `streamlit-autorefresh` conditional on `_FL_STATE["running"]`
-11. Polish — animations, phase transitions, dark theme, ICU aesthetic
-12. Final testing — full 10-round run, verify all panels update correctly
+All items implemented in `fl_dashboard.py` (1,480 lines):
 
----
-
-## 12. Dependencies to Add
-
-```
-streamlit-autorefresh    # auto-refresh while FL is running
-```
-
-All other dependencies already present: `streamlit`, `torch`, `numpy`, `pandas`,
-`plotly`, `joblib`, `scikit-learn`.
+1. ✅ `fl_dashboard.py` skeleton — page config, dark ICU CSS, wide layout
+2. ✅ Control panel — rounds slider (5–20), speed slider (0.1s–3s/phase), algorithm dropdown, Start/Stop/Reset buttons
+3. ✅ FL backend — module-level `_STATE` dict with `threading.Lock`, background `fl_thread()`, all 6 phases implemented (distribute → train H0 → train H1 → train H2 → aggregate → round complete)
+4. ✅ Network visualization — full custom HTML/CSS with animated arrows (CSS `@keyframes`), phase-coloured badge, hospital nodes with live metrics
+5. ✅ Metrics charts — Plotly dual-axis chart showing both **MAE** (y-left) and **R²** (y-right) per round for all 3 hospitals + global; more informative than pure loss
+6. ✅ Weight stats cards — mean, std, Δ from global per client, updates after each training phase
+7. ✅ Weight histogram — before/after aggregation overlay (Plotly), shows convergence effect
+8. ✅ Layer 1 heatmap — 108×128 weight matrix (Plotly `go.Heatmap`), updates each round
+9. ✅ Round history table — `st.dataframe` with colour coding, best round highlighted
+10. ✅ Auto-refresh mechanism — implemented with `st.rerun()` + `time.sleep(1)` at bottom of script (NOT `streamlit-autorefresh` library — `st.rerun()` was cleaner and sufficient)
+11. ✅ Polish — dark ICU aesthetic (`#0a1628` background), animated arrows, phase transition colours, match `app.py` visual style
+12. ✅ Explanatory expanders — collapsible tooltips below each major section (Q15 from open questions)
+13. ✅ Client data statistics — shown before simulation starts (Q13)
+14. ✅ Final testing — full 10-round simulation verified, all panels update correctly
 
 ---
 
-**All questions resolved. Ready for implementation.**
+## 12. Dependencies
+
+No additional dependencies were needed beyond what was already in `requirements.txt`.
+
+| Library | Used for | Already in requirements.txt |
+|---|---|---|
+| `streamlit` | Page framework, widgets, `st.rerun()` | ✅ |
+| `torch` | ICUModel forward pass, weight manipulation | ✅ |
+| `numpy` | Weight array operations, histogram data | ✅ |
+| `pandas` | Client CSV loading, round history table | ✅ |
+| `plotly` | MAE/R² chart, weight histogram, layer heatmap | ✅ |
+| `joblib` | Loading `scaler.pkl` for feature column names | ✅ |
+| `scikit-learn` | `train_test_split` for validation split | ✅ |
+
+> **Note:** `streamlit-autorefresh` (planned in Q15) was NOT used. The auto-refresh is implemented with `time.sleep(1)` + `st.rerun()` at the bottom of the script — simpler and no extra dependency.
+
+---
+
+**All questions resolved. Implementation complete.**

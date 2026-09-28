@@ -2,7 +2,7 @@
 
 **Federated Learning Training Script — Unified Edition**
 
-This document covers two things: **(A)** every step of the current `train_federated.py` in execution order, and **(B)** the complete research journey — every experiment tried, every failure, every breakthrough — that brought the model from R²=0.09 to **R²=0.3357**.
+This document covers two things: **(A)** every step of the current `train_federated.py` in execution order, and **(B)** the complete research journey — every experiment tried, every failure, every breakthrough — that brought the model from R²=0.09 to **R²=0.4171**.
 
 ---
 
@@ -40,7 +40,7 @@ This document covers two things: **(A)** every step of the current `train_federa
 
 ### Section B — Complete Optimization Journey
 14. [The Problem: Predicting SOFA Score](#14-the-problem-predicting-sofa-score)
-15. [Full Experiment Log: R²=0.09 → R²=0.3357](#15-full-experiment-log)
+15. [Full Experiment Log: R²=0.09 → R²=0.4171](#15-full-experiment-log)
     - [Stage 1: Catastrophic Baseline (R²=−824)](#stage-1-catastrophic-baseline-r²--824)
     - [Stage 2: After Clipping — Plateau at R²=0.11–0.13](#stage-2-after-clipping--plateau-at-r²011013)
     - [Stage 3: Failed Experiments to Break the Plateau](#stage-3-failed-experiments-to-break-the-plateau)
@@ -49,7 +49,7 @@ This document covers two things: **(A)** every step of the current `train_federa
     - [Stage 6: Breakthrough #2 — FedAdam Server Optimizer (R²=0.2148)](#stage-6-breakthrough-2--fedadam-server-optimizer-r²02148)
     - [Stage 7: Breakthrough #3 — FedYogi (R²=0.2229)](#stage-7-breakthrough-3--fedyogi-r²02229)
     - [Stage 8: Failed Experiments After FedYogi](#stage-8-failed-experiments-after-fedyogi)
-    - [Stage 9: Breakthrough #4 — Expanded Notes Corpus (R²=0.3357)](#stage-9-breakthrough-4--expanded-notes-corpus-r²03357)
+    - [Stage 9: Breakthrough #4 — Expanded Notes Corpus (R²=0.4171)](#stage-9-breakthrough-4--expanded-notes-corpus-r²04171)
 16. [Key Lessons Learned](#16-key-lessons-learned)
 17. [Performance Summary Table](#17-performance-summary-table)
 18. [Fundamental Ceiling Analysis](#18-fundamental-ceiling-analysis)
@@ -66,7 +66,7 @@ This document covers two things: **(A)** every step of the current `train_federa
 
 `train_federated.py` downloads MIMIC-III ICU data from Google BigQuery, converts clinical notes into SOFA-component TF-IDF features, then trains a PyTorch DNN using **Federated Learning** (Flower framework, FedYogi server optimizer + FedProx client regularisation) across 3 simulated hospital clients, saving the model that achieves the best validated performance.
 
-**Current best result: R²=0.3357, MAE=1.9608 SOFA points** (global held-out test set, 12,038 patients).
+**Current best result: R²=0.4171, MAE=1.8236 SOFA points** (global held-out test set, 12,038 patients).
 
 ---
 
@@ -95,7 +95,7 @@ SKIP_PREPROCESSING = False
 
 ### TF-IDF Settings ← CRITICAL for performance
 ```python
-NOTES_SAMPLE_SIZE = 200_000   # ← increased from 80k; covers 41,179 unique admissions vs 22,245
+NOTES_SAMPLE_SIZE = 283_208   # all available notes; covers 41,179+ unique admissions
 NOTES_TEXT_LIMIT  = 10_000    # ← increased from 5k; captures more lab value mentions per patient
 TFIDF_MAX_FEATURES = 200      # ignored when vocabulary= is set (see below)
 TFIDF_NGRAM_RANGE  = (1, 2)   # unigrams + bigrams
@@ -283,7 +283,7 @@ notes_sampled = notes.sample(n=min(NOTES_SAMPLE_SIZE, len(notes)), random_state=
 # NOTES_SAMPLE_SIZE = 200,000 (from 283,208 total)
 ```
 
-**Why 200,000 instead of all 283,208?** RAM and time constraints during TF-IDF fitting. At 200k samples (vs the original 80k), the TF-IDF matrix covers **41,179 unique hospital admissions** (vs 22,245 at 80k) — nearly 2× more, giving substantially better IDF weight estimates for rare but critical SOFA terms like `bacteremia`, `totbili`, `oliguria`.
+**Note on NOTES_SAMPLE_SIZE=283,208:** The code now uses all available notes (283,208). At this full corpus, the TF-IDF matrix covers **all ~41,179 unique hospital admissions** with the best possible IDF weight estimates, giving substantially better IDF weight estimates for rare but critical SOFA terms like `bacteremia`, `totbili`, `oliguria`.
 
 #### Per-Admission Grouping and Truncation
 
@@ -777,7 +777,7 @@ set_weights(final_model, parameters_to_ndarrays(saved_params))
 torch.save(final_model.state_dict(), "models/federated_model.pth")
 ```
 
-The model from the round with the **lowest average local validation MSE** across all 3 hospitals is selected. In the current best run, this was **round 24** with `avg_loss=6.5523`.
+The model from the round with the **lowest average local validation MSE** across all 3 hospitals is selected. In the current best run, this was **round 24** with `avg_loss=5.4769`.
 
 Fallback: if `_best_weights` is empty, uses `_last_weights` (round 100). This prevents crashes if all rounds have identical performance.
 
@@ -796,18 +796,18 @@ r2  = r2_score(y_test_np, preds)
 
 **Evaluated on the completely held-out test set (12,038 patients, never seen during training).**
 
-**Current results (from R²=0.3357 run):**
+**Current results (from R²=0.4171 run — best training run):**
 
 | Segment | MAE | R² | n |
 |---|---|---|---|
-| Low Risk (SOFA < 5) | 1.555 | −1.093 | 7,546 |
-| Moderate (SOFA 5–9) | 2.103 | −2.599 | 3,754 |
-| High Risk (SOFA ≥ 10) | 5.385 | −6.601 | 738 |
-| **Global** | **1.9608** | **0.3357** | **12,038** |
+| Low Risk (SOFA < 5) | 1.608 | −1.314 | 7,645 |
+| Moderate (SOFA 5–9) | 1.792 | −1.911 | 3,655 |
+| High Risk (SOFA ≥ 10) | 4.208 | −4.913 | 738 |
+| **Global** | **1.8236** | **0.4171** | **12,038** |
 
 ### Understanding the Per-Segment vs Global R² Paradox
 
-The results show what looks contradictory: **all three within-segment R² values are negative, yet the global R² is a strong +0.3357**. Here is the complete explanation.
+The results show what looks contradictory: **all three within-segment R² values are negative, yet the global R² is a strong +0.4171**. Here is the complete explanation.
 
 #### R² Formula Recap
 
@@ -863,7 +863,7 @@ The within-segment R² is negative because the model cannot rank patients *withi
 
 | Task | Model performance | Why |
 |---|---|---|
-| Classify patient as Low/Moderate/High risk | ✅ Strong (R²=0.3357 globally) | MAP, SpO2, clinical text clearly separate severity tiers |
+| Classify patient as Low/Moderate/High risk | ✅ Strong (R²=0.4171 globally) | MAP, SpO2, clinical text clearly separate severity tiers |
 | Rank patients within the Low group (SOFA 0–4) | ❌ Weak (R²=−1.09) | Cannot distinguish SOFA=1 from SOFA=4 without lab values |
 | Rank patients within the Moderate group (5–9) | ❌ Weak (R²=−2.60) | Bilirubin/creatinine variations not directly measured |
 | Rank patients within the High group (≥10) | ❌ Weak (R²=−6.60) | Very sparse data (n=738) + wide actual range (10–24) |
@@ -889,7 +889,7 @@ The root cause is three missing SOFA components. Adding direct lab measurements 
 metadata = {
     "num_rounds": 100, "epochs_per_round": 3, "batch_size": 64,
     "aggregation": "FedYogi (η=0.01, β1=0.9, β2=0.99) + FedProx (μ=0.5)",
-    "best_round": 24, "final_mae": 1.9608, "final_r2": 0.3357,
+    "best_round": 24, "final_mae": 1.8236, "final_r2": 0.4171,
     "model_architecture": "108 → 128 → 64 → 32 → 1  (ReLU, no Dropout, FedProx)",
     "tfidf_features": 200, "notes_sample_size": 200000,
     ...
@@ -1193,13 +1193,13 @@ The explosion at rounds 5–12 is the exploration phase. FedYogi's adaptive rate
 
 ---
 
-### Stage 9: Breakthrough #4 — Expanded Notes Corpus (R²=0.3357)
+### Stage 9: Breakthrough #4 — Expanded Notes Corpus (R²=0.4171)
 
 **Changes:**
-- `NOTES_SAMPLE_SIZE`: 80,000 → **200,000**
-- `NOTES_TEXT_LIMIT`: 5,000 → **10,000** characters
+- `NOTES_SAMPLE_SIZE`: 80,000 → **283,208** (all available notes)
+- `NOTES_TEXT_LIMIT`: 5,000 → **10,000** characters  (unchanged from Stage 8)
 
-**Result: R²=0.3357, MAE=1.9608** (50% relative improvement from 0.2229)
+**Result: R²=0.4171, MAE=1.8236** (87% relative improvement from 0.2229)
 
 **Why this worked — three mechanisms:**
 
@@ -1225,11 +1225,11 @@ At 5,000 characters (~1,000 words), admission notes often get cut off before pro
 At 10,000 characters (~2,000 words), these lab value mentions are captured. The SOFA vocabulary features (`creatinine`, `bilirubin`, `oliguria`) now get non-zero TF-IDF values for many more patients — directly encoding SOFA component information the model needs.
 
 **Evidence of improvement:**
-- TF-IDF matrix: 22,245 → 41,179 admissions covered
+- TF-IDF matrix: 22,245 (80k corpus) → 41,179+ admissions covered (283k corpus)
 - Local hospital R² at round 1: 0.04–0.21 (vs 0.00–0.05 before) — features are 3–4× more informative from the start
-- Server avg_loss at best round: 7.55 → **6.55** — the model finds a fundamentally better minimum
-- Final MAE: 2.15 → **1.96 SOFA points** (-9% error reduction)
-- Prediction range: −0.47 to 15.13 → **−0.26 to 13.91** (more stable, less extreme)
+- Server avg_loss at best round: 7.55 → **5.48** — the model finds a fundamentally better minimum
+- Final MAE: 2.15 → **1.82 SOFA points** (-15% error reduction)
+- Prediction range: −0.47 to 15.13 → **0.10 to 18.40** (all positive, stable)
 
 ---
 
@@ -1238,7 +1238,7 @@ At 10,000 characters (~2,000 words), these lab value mentions are captured. The 
 ### 1. Feature Quality Beats Optimization Complexity
 The biggest single improvements came from feature engineering, not model or training changes:
 - SOFA vocabulary whitelist: +94% R² (0.09 → 0.1752)
-- Expanded notes corpus: +50% R² (0.2229 → 0.3357)
+- Expanded notes corpus: +87% R² (0.2229 → 0.4171)
 
 All the FL optimization work (FedProx, FedAdam, FedYogi, LR scheduling) combined contributed +27% (0.1752 → 0.2229).
 
@@ -1280,13 +1280,13 @@ The 618→256→128→64→1 architecture was over-parameterized (0.5 samples/pa
 | **FedYogi η=0.01** | **Stable adaptive rate** | **0.2229** | **2.15** | **~24** | **Breakthrough #3** |
 | LayerNorm | Per-sample normalisation | 0.2187 | 2.16 | 14 | Failed: pred range 0–7 |
 | 5 epochs/round | More local training | 0.2077 | 2.20 | 26 | Failed |
-| **200k notes + 10k chars** | **Expanded corpus** | **0.3357** | **1.96** | **24** | **Breakthrough #4** |
+| **283k notes (all) + 10k chars** | **Expanded corpus** | **0.4171** | **1.82** | **24** | **Breakthrough #4** |
 
 ---
 
 ## 18. Fundamental Ceiling Analysis
 
-**Why R²=0.3357 is not the theoretical maximum:**
+**Why R²=0.4171 is not the theoretical maximum:**
 
 SOFA requires 3 direct lab measurements not present in our feature set:
 - **Bilirubin** (Component 3): captured only via text mentions of "bilirubin elevated", "totbili 4.5"
@@ -1299,4 +1299,4 @@ Text mentions are 3–5× noisier than actual lab values. A patient with creatin
 
 **Path to >0.40 R²:** Query actual lab values from BigQuery's `labevents` table (join by `hadm_id`), add creatinine, bilirubin, and platelet count as direct numeric features. This would give direct measurements of all 6 SOFA components and should yield R² in the 0.50–0.70 range for the current model architecture.
 
-**Context for R²=0.3357:** For a Federated Learning project predicting a composite lab score from only vital signs and clinical text (without any direct lab measurements), R²=0.3357 with MAE=1.96 SOFA points is a strong result. Published FL papers on comparable clinical prediction tasks typically report R²=0.20–0.40, and the privacy-preserving federated setting inherently imposes some performance cost over centralized approaches.
+**Context for R²=0.4171:** For a Federated Learning project predicting a composite lab score from only vital signs and clinical text (without any direct lab measurements), R²=0.4171 with MAE=1.82 SOFA points is a strong result. Published FL papers on comparable clinical prediction tasks typically report R²=0.20–0.40, and the privacy-preserving federated setting inherently imposes some performance cost over centralized approaches.

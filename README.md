@@ -578,18 +578,18 @@ Total parameters: ~23,000
 
 | Metric | Value |
 |---|---|
-| MAE | **1.9608 SOFA points** |
-| R² | **0.3357** |
-| Prediction range | -0.26 – 13.91 |
+| MAE | **1.8236 SOFA points** |
+| R² | **0.4171** |
+| Prediction range | 0.10 – 18.40 |
 | Best FL round | 24 (of 100) |
 
 Per-segment performance:
 
 | Segment | n | MAE | R² |
 |---|---|---|---|
-| Low Risk (SOFA < 5) | 7,546 | 1.555 | −1.093 |
-| Moderate (SOFA 5–9) | 3,754 | 2.103 | −2.599 |
-| High Risk (SOFA ≥ 10) | 738 | 5.385 | −6.601 |
+| Low Risk (SOFA < 5) | 7,645 | 1.608 | −1.314 |
+| Moderate (SOFA 5–9) | 3,655 | 1.792 | −1.911 |
+| High Risk (SOFA ≥ 10) | 738 | 4.208 | −4.913 |
 
 > Note: Within-segment R² is negative because the model correctly distinguishes between risk tiers (positive global R²) but cannot precisely rank patients within the same tier without direct lab values (bilirubin, creatinine, platelets). This is explained in `docs/VALIDATION.md`.
 

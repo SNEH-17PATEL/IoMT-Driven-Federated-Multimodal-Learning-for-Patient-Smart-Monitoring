@@ -335,8 +335,8 @@ def load_training_metadata():
         "input_features": 108,
         "model_architecture": "108 → 128 → 64 → 32 → 1  (ReLU, no Dropout, FedProx)",
         "best_round": 24,
-        "final_mae": 1.9608, "final_r2": 0.3357,
-        "pred_range_min": -0.26, "pred_range_max": 13.91,
+        "final_mae": 1.8236, "final_r2": 0.4171,
+        "pred_range_min": 0.10, "pred_range_max": 18.40,
         "differential_privacy": False,
         "dp_sensitivity": None, "dp_sigma": None,
         "dp_epsilon": None, "dp_delta": None,
@@ -1880,7 +1880,7 @@ with tab4:
         '<div style="background:rgba(106,27,154,0.2);border:2px solid #9c27b0;'
         'border-radius:12px;padding:12px 36px;text-align:center;">'
         '<div style="font-size:13px;font-weight:800;color:#ce93d8;">④ FedAvg: Average all hospital weights</div>'
-        '<div style="font-size:11px;color:#7fb3c8;margin-top:4px;">→ Improved global model · Repeat for 20 rounds</div>'
+        '<div style="font-size:11px;color:#7fb3c8;margin-top:4px;">→ Improved global model · Repeat for 100 rounds</div>'
         '</div></div>'
 
         '</div>',
@@ -1999,8 +1999,8 @@ with tab4:
             <b style="color:#7fb3c8;">Optimizer:</b> AdamW (weight_decay=1e-4)<br>
             <b style="color:#7fb3c8;">Loss:</b> Weighted MSE — high-SOFA patients get up to 4.7× gradient weight<br>
             <b style="color:#7fb3c8;">No Dropout</b> — causes FL divergence; regularised by AdamW instead<br>
-            <b style="color:#7fb3c8;">Parameters:</b> 199,681 total trainable weights<br>
-            <b style="color:#7fb3c8;">FL Framework:</b> Flower (flwr) with FedAvg aggregation<br>
+            <b style="color:#7fb3c8;">Parameters:</b> ~23,000 total trainable weights<br>
+            <b style="color:#7fb3c8;">FL Framework:</b> Flower (flwr) · FedYogi + FedProx<br>
             <b style="color:#7fb3c8;">Best round:</b> {m['best_round']} of {m['num_rounds']}
         </div>
         """, unsafe_allow_html=True)
@@ -2073,18 +2073,18 @@ with tab4:
 
     # ── Feature Vector Breakdown (visual bars) ──
     st.markdown("<div style='font-size:18px;font-weight:800;color:#e8f4ff;margin-bottom:12px;"
-                "border-left:3px solid #007BB5;padding-left:10px;'>🔢 Feature Vector Breakdown — 618 total</div>",
+                "border-left:3px solid #007BB5;padding-left:10px;'>🔢 Feature Vector Breakdown — 108 total</div>",
                 unsafe_allow_html=True)
 
     _feat_rows = [
-        ("📈 Trend Vitals",         9,   618, "#64b5f6","rgba(21,101,192,0.18)","#1565c0",
+        ("📈 Trend Vitals",         9,  108, "#64b5f6","rgba(21,101,192,0.18)","#1565c0",
          "HR_mean, HR_std, RR_mean, SpO₂_mean, SpO₂_min, Temp_mean, SBP_mean, DBP_mean, MAP_mean"),
-        ("📊 Latest Vitals",         7,   618, "#5fda80","rgba(46,125,50,0.18)","#2e7d32",
+        ("📊 Latest Vitals",         7,  108, "#5fda80","rgba(46,125,50,0.18)","#2e7d32",
          "latest_HR, latest_RR, latest_SpO₂, latest_Temp, latest_SBP, latest_DBP, latest_MAP"),
-        ("👁️ Computer Vision",       2,   618, "#ce93d8","rgba(106,27,154,0.18)","#6a1b9a",
+        ("👁️ Computer Vision",       2,  108, "#ce93d8","rgba(106,27,154,0.18)","#6a1b9a",
          "GCS Eye Opening (1–4 scale), Stress Score (0–10)"),
-        ("📝 Clinical NLP (TF-IDF)", 600, 618, "#ff8a65","rgba(230,81,0,0.18)","#e65100",
-         "600 clinical bigrams: hypotension, respiratory, intubated, vasopressor … (MIMIC-III vocab)"),
+        ("📝 Clinical NLP (TF-IDF)", 90, 108, "#ff8a65","rgba(230,81,0,0.18)","#e65100",
+         "90 SOFA-vocabulary whitelist terms: creatinine, bilirubin, vasopressor, intubated, sepsis … directly mapped to 6 SOFA organ components"),
     ]
 
     for _flabel, _fcount, _ftotal, _ftc, _fbg, _fbrd, _fex in _feat_rows:
@@ -2096,7 +2096,7 @@ with tab4:
                         margin-bottom:6px;">
                 <div style="font-size:13px;font-weight:700;color:{_ftc};">{_flabel}</div>
                 <div style="font-size:14px;font-weight:900;color:{_ftc};">
-                    {_fcount} <span style="font-size:10px;color:#8ab8cc;">/ 618 features ({_fw:.1f}%)</span>
+                    {_fcount} <span style="font-size:10px;color:#8ab8cc;">/ 108 features ({_fw:.1f}%)</span>
                 </div>
             </div>
             <div style="background:rgba(255,255,255,0.1);border-radius:6px;height:10px;margin-bottom:6px;overflow:hidden;">

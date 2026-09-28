@@ -272,12 +272,12 @@ leading to over-parameterisation. The right-sized architecture improves generali
 
 #### Step 1: Forward Pass
 
-For a single patient's feature vector `x` (shape: 618):
+For a single patient's feature vector `x` (shape: 108):
 
 ```
-h1 = ReLU(W1 @ x + b1)   # shape: 256  — first hidden layer
-h2 = ReLU(W2 @ h1 + b2)  # shape: 128  — second hidden layer
-h3 = ReLU(W3 @ h2 + b3)  # shape: 64   — third hidden layer
+h1 = ReLU(W1 @ x + b1)   # shape: 128  — first hidden layer
+h2 = ReLU(W2 @ h1 + b2)  # shape: 64   — second hidden layer
+h3 = ReLU(W3 @ h2 + b3)  # shape: 32   — third hidden layer
 y_pred = W4 @ h3 + b4    # shape: 1    — predicted SOFA
 ```
 
@@ -351,7 +351,7 @@ AdamW (Adaptive Moment Estimation + Weight Decay):
 Training does not use all 48,000 patients at once (that would require huge memory).
 Instead, patients are randomly shuffled into mini-batches of 64, and the forward
 pass + backward pass + update is done for each batch. One pass through all patients
-= one **epoch**. We train for 10 epochs per FL round × 20 rounds = 200 epochs total.
+= one **epoch**. We train for 3 epochs per FL round × 100 rounds = 300 epochs total.
 
 ---
 
@@ -412,7 +412,7 @@ Round 2:
 ...repeat for 100 rounds...
 
 Final: W¹⁰⁰ (federated model) = knowledge from all 3 hospitals, zero patient data shared
-Best model: saved from round 24 (lowest server validation loss = 6.5523 → R²=0.3357)
+Best model: saved from round 24 (lowest server validation loss = 5.4769 → R²=0.4171)
 ```
 
 **Why this works for DNN but NOT for ensembles:**
@@ -568,15 +568,15 @@ a global tree from these histograms.
 ### Alternative 5 — Linear Regression / Ridge Regression
 
 **What it is:**
-The simplest regression model: `SOFA = w₁×HR + w₂×SpO₂ + ... + w₆₁₈×tfidf_term + b`
+The simplest regression model: `SOFA = w₁×HR + w₂×SpO₂ + ... + w₁₀₈×tfidf_term + b`
 
-All 618 features contribute linearly. Ridge Regression adds L2 penalty on weights to
+All 108 features contribute linearly. Ridge Regression adds L2 penalty on weights to
 prevent overfitting on the 600 TF-IDF features.
 
 **Why we did NOT use it as the primary model (but it is our baseline):**
 - Cannot learn non-linear relationships (e.g., the threshold effect of SpO₂ below 90%)
 - Cannot learn feature interactions (e.g., "low MAP AND high stress is worse than either alone")
-- Would achieve R² ≈ 0.10–0.15 on this task (significantly worse than DNN's R²=0.25)
+- Would achieve R² ≈ 0.10–0.15 on this task (significantly worse than DNN's R²=0.4171)
 - However, it IS FL-compatible and could serve as a sanity check baseline
 
 ---
@@ -586,7 +586,7 @@ prevent overfitting on the 600 TF-IDF features.
 **What it is:**
 Use a pre-trained BioBERT (BERT fine-tuned on biomedical text) to encode clinical notes
 into a dense 768-d vector instead of TF-IDF's 600-d bag-of-words vector.
-Concatenate: 18 vital features + 768 BERT embedding → 786 features → DNN.
+Concatenate: 18 vital features + 768 BERT embedding → 786 features → DNN  (vs our 108 features).
 
 **Advantages:**
 - BioBERT understands "creatinine elevated" in context (TF-IDF sees it as just words)
@@ -606,7 +606,7 @@ Concatenate: 18 vital features + 768 BERT embedding → 786 features → DNN.
 
 | Model                  | FL Compatible | SHAP Method    | Performance (R²) | Complexity | Why Not Used          |
 |------------------------|---------------|----------------|------------------|------------|-----------------------|
-| **PyTorch DNN** ✅     | ✅ Yes (FedYogi+FedProx)| DeepExplainer | **0.3357**  | Medium     | **Current choice**    |
+| **PyTorch DNN** ✅     | ✅ Yes (FedYogi+FedProx)| DeepExplainer | **0.4171**  | Medium     | **Current choice**    |
 | LightGBM + XGBoost     | ❌ No (FedAvg) | TreeExplainer  | ~0.35–0.40*      | Low        | FL incompatible       |
 | Random Forest           | ❌ No         | TreeExplainer  | ~0.25–0.30*      | Low        | FL incompatible, 0%  |
 | LSTM/GRU               | ✅ Yes         | GradientExplainer | ~0.28–0.32* | High       | Integration complexity|
@@ -641,7 +641,7 @@ A **PyTorch Deep Neural Network (DNN)**:
 - SHAP via DeepExplainer
 - Trained via Flower FL framework across 3 simulated hospitals
 - Predicts raw SOFA directly (no ×24 multiplication)
-- **Performance: R²=0.3357, MAE=1.9608 SOFA points**
+- **Performance: R²=0.4171, MAE=1.8236 SOFA points**
 
 ### Q3: Why switch to PyTorch DNN?
 

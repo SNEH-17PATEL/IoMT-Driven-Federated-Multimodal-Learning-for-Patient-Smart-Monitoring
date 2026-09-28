@@ -12,7 +12,7 @@
 3. [What the System Does — End to End](#3-what-the-system-does--end-to-end)
 4. [Dataset — MIMIC-III and BigQuery](#4-dataset--mimic-iii-and-bigquery)
 5. [Preprocessing — SQL Pipeline](#5-preprocessing--sql-pipeline)
-6. [Feature Engineering — All 618 Features](#6-feature-engineering--all-618-features)
+6. [Feature Engineering — All 108 Features](#6-feature-engineering--all-108-features)
 7. [Sliding Window Mechanism](#7-sliding-window-mechanism)
 8. [Clinical NLP — TF-IDF](#8-clinical-nlp--tf-idf)
 9. [Target Variable — SOFA Score](#9-target-variable--sofa-score)
@@ -78,11 +78,11 @@ PREPROCESSING
   ├─ Append new vitals to rolling 20-reading sliding window
   ├─ Compute 9 trend features (mean, std, min from last 20 readings)
   ├─ Extract 7 latest vital values (current state)
-  ├─ Convert clinical notes to 600 TF-IDF features
-  └─ Combine into 618-feature vector → StandardScaler
+  ├─ Convert clinical notes to 90 TF-IDF features (SOFA vocabulary whitelist)
+  └─ Combine into 108-feature vector → StandardScaler
 
 PREDICTION
-  └─ Federated PyTorch DNN (618→256→128→64→1)
+  └─ Federated PyTorch DNN (108→128→64→32→1)
      → Raw SOFA score (0–24)
      → Risk level: Low (<5) / Moderate (5–9) / High (≥10)
      → Alert fires if predicted SOFA ≥ 8
@@ -198,9 +198,9 @@ This is the final table: `ml_dataset_final`
 
 ---
 
-## 6. Feature Engineering — All 618 Features
+## 6. Feature Engineering — All 108 Features
 
-The 618 features fed into the model are split into 4 groups:
+The 108 features fed into the model are split into 4 groups:
 
 ### Group 1 — Trend Features (9 features)
 
@@ -342,7 +342,7 @@ TfidfVectorizer(
 - Fitted vectorizer saved as `models/tfidf_vectorizer.pkl`
 
 **At inference:**
-The user's clinical note is transformed using the saved vectorizer (`tfidf.transform([note])`). The same 600 vocabulary terms are used — no re-fitting. If the note contains words not in the vocabulary, those words are simply ignored.
+The user's clinical note is transformed using the saved vectorizer (`tfidf.transform([note])`). The same 90 SOFA-vocabulary terms are used — no re-fitting. If the note contains words not in the vocabulary, those words are simply ignored.
 
 **Handling empty notes:**
 If no clinical note is entered, the app substitutes "No clinical notes provided" which produces a valid but sparse vector.
@@ -687,7 +687,7 @@ A positive SHAP value for a feature means that feature pushed the prediction tow
 
 ### Clinical Feature Filtering
 
-From all 618 SHAP values, clinically relevant features are identified using keyword matching:
+From all 108 SHAP values, clinically relevant features are identified using keyword matching:
 - Vital sign keywords: HR, RR, SpO2, Temp, SBP, DBP, MAP, GCS, stress
 - Clinical text keywords: hypotension, respiratory, mental, septic, failure, intubated, vasopressor, shock, fever, infection, oxygen, ventilat, cardiac, renal, hepatic
 
@@ -867,10 +867,10 @@ Compute 9 trend features from the 20-row window: HR_mean, HR_std, RR_mean, SpO2_
 Build a dictionary with the 7 latest vitals + GCS eye + stress score from sidebar inputs.
 
 ### Step 5 — TF-IDF Transformation
-Apply `tfidf.transform([clinical_note])` → sparse matrix → dense DataFrame with 600 columns.
+Apply `tfidf.transform([clinical_note])` → sparse matrix → dense DataFrame with 90 columns.
 
 ### Step 6 — Feature Combination and Alignment
-Concatenate trend_df + latest_df + tfidf_df into a 618-column DataFrame. For any missing columns, fill with 0. Reorder to exactly match `feature_cols` (loaded from `models/feature_columns.pkl`).
+Concatenate trend_df + latest_df + tfidf_df into a 108-column DataFrame. For any missing columns, fill with 0. Reorder to exactly match `feature_cols` (loaded from `models/feature_columns.pkl`).
 
 ### Step 7 — Scaling
 Apply `scaler.transform(final_df)` → StandardScaler-normalised values.
@@ -891,7 +891,7 @@ If SOFA ≥ 5: yellow `st.warning()` banner.
 Append current prediction to `models/prediction_history.csv`: timestamp, SOFA, risk level, HR, RR, SpO₂, Temp, SBP, MAP, GCS, Stress. Keep last 50 rows.
 
 ### Step 12 — SHAP Computation
-With spinner: `explainer.shap_values(X_tensor)` → 618 SHAP values. Filter to clinically relevant features → top 7 → clinical interpretations + key risk factors.
+With spinner: `explainer.shap_values(X_tensor)` → 618 SHAP values. Filter to clinically relevant features → top 7 → clinical interpretations + key risk factors. (108 total SHAP values)
 
 ### Step 13 — Trend Analysis
 For each of 7 vitals: compute trend direction (increasing/stable/decreasing from polyfit slope) and status (low/normal/high from normal range comparison). Combine: "SpO₂ → low & decreasing".
@@ -911,6 +911,12 @@ Render across 4 tabs with all computed information.
 
 ### `app.py` — The Main Application
 The complete Streamlit web application. Contains the entire inference pipeline from user input to LLM output. All display logic. Imports `ICUModel`, `get_trend`, `classify_range` from `model_utils.py`.
+
+### `fl_dashboard.py` — FL Simulation Dashboard ✅ Implemented
+Standalone Streamlit app (1,480 lines) that visually simulates the federated learning process in real time. Shows all 6 FL phases (distribute → train H0 → train H1 → train H2 → aggregate → complete) with animated network diagram, Plotly MAE/R² charts, weight histograms, layer heatmap, and round history table. Run with `streamlit run fl_dashboard.py`.
+
+### `cv_monitor.py` — Computer Vision Monitor ✅ Implemented
+Standalone OpenCV application that measures Stress Score (0–10) and GCS Eye Score (E1–E4) in real time from a webcam, using PSPI from MediaPipe blendshapes and a 30-second rolling GCS window. Downloads `face_landmarker.task` (~12 MB) on first run. Run with `python cv_monitor.py`.
 
 ### `model_utils.py` — Shared Utilities
 Single file imported by app.py, train_federated.py, server.py, and client.py. Contains:
@@ -949,13 +955,13 @@ PyTorch `state_dict` containing the trained DNN weights. Keys: `net.0.weight`, `
 `sklearn.StandardScaler` fitted on all 618 features from the training data. Cannot be regenerated without the raw BigQuery data. Used to transform inference inputs to the same scale as training data.
 
 ### `models/tfidf_vectorizer.pkl`
-`sklearn.TfidfVectorizer` fitted on 283,208 MIMIC-III clinical notes. Cannot be regenerated without the raw BigQuery data. Used to transform clinical note text to 600-dimensional vectors.
+`sklearn.TfidfVectorizer` fitted on 283,208 MIMIC-III clinical notes. Cannot be regenerated without the raw BigQuery data. Used to transform clinical note text to 90-dimensional vectors (SOFA vocabulary whitelist).
 
 ### `models/feature_columns.pkl`
-Python list of 618 column names in the exact training order. Identical to `scaler.feature_names_in_`. Used as the authoritative column list in app.py to ensure feature alignment. This makes `feature_names_in_` independent of sklearn version.
+Python list of 108 column names in the exact training order. Identical to `scaler.feature_names_in_`. Used as the authoritative column list in app.py to ensure feature alignment. This makes `feature_names_in_` independent of sklearn version.
 
 ### `models/shap_background.npy`
-Numpy array of shape (300, 618) — 300 randomly sampled training rows used as the SHAP reference distribution. Regenerated every time `train_federated.py` is run.
+Numpy array of shape (300, 108) — 300 randomly sampled training rows used as the SHAP reference distribution. Regenerated every time `train_federated.py` is run.
 
 ### `models/patient_vitals.csv`
 20-row CSV with columns: time, HR, RR, SpO2, Temp, SBP, DBP, MAP. The sliding window history. Updated every time "Run Prediction" is clicked. Reset by the sidebar button.
@@ -989,15 +995,15 @@ ALERT_THRESHOLD = 8.0   # alert fires when predicted SOFA ≥ this value
 ### `train_federated.py` Constants
 
 ```python
-NUM_ROUNDS       = 20      # FL aggregation rounds
-EPOCHS_PER_ROUND = 10      # local training epochs per hospital per round
+NUM_ROUNDS       = 100     # FL aggregation rounds
+EPOCHS_PER_ROUND = 3       # local training epochs per hospital per round
 BATCH_SIZE       = 64      # mini-batch size
 SHAP_BG_SAMPLES  = 300     # background samples for SHAP DeepExplainer
 
 BASE_LR          = 0.001   # AdamW learning rate
-LR_DECAY         = 1.0     # 1.0 = no decay; <1.0 enables per-round decay
+LR_DECAY         = 0.99    # 1% per-round LR decay
 
-GRAD_CLIP        = None    # gradient clip max norm; None = disabled
+GRAD_CLIP        = 1.0     # gradient clip max norm
 OVERSAMPLE       = False   # WeightedRandomSampler; disabled (causes overfitting)
 USE_NONIID_SPLIT = False   # biased hospital split; disabled (causes client drift)
 
@@ -1009,7 +1015,7 @@ DP_SIGMA         = 1.0     # Gaussian noise multiplier
 ### `client.py` Constants
 
 ```python
-EPOCHS       = 10          # local training epochs per round
+EPOCHS       = 3           # local training epochs per round
 BATCH_SIZE   = 64
 USE_DP       = False       # must match server's intent
 DP_SENSITIVITY = 1.0
@@ -1038,9 +1044,9 @@ NORMAL_RANGES = {
 
 | Metric | Value |
 |---|---|
-| Overall MAE | **1.9608 SOFA points** |
-| Overall R² | **0.3357** |
-| Prediction range | -0.26 – 13.91 |
+| Overall MAE | **1.8236 SOFA points** |
+| Overall R² | **0.4171** |
+| Prediction range | 0.10 – 18.40 |
 | Training samples | 48,150 |
 | Test samples | 12,038 |
 | FL rounds | 100 (best was round 24) |
@@ -1052,11 +1058,11 @@ NORMAL_RANGES = {
 
 | Risk Level | n samples | MAE | R² | Notes |
 |---|---|---|---|---|
-| Low (<5) | 7,546 | 1.555 | -1.093 | Within-segment ranking limited by absent lab values |
-| Moderate (5-9) | 3,754 | 2.103 | -2.599 | Between-segment discrimination is strong |
-| High (≥10) | 738 | 5.385 | -6.601 | Wide SOFA range (10-24) + sparse training data |
+| Low (<5) | 7,645 | 1.608 | -1.314 | Within-segment ranking limited by absent lab values |
+| Moderate (5-9) | 3,655 | 1.792 | -1.911 | Between-segment discrimination is strong |
+| High (≥10) | 738 | 4.208 | -4.913 | Wide SOFA range (10-24) + sparse training data |
 
-**Note on negative per-class R²:** Global R²=0.3357 is positive because the model
+**Note on negative per-class R²:** Global R²=0.4171 is positive because the model
 correctly discriminates between risk tiers. Within-segment R² is negative because
 ranking patients within the same SOFA tier requires direct lab values (bilirubin,
 creatinine, platelets) not present in the feature set.
@@ -1080,7 +1086,7 @@ creatinine, platelets) not present in the feature set.
 | **SOFA vocabulary whitelist (90 terms)** | **0.1752** | **Feature breakthrough** |
 | FedAdam server optimizer | 0.2148 | Server optimization |
 | FedYogi server optimizer | 0.2229 | Better adaptive rate |
-| **All notes (283k) + 10k chars + FedYogi** | **0.3357** | **Current best** |
+| **All notes (283k) + 10k chars + FedYogi** | **0.4171** | **Current best** |
 
 ---
 

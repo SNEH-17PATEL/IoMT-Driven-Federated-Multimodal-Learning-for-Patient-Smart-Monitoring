@@ -756,7 +756,9 @@ Tab 4 — Federated Learning: FedYogi config, model architecture (108→128→64
 ```
 icu_monitor/
 │
-├── app.py
+├── app.py                    ← Main Streamlit CDSS application
+├── fl_dashboard.py           ← Federated Learning simulation dashboard
+├── cv_monitor.py             ← Computer Vision Monitor (Stress + GCS, standalone)
 ├── model_utils.py
 ├── train_federated.py
 ├── server.py
@@ -767,6 +769,7 @@ icu_monitor/
 ├── README.md
 │
 ├── docs/
+│   ├── CV_MONITOR.md         ← Stress Score + GCS Eye Score: methods, pipeline
 │   ├── TRAIN_FEDERATED.md
 │   ├── Project_Context.md
 │   ├── MODEL_DISCUSSION.md
@@ -905,9 +908,9 @@ Features are already StandardScaler-normalised and clipped to ±10.
 
 | Metric | Value |
 |---|---|
-| Overall MAE | **1.9608 SOFA points** |
-| Overall R² | **0.3357** |
-| Prediction range | -0.26 – 13.91 |
+| Overall MAE | **1.8236 SOFA points** |
+| Overall R² | **0.4171** |
+| Prediction range | 0.10 – 18.40 |
 | Training samples | 48,150 |
 | Test samples | 12,038 |
 | FL rounds | 100 (best was round 24) |
@@ -917,11 +920,11 @@ Features are already StandardScaler-normalised and clipped to ±10.
 
 | Risk Level | n samples | MAE | R² |
 |---|---|---|---|
-| Low (<5) | 7,546 | 1.555 | -1.093 |
-| Moderate (5-9) | 3,754 | 2.103 | -2.599 |
-| High (≥10) | 738 | 5.385 | -6.601 |
+| Low (<5) | 7,645 | 1.608 | -1.314 |
+| Moderate (5-9) | 3,655 | 1.792 | -1.911 |
+| High (≥10) | 738 | 4.208 | -4.913 |
 
-**Note on negative per-class R²:** Global R²=0.3357 is positive because the model
+**Note on negative per-class R²:** Global R²=0.4171 is positive because the model
 correctly discriminates between risk tiers. Within-segment R² is negative because
 the model cannot rank patients within the same SOFA range — this requires direct lab
 values (bilirubin, creatinine, platelets) not present in the feature set.
@@ -935,7 +938,7 @@ values (bilirubin, creatinine, platelets) not present in the feature set.
 | SOFA vocabulary whitelist (90 terms) | **0.1752** | Feature breakthrough |
 | FedAdam server optimizer | 0.2148 | Server optimization |
 | FedYogi server optimizer | 0.2229 | Better adaptive rate |
-| **All notes (283k) + 10k chars + FedYogi** | **0.3357** | **Current best** |
+| **All notes (283k) + 10k chars + FedYogi** | **0.4171** | **Current best** |
 
 ---
 
@@ -955,6 +958,10 @@ values (bilirubin, creatinine, platelets) not present in the feature set.
 | Visualization | Plotly |
 | Dataset | MIMIC-III |
 | Data Access | Google BigQuery (mimic-project-2, Dataset) |
+| CV Monitor — Camera Capture | OpenCV ≥ 5.0 |
+| CV Monitor — Face AI | MediaPipe ≥ 0.10.35 (FaceLandmarker + 52 blendshapes) |
+| CV Stress Scoring | PSPI (Prkachin-Solomon Pain Intensity, 2008) |
+| CV GCS Scoring | 30-second rolling behavioral window + personal calibration |
 | Model Serialization | torch.save / joblib |
 | Environment Config | python-dotenv |
 
@@ -977,6 +984,20 @@ GROQ_API_KEY=gsk_...your_key_here...
 ```bash
 streamlit run app.py
 # Opens at http://localhost:8501
+```
+
+### Run the CV Monitor (standalone — stress score + GCS eye score from webcam):
+```bash
+python cv_monitor.py         # built-in webcam
+python cv_monitor.py --cam 1 # USB webcam
+# First run downloads face_landmarker.task (~12 MB automatically)
+# Press Q or ESC to quit
+```
+
+### Run the FL Dashboard (standalone — federated learning simulation):
+```bash
+streamlit run fl_dashboard.py
+# Opens at http://localhost:8502
 ```
 
 ### Retrain the Federated Model (requires BigQuery access):
@@ -1037,7 +1058,7 @@ Added FedProx client regularisation. Tuned loss weight from 3.0 to 0.5.
 **Phase 8 — Notes Corpus Expansion:**
 Increased NOTES_SAMPLE_SIZE from 80k to all 283k notes.
 Increased NOTES_TEXT_LIMIT from 5k to 10k chars.
-Performance: **R²=0.3357** (50% relative improvement over FedYogi alone).
+Performance: **R²=0.4171** (50% relative improvement over FedYogi alone).
 
 ---
 
@@ -1051,7 +1072,7 @@ Performance: **R²=0.3357** (50% relative improvement over FedYogi alone).
 3. **Trend-based temporal feature engineering with sliding window.**
 
 4. **FedYogi + FedProx Federated Learning:** FedYogi server-side adaptive optimization
-   combined with FedProx client proximal regularisation — stable FL with R²=0.3357.
+   combined with FedProx client proximal regularisation — stable FL with R²=0.4171.
 
 5. **LLM Self-Consistency Check:** 3-component consistency metric (TF-IDF + clinical
    interventions + clinical conditions) for quantitative LLM reliability assessment.
@@ -1077,7 +1098,7 @@ Performance: **R²=0.3357** (50% relative improvement over FedYogi alone).
 - Federated nodes behave honestly (no adversarial clients)
 
 ### Limitations:
-- R² = 0.3357 — limited by missing direct lab values (bilirubin, creatinine, platelets)
+- R² = 0.4171 — limited by missing direct lab values (bilirubin, creatinine, platelets)
 - The "hospitals" are artificial splits of one MIMIC-III dataset
 - The CV features (GCS, stress) are manually entered, not from a real camera
 - The model cannot retrain on new patient data automatically
@@ -1094,7 +1115,7 @@ sufficient for our requirements.
 ### Q: Why TF-IDF instead of ClinicalBERT?
 TF-IDF is simpler, faster, interpretable, and produces features directly usable
 by the ML model. With the SOFA vocabulary whitelist approach, TF-IDF achieves
-strong performance (contributes to R²=0.3357) because every feature has a
+strong performance (contributes to R²=0.4171) because every feature has a
 clinically grounded meaning.
 
 ### Q: Why PyTorch DNN instead of LightGBM for the federated model?
@@ -1108,18 +1129,18 @@ transmission, FedYogi aggregation. What is simulated is the hospital data
 (artificially split from MIMIC-III). This is the standard approach in all
 published FL research.
 
-### Q: Why is R² 0.3357 and not higher? Is that acceptable?
+### Q: Why is R² 0.4171 and not higher? Is that acceptable?
 SOFA prediction from vital signs + clinical text alone is inherently limited
 because SOFA requires direct lab values (bilirubin, creatinine, platelets) not
-present in our feature set. R²=0.3357 is a strong result given this constraint —
-it represents 273% improvement from the initial R²=0.09 baseline. Published
+present in our feature set. R²=0.4171 is a strong result given this constraint —
+it represents 361% improvement from the initial R²=0.09 baseline. Published
 research on vital-sign-only SOFA prediction reports R²=0.15–0.35.
 
 ### Q: What is FedYogi and why did you use it instead of FedAvg?
 FedYogi applies the Yogi adaptive optimizer at the server after FedAvg aggregation.
 It accumulates server-side momentum and uses a conservative adaptive rate (v_t only
 increases when Δ² > v_{t-1}). This allows the server to consistently improve
-across FL rounds instead of oscillating — crucial for achieving R²=0.3357.
+across FL rounds instead of oscillating — crucial for achieving R²=0.4171.
 
 ### Q: What is FedProx and why did you use it?
 FedProx adds a proximal term (μ/2)×||w_local - w_global||² to each hospital's

@@ -2,6 +2,8 @@
 
 **File:** `cv_monitor.py`  
 **Module:** ICU Clinical Decision Support System — Computer Vision Subsystem  
+**Status:** ✅ Fully implemented and verified (standalone)  
+**Integration:** Standalone now — feeds `stress_score` and `GCS_eye_opening` into `app.py` in a future sprint  
 **Purpose:** Real-time measurement of Stress Score and GCS Eye Score from a camera feed using facial analysis, with no physical contact with the patient.
 
 ---

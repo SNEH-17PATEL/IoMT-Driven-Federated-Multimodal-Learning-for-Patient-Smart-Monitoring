@@ -15,7 +15,7 @@ class ICUModel(nn.Module):
     """
     Fully connected DNN for SOFA score prediction.
 
-    Input:  ~100 features — 9 trend vitals + 7 latest vitals + 2 CV + ~80 SOFA-vocab TF-IDF
+    Input:  108 features — 9 trend vitals + 7 latest vitals + 2 CV + 90 SOFA-vocab TF-IDF
     Output: raw SOFA score in the 0–24 range (NOT normalised; no ×24 needed).
 
     Architecture:

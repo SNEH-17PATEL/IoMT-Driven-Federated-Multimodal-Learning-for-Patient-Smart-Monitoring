@@ -107,6 +107,7 @@ class HospitalClient(fl.client.NumPyClient):
             model, X_train, y_train,
             epochs=EPOCHS, lr=lr,
             batch_size=BATCH_SIZE, grad_clip=GRAD_CLIP,
+            oversample=False,                            # keep consistent with train_federated.py
             global_params=parameters, mu=MU_FEDPROX,   # FedProx
         )
         metrics = evaluate_model(model, X_val, y_val)

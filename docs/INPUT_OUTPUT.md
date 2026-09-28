@@ -15,10 +15,10 @@ shapes, values, and reasoning at each step.
 3. [Step 1 — Sliding Window (Temporal Buffer)](#3-step-1--sliding-window-temporal-buffer)
 4. [Step 2 — Trend Feature Engineering (9 features)](#4-step-2--trend-feature-engineering-9-features)
 5. [Step 3 — Latest Vital + CV Features (9 features)](#5-step-3--latest-vital--cv-features-9-features)
-6. [Step 4 — TF-IDF Text Encoding (600 features)](#6-step-4--tf-idf-text-encoding-600-features)
-7. [Step 5 — Feature Fusion and Alignment (618 features)](#7-step-5--feature-fusion-and-alignment-618-features)
+6. [Step 4 — TF-IDF Text Encoding (90 features)](#6-step-4--tf-idf-text-encoding-90-features)
+7. [Step 5 — Feature Fusion and Alignment (108 features)](#7-step-5--feature-fusion-and-alignment-108-features)
 8. [Step 6 — StandardScaler Normalisation](#8-step-6--standardscaler-normalisation)
-9. [Step 7 — DNN Inference (618 → SOFA)](#9-step-7--dnn-inference-618--sofa)
+9. [Step 7 — DNN Inference (108 → SOFA)](#9-step-7--dnn-inference-108--sofa)
 10. [Step 8 — SOFA Post-processing and Alert Classification](#10-step-8--sofa-post-processing-and-alert-classification)
 11. [Step 9 — SHAP Explainability](#11-step-9--shap-explainability)
 12. [Step 10 — Trend Analysis (Parallel to SHAP)](#12-step-10--trend-analysis-parallel-to-shap)
@@ -74,7 +74,7 @@ Example input:
 
 - Type: Unstructured free text (any length)
 - Source: Nurse/physician documentation, patient history, medication lists
-- Preprocessing: Converted to 600 TF-IDF features (Step 4)
+- Preprocessing: Converted to 90 TF-IDF features (Step 4)
 
 ### Modality 4 — Historical Vitals (read from file)
 
@@ -223,7 +223,7 @@ different ways — together they give the model both current state and trajector
 
 ---
 
-## 6. Step 4 — TF-IDF Text Encoding (600 features)
+## 6. Step 4 — TF-IDF Text Encoding (90 features)
 
 **Purpose:** Convert the free-text clinical note into a numeric vector that
 the DNN can process alongside the vital sign numbers.
@@ -273,7 +273,7 @@ Process:
   → sparse matrix of shape (1, 90)
   → convert to dense array and wrap in DataFrame
 
-Output: tfidf_df — DataFrame of shape (1, 90)
+Output: tfidf_df — DataFrame of shape (1, 90)  ← 90 SOFA-vocabulary features
   Columns: 90 SOFA-vocabulary terms
   Values:  floats ≥ 0.0 (most are 0 — only present terms are non-zero)
 
@@ -294,22 +294,22 @@ clinically grounded.
 
 ---
 
-## 7. Step 5 — Feature Fusion and Alignment (618 features)
+## 7. Step 5 — Feature Fusion and Alignment (108 features)
 
-**Purpose:** Merge the three feature groups into a single 618-dimensional input
+**Purpose:** Merge the three feature groups into a single 108-dimensional input
 vector that the DNN expects.
 
 ### Feature Groups
 
-| Group             | Features | Columns                                         |
-|-------------------|----------|-------------------------------------------------|
-| Trend vitals      | 9        | HR_mean, HR_std, RR_mean, SpO2_mean, SpO2_min, |
-|                   |          | Temp_mean, SBP_mean, DBP_mean, MAP_mean         |
-| Latest vitals+CV  | 9        | latest_HR, latest_RR, latest_SpO2, latest_Temp,|
-|                   |          | latest_SBP, latest_DBP, latest_MAP,             |
-|                   |          | GCS_eye_opening, stress_score                   |
-| TF-IDF text       | 90       | 90 SOFA-vocabulary whitelist columns            |
-| **Total**         | **108**  |                                                 |
+| Group             | Features | Columns                                          |
+|-------------------|----------|--------------------------------------------------|
+| Trend vitals      | 9        | HR_mean, HR_std, RR_mean, SpO2_mean, SpO2_min,  |
+|                   |          | Temp_mean, SBP_mean, DBP_mean, MAP_mean          |
+| Latest vitals+CV  | 9        | latest_HR, latest_RR, latest_SpO2, latest_Temp, |
+|                   |          | latest_SBP, latest_DBP, latest_MAP,              |
+|                   |          | GCS_eye_opening, stress_score                    |
+| TF-IDF text       | 90       | 90 SOFA-vocabulary whitelist columns             |
+| **Total**         | **108**  | ← full model input vector                        |                                                 |
 
 ### Fusion Process
 
@@ -317,7 +317,7 @@ vector that the DNN expects.
 Input:
   trend_features  — dict of 9 floats
   latest_features — dict of 9 floats
-  tfidf_df        — DataFrame (1, 600)
+  tfidf_df        — DataFrame (1, 90)
 
 Step A: Merge trend and latest into one DataFrame
   input_df = pd.DataFrame([{**trend_features, **latest_features}])
@@ -351,7 +351,7 @@ interactions (e.g., "high HR_mean AND 'septic' in the note → especially danger
 
 ## 8. Step 6 — StandardScaler Normalisation
 
-**Purpose:** Convert all 618 features to a common numeric scale so that no single
+**Purpose:** Convert all 108 features to a common numeric scale so that no single
 feature dominates the model's gradients due to its natural unit magnitude.
 
 ```
@@ -383,7 +383,7 @@ Without normalisation:
 - SpO₂_min ranges 50–100% (range ≈ 50)
 - "creatinine" TF-IDF score ranges 0–0.8 (range ≈ 0.8)
 
-The DNN's first Linear layer computes a weighted sum of all 618 features.
+The DNN's first Linear layer computes a weighted sum of all 108 features.
 Without normalisation, HR values (magnitude ~100) would dominate TF-IDF values
 (magnitude ~0.3), making the model unable to learn from text features.
 StandardScaler brings all features to the same scale (z-scores) so the model
@@ -395,9 +395,9 @@ in the MIMIC-III training cohort.
 
 ---
 
-## 9. Step 7 — DNN Inference (618 → SOFA)
+## 9. Step 7 — DNN Inference (108 → SOFA)
 
-**Purpose:** Run the scaled 618-d feature vector through the trained neural network
+**Purpose:** Run the scaled 108-d feature vector through the trained neural network
 to produce a predicted SOFA score.
 
 ### Architecture
@@ -417,18 +417,20 @@ Total parameters: ~23,000
 **Linear(108 → 128):**
 Each of the 128 neurons computes a weighted sum of all 108 inputs:
   `h₁ = W₁ × x + b₁`   (W₁ is a 128×108 weight matrix)
-This layer creates 128 latent representations capturing combinations of vital signs and SOFA-vocabulary text features.
+This first hidden layer creates 128 latent representations capturing combinations of vital signs and SOFA-vocabulary text features.
 
-**ReLU:**
-`output = max(0, h₁)` — sets negative values to zero.
+**ReLU after each hidden layer:**
+`output = max(0, h)` — sets negative values to zero.
 Introduces non-linearity so the model can learn non-linear clinical relationships
 (e.g., "SpO₂ below 88 AND HR above 120" is more dangerous than either alone).
 
-**Linear(256 → 128) → ReLU → Linear(128 → 64) → ReLU:**
-Each successive layer compresses the representation and learns increasingly abstract
-clinical patterns.
+**Linear(128 → 64) → ReLU:**
+Second hidden layer — compresses to 64 neurons, learning increasingly abstract clinical patterns.
 
-**Linear(64 → 1):**
+**Linear(64 → 32) → ReLU:**
+Third hidden layer — further compression to 32 neurons.
+
+**Linear(32 → 1):**
 Final projection to a single output value — the predicted SOFA score.
 No activation function — allows the output to be any real number (unrestricted range).
 
@@ -471,7 +473,7 @@ The model was trained using Federated Learning across 3 simulated hospitals:
 - **Client regularisation:** FedProx (μ=0.5) — proximal term prevents client drift
 - **Server optimizer:** FedYogi — adaptive server-side momentum accumulation
 - **Rounds:** 100 FL rounds, 3 local epochs per round
-- **Final performance:** MAE = 1.9608 SOFA points, R² = 0.3357
+- **Final performance:** MAE = 1.8236 SOFA points, R² = 0.4171  (best round: 24 / 100)
 
 ---
 
@@ -538,7 +540,7 @@ Each prediction is appended to `models/prediction_history.csv` (up to last 50 ro
 ## 11. Step 9 — SHAP Explainability
 
 **Purpose:** Explain WHY the model predicted this specific SOFA score by computing
-how much each of the 618 features pushed the prediction up or down from the baseline.
+how much each of the 108 features pushed the prediction up or down from the baseline.
 
 ### What is SHAP?
 
@@ -547,7 +549,7 @@ the model's prediction to each individual input feature. It answers: "If I remov
 this feature, how much would the predicted SOFA change?"
 
 For a predicted SOFA of 6.17 with a baseline of 3.8 (model's average prediction):
-- The sum of all 618 SHAP values = 6.17 - 3.8 = +2.37
+- The sum of all 108 SHAP values = 6.17 - 3.8 = +2.37
 - Each individual SHAP value = that feature's contribution to this +2.37 deviation.
 
 ### SHAP Background (300 samples)
@@ -596,7 +598,7 @@ Output:
     GCS_eye_opening: −0.31 (GCS=2 → pushed DOWN? see counterintuitive note below)
     "creatinine":   +0.27  (TF-IDF → mention of creatinine → pushed up)
     ...
-    (all 618 values, summing to ≈ sofa_score − baseline)
+    (all 108 values, summing to ≈ sofa_score − baseline)
 ```
 
 **Important: SHAP uses SCALED values for computation but ORIGINAL values for display.**
@@ -919,7 +921,7 @@ Inputs: training_meta (loaded from training_metadata.json)
 Displays:
   - FL protocol ASCII diagram (server ↔ 3 hospital clients)
   - Training configuration table (100 rounds, 3 epochs, FedYogi + FedProx)
-  - Performance metrics (MAE=1.9608, R²=0.3357)
+  - Performance metrics (MAE=1.8236, R²=0.4171)
   - Privacy configuration (DP enabled/disabled, ε, δ)
   - Model architecture (108→128→64→32→1)
 ```
@@ -942,7 +944,7 @@ Displays:
 ┌─────────────────┐         │              ┌──────────────────────┐
 │  SLIDING WINDOW │         │              │   TF-IDF TRANSFORM   │
 │  Append to CSV  │         │              │  tfidf.transform()   │
-│  Keep last 20   │         │              │  → 600 float values  │
+│  Keep last 20   │         │              │  → 90 float values  │
 └──────┬──────────┘         │              └──────────┬───────────┘
        │                    │                         │
        ▼                    ▼                         │
@@ -990,7 +992,7 @@ Displays:
 │    SHAP      │              │   TREND ANALYSIS  │
 │ DeepExplainer│              │ get_trend() +     │
 │ 300 bg samps │              │ classify_range()  │
-│ → 618 attrs  │              │ → 7 trend strings │
+│ → 108 attrs  │              │ → 7 trend strings │
 └──────┬───────┘              └──────────┬────────┘
        │  top 7 clinical                 │
        │  explanations                   │

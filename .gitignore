@@ -11,10 +11,13 @@
 data/fl_training/*.csv
 
 # =============================================================
-# RUNTIME FILES — generated during app use, not source code
+# RUNTIME FILES — generated during app use or real FL demo
 # =============================================================
 models/patient_vitals/*.csv
 models/prediction_history/*.csv
+# server.py creates this during real FL demo; not needed in git
+# (federated_model.pth is the canonical artifact — commit that one)
+models/federated_model_best.pth
 
 # Keep directory placeholders so folders exist after a fresh clone
 !models/patient_vitals/.gitkeep
