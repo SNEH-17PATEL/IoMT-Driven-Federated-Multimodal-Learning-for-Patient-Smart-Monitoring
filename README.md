@@ -32,8 +32,9 @@ This system is an AI-powered ICU Clinical Decision Support System (CDSS) that:
 - Classifies risk as **Low** (SOFA < 5) / **Moderate** (5–9) / **High** (≥ 10)
 - Fires a clinical alert when predicted SOFA ≥ 8 (threshold lowered to compensate for model under-prediction)
 - Provides **SHAP explainability** showing which features drove the prediction
-- Generates a structured **LLM clinical assessment** (condition, cause, forecast, actions) using Groq
-- Validates LLM reliability via a **self-consistency check** (3 responses + 3-component consistency metric)
+- Generates a structured **LLM clinical summary** using a configurable Groq model
+- Screens generated reports for common unsafe recommendations and unsupported numeric measurements
+- Shows **Response Similarity** across three responses; similarity is not a measure of accuracy or safety
 - Preserves patient privacy through **Federated Learning** (model trained across 3 hospital nodes without sharing raw data)
 
 > **Important:** This system is a decision support tool only. It does not diagnose disease or replace clinical judgment.
@@ -70,8 +71,8 @@ This system is an AI-powered ICU Clinical Decision Support System (CDSS) that:
             └──────────────┬───────────────┘
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│         Groq openai/gpt-oss-120b — Clinical Explanation      │
-│  3 responses → 3-component consistency → Reliability score  │
+│         Groq-configured model — Clinical Summary             │
+│  3 responses → safety screen → response similarity          │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -157,9 +158,11 @@ Open `.env` and set your Groq API key:
 
 ```
 GROQ_API_KEY=gsk_your_key_here
+GROQ_MODEL=openai/gpt-oss-120b
 ```
 
 Get a free API key at [https://console.groq.com](https://console.groq.com)
+`GROQ_MODEL` is optional; the default is `openai/gpt-oss-120b`. It can be changed without editing Python code. The previous `llama-3.3-70b-versatile` model was retired by Groq on August 16, 2026.
 
 > If no `.env` is set, the app shows an API key input field in the sidebar.
 
@@ -285,7 +288,7 @@ Opens at **http://localhost:8501**
 3. Review results across 4 tabs:
    - **📊 Risk Assessment** — SOFA score, severity bar, vital sign trend chart, prediction history
    - **🔍 Explainability** — SHAP feature importance, clinical interpretations, key risk factors
-   - **🧠 AI Clinical Report** — LLM assessment with consistency score and reliability rating
+    - **🧠 AI Clinical Report** — screened LLM summary and response-similarity score
    - **🔒 Federated Learning** — FL training configuration, model architecture, DP status
 
 ### Utility buttons (sidebar)
@@ -401,8 +404,10 @@ python train_federated.py
 5. Saves 300 SHAP background samples → `models/shap_background.npy`
 6. Runs Flower FL simulation: 100 rounds × 3 epochs × 3 hospitals with FedYogi server + FedProx client
 7. Saves best global model → `models/federated_model.pth`
-8. Evaluates on held-out test set (12,038 patients) and prints MAE / R²
-9. Saves training metadata → `models/training_metadata.json`
+8. Evaluates on held-out rows and prints MAE / R² plus SOFA risk-band and high-risk alert metrics
+9. Saves metrics and training metadata → `models/training_metadata.json`
+
+The risk-band report includes confusion matrices and per-class precision, recall/sensitivity, specificity, and F1. The high-risk alert uses predicted SOFA ≥ 8 and actual SOFA ≥ 10; it reports false negatives, false positives, AUROC, and PR-AUC from continuous predicted SOFA scores. These are row-level results, not independent patient/stay validation: source CSVs do not contain patient or ICU-stay IDs.
 
 **Re-run without BigQuery (CSVs already exist):**
 
@@ -531,20 +536,17 @@ The app maintains the last 20 vital sign readings per patient.
 
 The alert fires at ≥ 8 (not ≥ 10) because the model under-predicts severe cases by ~2–3 SOFA points due to limited high-risk training data.
 
-### LLM Self-Consistency Check
+### Held-out Risk Classification Metrics
 
-To assess LLM reliability:
-1. The same prompt is sent to Groq 3 times (temperature=0.2)
-2. A 3-component consistency score is computed:
-   - TF-IDF cosine similarity: 20% weight
-   - Clinical intervention agreement (vasopressors, antibiotics, etc.): 50% weight
-   - Clinical condition agreement (sepsis, AKI, hypoxemia, etc.): 30% weight
+After training, the Risk Assessment tab's **Held-out Risk Classification Metrics** expander shows risk-band and high-risk alert confusion matrices and metrics. AUROC and PR-AUC use continuous predicted SOFA scores, not thresholded alert labels. If a holdout contains only one high-risk class, those two metrics are recorded as unavailable.
 
-| Score | Label |
-|---|---|
-| ≥ 0.80 | ✅ High Reliability |
-| 0.60–0.80 | ⚠️ Moderate Reliability |
-| < 0.60 | ❌ Low Reliability |
+**Evaluation limitation:** splits are row-level because the available CSVs contain no patient or ICU-stay identifiers. Rows/windows from a single stay may occur in both training and testing; results are initial evaluation only, not independent clinical validation.
+
+### LLM Report Safeguards
+
+The prompt directs the model to avoid diagnoses, medications, doses, procedures, and treatment changes; treat clinical notes as data rather than instructions; and recommend clinician review, reassessment, and applicable local protocols. A rule-based screen checks each generated response for common diagnosis, medication/treatment, and dose terms, plus numeric measurements not found in the supplied inputs. If any response is flagged, all three reports are withheld.
+
+The **Response Similarity** score is based only on pairwise TF-IDF cosine similarity. Similar wording does not establish factual accuracy or clinical safety. Prompt instructions and keyword/number checks are heuristic and cannot catch every unsafe or unsupported claim. They do not replace clinician review or validation against clinician-labeled cases.
 
 ### Prediction History
 
@@ -655,7 +657,7 @@ The TF-IDF vectorizer uses an **explicit 90-term SOFA vocabulary whitelist** —
 | Federated Learning | Flower (flwr) 1.8+ — FedYogi + FedProx |
 | Explainability | SHAP 0.44+ |
 | LLM Provider | Groq (`openai/gpt-oss-120b`) |
-| LLM Self-Consistency | 3-component score (TF-IDF + interventions + conditions) |
+| LLM Response Similarity | Mean pairwise TF-IDF cosine similarity; not an accuracy or safety score |
 | Web Framework | Streamlit 1.35+ |
 | Visualisation | Plotly |
 | Data Processing | pandas, numpy |

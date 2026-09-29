@@ -4,7 +4,14 @@ import torch.nn as nn
 import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
-from sklearn.metrics import mean_absolute_error, r2_score
+from sklearn.metrics import (
+    average_precision_score,
+    confusion_matrix,
+    mean_absolute_error,
+    precision_recall_fscore_support,
+    r2_score,
+    roc_auc_score,
+)
 
 
 # =============================================================
@@ -200,6 +207,94 @@ def evaluate_model(model, X, y):
     r2 = r2_score(y, preds)
 
     return {"mse": mse, "mae": mae, "r2": r2}
+
+
+def compute_sofa_risk_metrics(y_true, y_score, alert_threshold=8.0):
+    """Compute risk-band classification and continuous-score alert metrics."""
+    y_true = np.asarray(y_true, dtype=np.float64).reshape(-1)
+    y_score = np.asarray(y_score, dtype=np.float64).reshape(-1)
+    if y_true.size == 0 or y_true.size != y_score.size:
+        raise ValueError("y_true and y_score must have the same non-zero length")
+    if not np.isfinite(y_true).all() or not np.isfinite(y_score).all():
+        raise ValueError("y_true and y_score must contain only finite values")
+
+    y_score = np.clip(y_score, 0, 24)
+    labels = ["Low (<5)", "Moderate (5-<10)", "High (>=10)"]
+    y_true_band = np.digitize(y_true, [5, 10])
+    y_pred_band = np.digitize(y_score, [5, 10])
+    matrix = confusion_matrix(y_true_band, y_pred_band, labels=[0, 1, 2])
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        y_true_band, y_pred_band, labels=[0, 1, 2], zero_division=0
+    )
+
+    per_class = {}
+    total = int(matrix.sum())
+    for index, label in enumerate(labels):
+        true_positive = int(matrix[index, index])
+        false_negative = int(matrix[index, :].sum() - true_positive)
+        false_positive = int(matrix[:, index].sum() - true_positive)
+        true_negative = total - true_positive - false_negative - false_positive
+        specificity_denominator = true_negative + false_positive
+        specificity = true_negative / specificity_denominator if specificity_denominator else 0.0
+        per_class[label] = {
+            "precision": float(precision[index]),
+            "recall": float(recall[index]),
+            "sensitivity": float(recall[index]),
+            "specificity": float(specificity),
+            "f1": float(f1[index]),
+        }
+
+    actual_high = (y_true >= 10).astype(int)
+    predicted_high = (y_score >= alert_threshold).astype(int)
+    alert_matrix = confusion_matrix(actual_high, predicted_high, labels=[0, 1])
+    true_negative, false_positive, false_negative, true_positive = (
+        int(alert_matrix[0, 0]), int(alert_matrix[0, 1]),
+        int(alert_matrix[1, 0]), int(alert_matrix[1, 1]),
+    )
+    alert_precision = true_positive / (true_positive + false_positive) if true_positive + false_positive else 0.0
+    alert_recall = true_positive / (true_positive + false_negative) if true_positive + false_negative else 0.0
+    alert_specificity = true_negative / (true_negative + false_positive) if true_negative + false_positive else 0.0
+    alert_f1 = (
+        2 * alert_precision * alert_recall / (alert_precision + alert_recall)
+        if alert_precision + alert_recall else 0.0
+    )
+    if np.unique(actual_high).size == 2:
+        alert_auroc = float(roc_auc_score(actual_high, y_score))
+        alert_pr_auc = float(average_precision_score(actual_high, y_score))
+    else:
+        alert_auroc = None
+        alert_pr_auc = None
+
+    return {
+        "risk_bands": {
+            "labels": labels,
+            "confusion_matrix": matrix.tolist(),
+            "per_class": per_class,
+            "macro": {
+                "precision": float(np.mean(precision)),
+                "recall": float(np.mean(recall)),
+                "sensitivity": float(np.mean(recall)),
+                "specificity": float(np.mean([m["specificity"] for m in per_class.values()])),
+                "f1": float(np.mean(f1)),
+            },
+        },
+        "high_risk_alert": {
+            "predicted_sofa_threshold": float(alert_threshold),
+            "actual_high_risk_threshold": 10.0,
+            "confusion_matrix": alert_matrix.tolist(),
+            "true_negative": true_negative,
+            "false_positive": false_positive,
+            "false_negative": false_negative,
+            "true_positive": true_positive,
+            "precision": float(alert_precision),
+            "recall": float(alert_recall),
+            "sensitivity": float(alert_recall),
+            "specificity": float(alert_specificity),
+            "f1": float(alert_f1),
+            "auroc": alert_auroc,
+            "pr_auc": alert_pr_auc,
+        },
+    }
 
 
 # =============================================================
