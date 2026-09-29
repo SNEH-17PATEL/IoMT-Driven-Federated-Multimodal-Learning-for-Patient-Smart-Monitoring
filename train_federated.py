@@ -46,7 +46,7 @@ from sklearn.metrics import mean_absolute_error, r2_score
 
 from model_utils import (
     ICUModel, train_model, evaluate_model, get_weights, set_weights,
-    apply_dp_to_update, estimate_privacy_budget,
+    apply_dp_to_update, estimate_privacy_budget, compute_sofa_risk_metrics,
 )
 
 # =============================================================
@@ -56,6 +56,7 @@ from model_utils import (
 # ── Paths ──
 DATA_PATH  = "data/fl_training/"
 MODEL_PATH = "models/"
+ALERT_THRESHOLD = 8.0
 
 # ── BigQuery (Phase 0) ──
 BIGQUERY_PROJECT  = "mimic-project-2"
@@ -662,6 +663,11 @@ except NameError:
         X_all, y_all, test_size=0.2, random_state=42,
         stratify=(y_all >= 10).astype(int)
     )
+    train_indices = np.array_split(np.arange(len(y_train_pool)), len(clients_data))
+    clients_data = [
+        (X_train_pool[indices], y_train_pool[indices])
+        for indices in train_indices
+    ]
     print(f"  Reconstructed test set: {X_test_np.shape}")
 
 # =============================================================
@@ -952,6 +958,52 @@ print(f"  R²   : {r2:.4f}")
 print(f"  Pred range : {preds.min():.2f} – {preds.max():.2f}")
 print("=" * 60)
 
+risk_metrics = compute_sofa_risk_metrics(
+    y_test_np, preds, alert_threshold=ALERT_THRESHOLD
+)
+risk_bands = risk_metrics["risk_bands"]
+alert_metrics = risk_metrics["high_risk_alert"]
+
+print("\n  HELD-OUT RISK CLASSIFICATION METRICS")
+print("  Risk-band confusion matrix (rows=actual, columns=predicted):")
+print(f"  {'':16s}" + " ".join(f"{label:>16s}" for label in risk_bands["labels"]))
+for label, row in zip(risk_bands["labels"], risk_bands["confusion_matrix"]):
+    print(f"  {label:16s}" + " ".join(f"{count:16,d}" for count in row))
+for label, metrics in risk_bands["per_class"].items():
+    print(
+        f"  {label:16s}: Precision={metrics['precision']:.3f}  "
+        f"Recall/Sensitivity={metrics['recall']:.3f}  "
+        f"Specificity={metrics['specificity']:.3f}  F1={metrics['f1']:.3f}"
+    )
+print("  Macro averages:")
+for name, value in risk_bands["macro"].items():
+    print(f"    {name.capitalize():16s}: {value:.3f}")
+print(
+    f"  High-risk alert (predicted SOFA >= {ALERT_THRESHOLD:g}; "
+    "actual SOFA >= 10):"
+)
+print(
+    f"    TP={alert_metrics['true_positive']:,}  TN={alert_metrics['true_negative']:,}  "
+    f"False negatives={alert_metrics['false_negative']:,}  "
+    f"False positives={alert_metrics['false_positive']:,}"
+)
+print(
+    f"    Precision={alert_metrics['precision']:.3f}  "
+    f"Recall/Sensitivity={alert_metrics['recall']:.3f}  "
+    f"Specificity={alert_metrics['specificity']:.3f}  F1={alert_metrics['f1']:.3f}"
+)
+auroc = alert_metrics["auroc"]
+pr_auc = alert_metrics["pr_auc"]
+print(
+    "    AUROC=" + (f"{auroc:.3f}" if auroc is not None else "N/A")
+    + "  PR-AUC=" + (f"{pr_auc:.3f}" if pr_auc is not None else "N/A")
+    + " (continuous predicted SOFA scores)"
+)
+print(
+    "  Limitation: row-level split; patient/ICU-stay identifiers are unavailable, "
+    "so windows from one stay may cross the split."
+)
+
 # =============================================================
 # [6/6] SAVE TRAINING METADATA
 # =============================================================
@@ -966,8 +1018,14 @@ metadata = {
     "hospital_names":     hospital_names,
     "aggregation":        f"FedYogi (η={SERVER_ETA}, β1={SERVER_BETA1}, β2={SERVER_BETA2}) + FedProx (μ={MU_FEDPROX})",
     "split_type":         "Non-IID (specialty bias)" if USE_NONIID_SPLIT else "IID",
-    "train_samples":      int(X_all.shape[0]),
+    "train_samples":      int(sum(len(y) for _, y in clients_data)),
     "test_samples":       int(len(y_test_np)),
+    "evaluation_split":   "Random row-level 80/20 split, stratified by actual SOFA >= 10",
+    "evaluation_limitation": (
+        "Source CSVs do not include patient or ICU-stay identifiers; "
+        "windows from the same stay may appear in both training and test sets."
+    ),
+    "risk_classification_metrics": risk_metrics,
     "input_features":     int(input_dim),
     "model_architecture": f"{input_dim} → 128 → 64 → 32 → 1  (ReLU, no Dropout, FedProx)",
     "best_round":         int(_best_round),
