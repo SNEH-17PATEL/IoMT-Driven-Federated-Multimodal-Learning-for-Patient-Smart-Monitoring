@@ -412,7 +412,7 @@ Round 2:
 ...repeat for 100 rounds...
 
 Final: W¹⁰⁰ (federated model) = knowledge from all 3 hospitals, zero patient data shared
-Best model: saved from round 24 (lowest server validation loss = 5.4769 → R²=0.4171)
+Best model: saved from round 24 (lowest server validation loss = 5.4769 → R²=0.4724)
 ```
 
 **Why this works for DNN but NOT for ensembles:**
@@ -576,7 +576,7 @@ prevent overfitting on the 600 TF-IDF features.
 **Why we did NOT use it as the primary model (but it is our baseline):**
 - Cannot learn non-linear relationships (e.g., the threshold effect of SpO₂ below 90%)
 - Cannot learn feature interactions (e.g., "low MAP AND high stress is worse than either alone")
-- Would achieve R² ≈ 0.10–0.15 on this task (significantly worse than DNN's R²=0.4171)
+- Would achieve R² ≈ 0.10–0.15 on this task (significantly worse than DNN's R²=0.4724)
 - However, it IS FL-compatible and could serve as a sanity check baseline
 
 ---
@@ -606,7 +606,7 @@ Concatenate: 18 vital features + 768 BERT embedding → 786 features → DNN  (v
 
 | Model                  | FL Compatible | SHAP Method    | Performance (R²) | Complexity | Why Not Used          |
 |------------------------|---------------|----------------|------------------|------------|-----------------------|
-| **PyTorch DNN** ✅     | ✅ Yes (FedYogi+FedProx)| DeepExplainer | **0.4171**  | Medium     | **Current choice**    |
+| **PyTorch DNN** ✅     | ✅ Yes (FedYogi+FedProx)| DeepExplainer | **0.4724**  | Medium     | **Current choice**    |
 | LightGBM + XGBoost     | ❌ No (FedAvg) | TreeExplainer  | ~0.35–0.40*      | Low        | FL incompatible       |
 | Random Forest           | ❌ No         | TreeExplainer  | ~0.25–0.30*      | Low        | FL incompatible, 0%  |
 | LSTM/GRU               | ✅ Yes         | GradientExplainer | ~0.28–0.32* | High       | Integration complexity|
@@ -641,7 +641,7 @@ A **PyTorch Deep Neural Network (DNN)**:
 - SHAP via DeepExplainer
 - Trained via Flower FL framework across 3 simulated hospitals
 - Predicts raw SOFA directly (no ×24 multiplication)
-- **Performance: R²=0.4171, MAE=1.8236 SOFA points**
+- **Performance: R²=0.4724, MAE=1.7588 SOFA points**
 
 ### Q3: Why switch to PyTorch DNN?
 

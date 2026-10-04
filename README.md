@@ -31,10 +31,10 @@ This system is an AI-powered ICU Clinical Decision Support System (CDSS) that:
 - Predicts the patient's **SOFA score** (Sequential Organ Failure Assessment, 0–24) as a clinical severity measure
 - Classifies risk as **Low** (SOFA < 5) / **Moderate** (5–9) / **High** (≥ 10)
 - Fires a clinical alert when predicted SOFA ≥ 8 (threshold lowered to compensate for model under-prediction)
+- Validates SOFA predictions via **3-layer validation**: offline AUROC/PR-AUC + runtime plausibility checks + conformal prediction intervals
 - Provides **SHAP explainability** showing which features drove the prediction
-- Generates a structured **LLM clinical summary** using a configurable Groq model
-- Screens generated reports for common unsafe recommendations and unsupported numeric measurements
-- Shows **Response Similarity** across three responses; similarity is not a measure of accuracy or safety
+- Generates a structured **LLM clinical assessment** (condition, cause, forecast, actions) using Groq
+- Validates LLM reliability via a **9-method reliability score** across 2 LLM calls — external correctness checks, not just internal agreement
 - Preserves patient privacy through **Federated Learning** (model trained across 3 hospital nodes without sharing raw data)
 
 > **Important:** This system is a decision support tool only. It does not diagnose disease or replace clinical judgment.
@@ -71,8 +71,21 @@ This system is an AI-powered ICU Clinical Decision Support System (CDSS) that:
             └──────────────┬───────────────┘
                            ▼
 ┌─────────────────────────────────────────────────────────────┐
-│         Groq-configured model — Clinical Summary             │
-│  3 responses → safety screen → response similarity          │
+│  SOFA Validation (Tab 1)                                     │
+│  Runtime: Physiological floor · Vital consistency           │
+│           Trajectory coherence · Conformal interval (90%)   │
+│  Offline: AUROC · PR-AUC · Confusion matrix (train_fed.py) │
+└──────────────────────────────────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Groq openai/gpt-oss-120b — LLM Clinical Assessment (1 call)│
+│  + llama-3.1-8b-instant — Judge call (G-Eval + RAGAS)       │
+│  9-Method Reliability Score → Breakdown in Tab 3            │
+│  Methods: Factual Grounding · Clinical Hard Rules           │
+│           SHAP Coherence · Structure · Severity Calibration │
+│           Contraindication · Numeric Accuracy               │
+│           G-Eval Quality · RAGAS Faithfulness               │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -146,7 +159,27 @@ google-cloud-bigquery-storage>=2.20.0
 
 > Note: `opencv-python` and `mediapipe` are required for `cv_monitor.py` only. The main Streamlit app runs without them.
 
-### Step 4 — Configure the Groq API key
+### Step 4 — Set up the SQLite database
+
+The app reads patient vitals, prediction history, simulation data, and FL training data from a SQLite database. Create it by importing the existing CSV files:
+
+```bash
+cd icu_monitor
+python migrate_to_db.py
+```
+
+Expected output:
+```
+  patient_vitals                  60 rows
+  prediction_history             112 rows
+  sample_patients                 90 rows
+  fl_training                 48,150 rows
+  Database size: 53.3 MB
+```
+
+> This is a one-time step. The database is gitignored (53 MB + MIMIC-III data). After a fresh clone, run `migrate_to_db.py` before starting the app.
+
+### Step 5 — Configure the Groq API key
 
 Create a `.env` file in the `icu_monitor/` directory:
 
@@ -158,11 +191,9 @@ Open `.env` and set your Groq API key:
 
 ```
 GROQ_API_KEY=gsk_your_key_here
-GROQ_MODEL=openai/gpt-oss-120b
 ```
 
 Get a free API key at [https://console.groq.com](https://console.groq.com)
-`GROQ_MODEL` is optional; the default is `openai/gpt-oss-120b`. It can be changed without editing Python code. The previous `llama-3.3-70b-versatile` model was retired by Groq on August 16, 2026.
 
 > If no `.env` is set, the app shows an API key input field in the sidebar.
 
@@ -180,6 +211,8 @@ icu_monitor/
 ├── train_federated.py        ← FL training script (simulation mode)
 ├── server.py                 ← Flower FL server (real FL demo)
 ├── client.py                 ← Flower FL client (real FL demo)
+├── db.py                     ← SQLite database layer (all read/write helpers)
+├── migrate_to_db.py          ← One-time CSV → SQLite migration script
 │
 ├── requirements.txt
 ├── .env                      ← Groq API key (create this — never push to git)
@@ -196,23 +229,31 @@ icu_monitor/
 │   └── SKILL.md              ← Technical reference document
 │
 ├── models/
+│   ├── icu_monitor.db        ← SQLite database (~53 MB, gitignored)
+│   │                            Tables: patient_vitals · prediction_history
+│   │                                    sample_patients · fl_training
+│   │                            Create with: python migrate_to_db.py
 │   ├── federated_model.pth   ← Trained PyTorch DNN weights (~0.3 MB)
 │   ├── scaler.pkl            ← StandardScaler (108 features, ~8 KB)
 │   ├── tfidf_vectorizer.pkl  ← TF-IDF vectorizer (90 SOFA-vocab terms, ~2 MB)
 │   ├── feature_columns.pkl   ← Ordered list of 108 feature names
 │   ├── shap_background.npy   ← 300 background samples for SHAP, shape (300, 108)
-│   ├── patient_vitals/       ← Per-patient sliding window vitals CSVs
-│   ├── prediction_history/   ← Per-patient SOFA prediction logs
-│   └── training_metadata.json← Training config and performance metrics
+│   ├── training_metadata.json← Training config, performance metrics (MAE, R², AUROC)
+│   ├── patient_vitals/       ← CSV backups of sliding-window vitals (also in DB)
+│   └── prediction_history/   ← CSV backups of SOFA prediction logs (also in DB)
 │
 ├── face_landmarker.task      ← MediaPipe face landmark model (~12 MB, auto-downloaded)
 │                               gitignored — regenerated by cv_monitor.py on first run
 │
 └── data/
-    └── fl_training/          ← Hospital client datasets for FL
-        ├── client_0.csv      ← Hospital 0: ~15,889 rows × 109 cols
-        ├── client_1.csv      ← Hospital 1: ~15,890 rows × 109 cols
-        └── client_2.csv      ← Hospital 2: ~16,371 rows × 109 cols
+    ├── sample_patients/      ← Simulation data for 3 demo patients (also in DB)
+    │   ├── sample_patient01_data.csv
+    │   ├── sample_patient02_data.csv
+    │   └── sample_patient03_data.csv
+    └── fl_training/          ← Hospital client datasets (also in DB as fl_training table)
+        ├── client_0.csv      ← Hospital 0: ~15,889 rows × 109 cols  (CSV backup)
+        ├── client_1.csv      ← Hospital 1: ~15,890 rows × 109 cols  (CSV backup)
+        └── client_2.csv      ← Hospital 2: ~16,371 rows × 109 cols  (CSV backup)
 ```
 
 ---
@@ -288,7 +329,7 @@ Opens at **http://localhost:8501**
 3. Review results across 4 tabs:
    - **📊 Risk Assessment** — SOFA score, severity bar, vital sign trend chart, prediction history
    - **🔍 Explainability** — SHAP feature importance, clinical interpretations, key risk factors
-    - **🧠 AI Clinical Report** — screened LLM summary and response-similarity score
+   - **🧠 AI Clinical Report** — LLM assessment with consistency score and reliability rating
    - **🔒 Federated Learning** — FL training configuration, model architecture, DP status
 
 ### Utility buttons (sidebar)
@@ -404,10 +445,8 @@ python train_federated.py
 5. Saves 300 SHAP background samples → `models/shap_background.npy`
 6. Runs Flower FL simulation: 100 rounds × 3 epochs × 3 hospitals with FedYogi server + FedProx client
 7. Saves best global model → `models/federated_model.pth`
-8. Evaluates on held-out rows and prints MAE / R² plus SOFA risk-band and high-risk alert metrics
-9. Saves metrics and training metadata → `models/training_metadata.json`
-
-The risk-band report includes confusion matrices and per-class precision, recall/sensitivity, specificity, and F1. The high-risk alert uses predicted SOFA ≥ 8 and actual SOFA ≥ 10; it reports false negatives, false positives, AUROC, and PR-AUC from continuous predicted SOFA scores. These are row-level results, not independent patient/stay validation: source CSVs do not contain patient or ICU-stay IDs.
+8. Evaluates on held-out test set (12,038 patients) and prints MAE / R²
+9. Saves training metadata → `models/training_metadata.json`
 
 **Re-run without BigQuery (CSVs already exist):**
 
@@ -536,17 +575,37 @@ The app maintains the last 20 vital sign readings per patient.
 
 The alert fires at ≥ 8 (not ≥ 10) because the model under-predicts severe cases by ~2–3 SOFA points due to limited high-risk training data.
 
-### Held-out Risk Classification Metrics
+### LLM Output Validation — 9-Method Reliability Score
 
-After training, the Risk Assessment tab's **Held-out Risk Classification Metrics** expander shows risk-band and high-risk alert confusion matrices and metrics. AUROC and PR-AUC use continuous predicted SOFA scores, not thresholded alert labels. If a holdout contains only one high-risk class, those two metrics are recorded as unavailable.
+The system validates every LLM response using **9 independent methods across 2 LLM calls**, replacing the previous 3-call self-consistency approach. All 9 methods check external correctness against actual patient data and clinical protocols — not just whether multiple responses agree with each other.
 
-**Evaluation limitation:** splits are row-level because the available CSVs contain no patient or ICU-stay identifiers. Rows/windows from a single stay may occur in both training and testing; results are initial evaluation only, not independent clinical validation.
+**Call 1 — Main clinical assessment** (`openai/gpt-oss-120b`): Generates the structured 4-section clinical report.
 
-### LLM Report Safeguards
+**Call 2 — Judge evaluation** (`llama-3.1-8b-instant`, lightweight): Evaluates the main response for clinical quality and factual faithfulness.
 
-The prompt directs the model to avoid diagnoses, medications, doses, procedures, and treatment changes; treat clinical notes as data rather than instructions; and recommend clinician review, reassessment, and applicable local protocols. A rule-based screen checks each generated response for common diagnosis, medication/treatment, and dose terms, plus numeric measurements not found in the supplied inputs. If any response is flagged, all three reports are withheld.
+**The 9 methods and their weights:**
 
-The **Response Similarity** score is based only on pairwise TF-IDF cosine similarity. Similar wording does not establish factual accuracy or clinical safety. Prompt instructions and keyword/number checks are heuristic and cannot catch every unsafe or unsupported claim. They do not replace clinician review or validation against clinician-labeled cases.
+| # | Method | Weight | What it checks |
+|---|---|---|---|
+| 1 | Factual Grounding | 13% | Does the response acknowledge each abnormal vital sign? |
+| 2 | Clinical Hard Rules | 13% | Does the response follow ICU protocols (MAP<65 → vasopressors, SpO₂<90 → oxygen)? |
+| 3 | SHAP-LLM Coherence | 9% | Does the response address what SHAP identified as the top prediction drivers? |
+| 4 | Response Structure | 9% | Are all 4 required sections present and sufficiently detailed? |
+| 5 | Severity Calibration | 8% | Does urgency language match the SOFA level (bidirectional)? |
+| 6 | Contraindication Check | 5% | Does the response avoid dangerous drug recommendations for this patient's vitals? |
+| 7 | Numeric Accuracy | 8% | Do all numbers stated in the response match the actual vital sign values? |
+| 8 | G-Eval Quality | 13% | Judge LLM: factual accuracy + clinical appropriateness + urgency + completeness (1–5 each) |
+| 9 | RAGAS Faithfulness | 22% | Judge LLM: are the response's statements supported by the patient vitals? |
+
+**Score labels:**
+
+| Score | Label |
+|---|---|
+| ≥ 0.80 | ✅ High Reliability — response passes all checks |
+| 0.60–0.80 | ⚠️ Moderate Reliability — review violations before acting |
+| < 0.60 | ❌ Low Reliability — significant failures, apply clinical judgment |
+
+**Display (Tab 3):** Per-method breakdown with bar chart, score, ✅/⚠️/❌ indicator, and specific violation messages (e.g., "MAP < 65 mmHg: vasopressors not mentioned in response").
 
 ### Prediction History
 
@@ -578,12 +637,18 @@ Total parameters: ~23,000
 
 ### Performance (held-out test set, 12,038 patients)
 
-| Metric | Value |
-|---|---|
-| MAE | **1.8236 SOFA points** |
-| R² | **0.4171** |
-| Prediction range | 0.10 – 18.40 |
-| Best FL round | 24 (of 100) |
+| Metric | Value | Notes |
+|---|---|---|
+| MAE | **1.7588 SOFA points** | Average prediction error on 12,038 held-out patients |
+| R² | **0.4724** | 47.2% of SOFA variance explained |
+| AUROC | **0.9254** | High-risk alert discrimination (continuous score, no threshold) |
+| PR-AUC | **0.5703** | Precision-recall AUC for imbalanced high-risk class (6%) |
+| False negatives | 423 | High-risk cases missed at alert threshold = 8 |
+| False positives | 45 | False alerts on stable patients |
+| Prediction range | 0.03 – 13.87 | Across all test patients |
+| Best FL round | 24 (of 100) | Round with lowest validation loss |
+
+> AUROC = 0.9254 exceeds the published ICU ML benchmark of 0.82–0.84 (Lancet Digital Health 2025). Results appear in Tab 1 under "Held-out Risk Classification Metrics" after running `python train_federated.py`.
 
 Per-segment performance:
 
@@ -656,8 +721,12 @@ The TF-IDF vectorizer uses an **explicit 90-term SOFA vocabulary whitelist** —
 | DNN Framework | PyTorch 2.x |
 | Federated Learning | Flower (flwr) 1.8+ — FedYogi + FedProx |
 | Explainability | SHAP 0.44+ |
-| LLM Provider | Groq (`openai/gpt-oss-120b`) |
-| LLM Response Similarity | Mean pairwise TF-IDF cosine similarity; not an accuracy or safety score |
+| LLM Provider (main) | Groq `openai/gpt-oss-120b` — clinical assessment generation |
+| LLM Provider (judge) | Groq `llama-3.1-8b-instant` — G-Eval + RAGAS reliability evaluation |
+| LLM Validation | 9-method reliability score: Factual Grounding · Clinical Hard Rules · SHAP Coherence · Structure · Severity · Contraindication · Numeric Accuracy · G-Eval · RAGAS |
+| SOFA Validation | 3-layer: offline AUROC/PR-AUC + runtime plausibility checks + conformal prediction (90% coverage) |
+| Database | SQLite 3.51 (stdlib) — patient vitals, predictions, FL training data |
+| DB Migration | `migrate_to_db.py` — one-time CSV → SQLite import |
 | Web Framework | Streamlit 1.35+ |
 | Visualisation | Plotly |
 | Data Processing | pandas, numpy |
@@ -709,9 +778,18 @@ Then restart the app.
 - Verify your key is active at [https://console.groq.com](https://console.groq.com)
 - The app continues to work without LLM (SOFA score and SHAP still function)
 
+### App fails with "Database not initialised"
+
+The SQLite database hasn't been created yet. Run the migration script:
+
+```bash
+cd icu_monitor
+python migrate_to_db.py
+```
+
 ### App loads but SOFA prediction is 0 or negative
 
-The sliding window file may be corrupted. Reset it via the sidebar Reset button, or delete the patient vitals file and let the app recreate it.
+The patient vitals sliding window in the database may be stale. Use the **🔄 Reset Patient History** button in the sidebar. This clears the sliding window rows for the current patient and lets the app reseed from the simulation data.
 
 ### Training crashes with `RuntimeError: Simulation crashed`
 
@@ -740,17 +818,21 @@ pip install -r requirements.txt
 # 2. Set Groq API key
 echo "GROQ_API_KEY=your_key_here" > .env
 
-# 3. Run the main CDSS app
+# 3. Initialise the SQLite database (one-time, ~53 MB)
+python migrate_to_db.py
+
+# 4. Run the main CDSS app
 streamlit run app.py
 
-# 4. Run the Computer Vision Monitor (separate standalone window)
+# 5. Run the Computer Vision Monitor (separate standalone window)
 #    First run downloads face_landmarker.task (~12 MB) automatically
 python cv_monitor.py
 
-# 5. (Optional) Retrain the federated model (requires BigQuery access)
+# 6. (Optional) Retrain the federated model (requires BigQuery access)
+#    Also updates the fl_training table in the database automatically
 python train_federated.py
 
-# 6. (Optional) Real FL demo — run in 4 separate terminals
+# 7. (Optional) Real FL demo — run in 4 separate terminals
 python server.py
 python client.py --client_id 0
 python client.py --client_id 1

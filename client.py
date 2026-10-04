@@ -27,6 +27,7 @@ from model_utils import (
     ICUModel, train_model, evaluate_model, get_weights, set_weights,
     apply_dp_to_update, estimate_privacy_budget,
 )
+from db import get_fl_client_data, fl_training_exists
 
 # =============================================================
 # ARGUMENTS
@@ -63,7 +64,11 @@ print(f"[Hospital {CLIENT_ID}] Loading private dataset...")
 scaler  = joblib.load(MODEL_PATH + "scaler.pkl")
 feature_columns = list(scaler.feature_names_in_)
 
-df = pd.read_csv(DATA_PATH + f"client_{CLIENT_ID}.csv")
+# Read from SQLite DB if available, fall back to CSV
+if fl_training_exists():
+    df = get_fl_client_data(CLIENT_ID)
+else:
+    df = pd.read_csv(DATA_PATH + f"client_{CLIENT_ID}.csv")
 
 y = df["sofa_score"].values.astype(np.float32)   # raw SOFA (0-24)
 X = df.drop(columns=["sofa_score"])

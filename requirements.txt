@@ -15,6 +15,11 @@ groq>=0.9.0
 python-dotenv>=1.0.0
 plotly>=5.18.0
 
+# ── SQLite Database ───────────────────────────────────────────────────────────
+# sqlite3 is part of the Python standard library — no installation needed.
+# sqlalchemy is optional (future migration path to PostgreSQL); not required now.
+# The database file (models/icu_monitor.db) is created by migrate_to_db.py.
+
 # ── Federated Learning ────────────────────────────────────────────────────────
 flwr[simulation]>=1.8.0
 
@@ -28,5 +33,6 @@ mediapipe>=0.10.35
 # ── BigQuery — Phase 0 preprocessing only ────────────────────────────────────
 # Required only for running train_federated.py from scratch.
 # Skip if you already have data/fl_training/client_0/1/2.csv
+# and models/icu_monitor.db (populated by migrate_to_db.py).
 google-cloud-bigquery>=3.11.0
 google-cloud-bigquery-storage>=2.20.0

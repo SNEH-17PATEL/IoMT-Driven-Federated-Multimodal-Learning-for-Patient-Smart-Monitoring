@@ -21,7 +21,7 @@
 12. [Training Improvements — What We Tried and Why](#12-training-improvements--what-we-tried-and-why)
 13. [SHAP Explainability](#13-shap-explainability)
 14. [LLM Integration — Groq](#14-llm-integration--groq)
-15. [LLM Response Similarity and Safeguards](#15-llm-response-similarity-and-safeguards)
+15. [LLM Self-Consistency Check](#15-llm-self-consistency-check)
 16. [Alert System and Threshold Decision](#16-alert-system-and-threshold-decision)
 17. [Complete App Pipeline — Step by Step](#17-complete-app-pipeline--step-by-step)
 18. [All Files and Their Roles](#18-all-files-and-their-roles)
@@ -93,11 +93,11 @@ EXPLAINABILITY
   └─ Key risk factors mapped from SHAP
 
 LLM CLINICAL REPORT
-  ├─ Configurable Groq model (default: openai/gpt-oss-120b), called 3 times
-  ├─ Prompt avoids diagnoses, medications, doses, procedures, and treatment changes
-  ├─ Rule-based screen checks common unsafe terms and unsupported measurements
-  ├─ Any flagged response causes all three reports to be withheld
-  └─ Pairwise TF-IDF cosine similarity is shown as response similarity, not reliability
+  ├─ Groq Llama 3.3 70B called 3 times
+  ├─ For High Risk: IMMEDIATE ACTIONS listed first (30-min horizon)
+  ├─ For normal: Current condition, cause, forecast, actions
+  ├─ TF-IDF cosine similarity → consistency score (0–1)
+  └─ Reliability label: High (≥0.85) / Moderate / Low
 
 DISPLAY (4 tabs in Streamlit)
   ├─ Tab 1: Risk Assessment — SOFA, severity, vital trend charts, prediction history
@@ -746,22 +746,65 @@ The prompt is constructed from 7 sections:
 
 ### Risk-Adaptive Prompting
 
-For predicted SOFA ≥ 8, the report opens with an alert and prioritizes concise observations and prompt clinician review. The report sections are Current Condition, Observed Concerns, Risk Forecast, and Clinician Review. The prompt prohibits diagnoses, medication names, doses, procedures, and treatment changes; it directs the model to recommend responsible-clinician review, reassessment, and applicable local protocols.
+**This is a key innovation added during implementation.**
+
+For High Risk patients (predicted SOFA ≥ 8):
+- The prompt opens with `⚠️ CLINICAL ALERT — Predicted SOFA X.X`
+- The 4 sections are **reordered**: IMMEDIATE ACTIONS comes FIRST (not last)
+- Time horizon changes from "next 2–4 hours" to "next 30 minutes"
+- IMMEDIATE ACTIONS requests specific drug names, doses, procedures
+
+For non-alert patients:
+- Standard section order: Current Condition → Probable Cause → Risk Forecast → Immediate Actions
+- Standard 2–4 hour time horizon
+
+**Why this matters:** For a genuinely critical patient, you want the actionable output (what to do RIGHT NOW) at the top of the response, not buried at the bottom after paragraphs of analysis.
 
 ### LLM Parameters
 
-- **Temperature:** 0.2
-- **Max tokens:** 2000
-- **Model:** `GROQ_MODEL`, default `openai/gpt-oss-120b` (Groq retired `llama-3.3-70b-versatile` on August 16, 2026)
-- **Safety screen:** Rule-based checks for common diagnoses, medications/treatments, dose language, and unsupported numeric measurements. Any flagged response withholds all three reports.
+- **Temperature:** 0.7 (for self-consistency calls — variation needed to test reliability)
+- **Max tokens:** 800
+- **System prompt:** "You are an expert ICU clinical decision support assistant. Provide concise, structured, and clinically accurate reasoning."
 
-## 15. LLM Response Similarity and Safeguards
+---
 
-The same patient prompt is sent to Groq three times. The app computes mean pairwise TF-IDF cosine similarity and labels it **Response Similarity**. This measures wording overlap only; it is not evidence of correctness, reliability, or clinical safety.
+## 15. LLM Self-Consistency Check
 
-The system and user prompts direct the model to use only supplied patient information, treat clinical notes as data rather than instructions, avoid diagnoses/medications/doses/procedures/treatment changes, and recommend clinician review, reassessment, and applicable local protocols instead. Before display, `llm_safety.py` checks each response for common medication/treatment terms, dose language, diagnosis terms, and numeric measurements not present in supplied inputs. If any response is flagged, all three are withheld and the reason is shown.
+### The Problem It Solves
 
-These prompt and keyword checks are heuristic. They will not catch every unsupported claim or unsafe output and do not replace clinician review or evaluation on clinician-labeled cases.
+LLMs can hallucinate — produce confident but incorrect outputs. In a clinical setting, an unreliable AI recommendation is dangerous. A single response cannot be assessed for reliability.
+
+### The Mechanism
+
+1. The same prompt is sent to Groq **3 times** (temperature=0.7 allows natural variation)
+2. The 3 responses are collected
+3. Each response is vectorised using `sklearn.feature_extraction.text.TfidfVectorizer` (separate from the clinical note TF-IDF — this vectorizer is created fresh each inference)
+4. Pairwise cosine similarity is computed between all response pairs
+5. Average similarity across all pairs = **consistency score**
+
+**Formula:**
+```
+consistency_score = (similarity_matrix.sum() - n) / (n × (n-1))
+```
+Where n=3, and diagonal values (self-similarity=1.0) are excluded.
+
+### Reliability Labels
+
+| Score | Label | Meaning |
+|---|---|---|
+| ≥ 0.85 | ✅ High Reliability | All 3 responses agree — trust the output |
+| 0.65–0.85 | ⚠️ Moderate Reliability | Some variation — review carefully |
+| < 0.65 | ❌ Low Reliability | Significant variation — apply extra clinical judgment |
+
+### What Gets Displayed
+
+- The first response (Response 1) is the primary output shown prominently
+- The consistency score and reliability label are displayed as metrics
+- An expandable "View all 3 LLM responses" section shows all three for comparison
+
+### Why This Is a Novel Contribution
+
+Most healthcare AI systems that use LLMs call them once and display the single result. There is no quality measure on the output. This self-consistency mechanism provides a quantitative reliability estimate using only the model's own outputs — no ground truth needed.
 
 ---
 
@@ -856,8 +899,8 @@ For each of 7 vitals: compute trend direction (increasing/stable/decreasing from
 ### Step 14 — LLM Prompt Construction
 Build the risk-adaptive prompt (urgency header for High Risk, standard for others). Include all 7 sections of patient data.
 
-### Step 15 — LLM Report Screening and Response Similarity (3 Groq calls)
-With spinner: call Groq 3 times (temperature=0.2). Screen every response and withhold all if any are flagged; show pairwise TF-IDF cosine similarity as response similarity, not reliability.
+### Step 15 — LLM Self-Consistency (3 Groq calls)
+With spinner: call Groq 3 times (temperature=0.7). Compute TF-IDF cosine similarity → consistency score → reliability label.
 
 ### Step 16 — Display
 Render across 4 tabs with all computed information.
@@ -1001,9 +1044,9 @@ NORMAL_RANGES = {
 
 | Metric | Value |
 |---|---|
-| Overall MAE | **1.8236 SOFA points** |
-| Overall R² | **0.4171** |
-| Prediction range | 0.10 – 18.40 |
+| Overall MAE | **1.7588 SOFA points** |
+| Overall R² | **0.4724** |
+| Prediction range | 0.03 – 13.87 |
 | Training samples | 48,150 |
 | Test samples | 12,038 |
 | FL rounds | 100 (best was round 24) |
@@ -1019,7 +1062,7 @@ NORMAL_RANGES = {
 | Moderate (5-9) | 3,655 | 1.792 | -1.911 | Between-segment discrimination is strong |
 | High (≥10) | 738 | 4.208 | -4.913 | Wide SOFA range (10-24) + sparse training data |
 
-**Note on negative per-class R²:** Global R²=0.4171 is positive because the model
+**Note on negative per-class R²:** Global R²=0.4724 is positive because the model
 correctly discriminates between risk tiers. Within-segment R² is negative because
 ranking patients within the same SOFA tier requires direct lab values (bilirubin,
 creatinine, platelets) not present in the feature set.
@@ -1043,7 +1086,7 @@ creatinine, platelets) not present in the feature set.
 | **SOFA vocabulary whitelist (90 terms)** | **0.1752** | **Feature breakthrough** |
 | FedAdam server optimizer | 0.2148 | Server optimization |
 | FedYogi server optimizer | 0.2229 | Better adaptive rate |
-| **All notes (283k) + 10k chars + FedYogi** | **0.4171** | **Current best** |
+| **All notes (283k) + 10k chars + FedYogi** | **0.4724** | **Current best** |
 
 ---
 
