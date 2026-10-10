@@ -32,7 +32,6 @@ mediapipe>=0.10.35
 
 # ── BigQuery — Phase 0 preprocessing only ────────────────────────────────────
 # Required only for running train_federated.py from scratch.
-# Skip if you already have data/fl_training/client_0/1/2.csv
-# and models/icu_monitor.db (populated by migrate_to_db.py).
+# Skip if models/icu_monitor.db is already populated (run migrate_to_db.py once).
 google-cloud-bigquery>=3.11.0
 google-cloud-bigquery-storage>=2.20.0

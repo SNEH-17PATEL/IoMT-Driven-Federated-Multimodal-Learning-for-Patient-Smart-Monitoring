@@ -30,6 +30,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 from sklearn.model_selection import train_test_split
 
+from db import get_fl_client_data, fl_training_exists
+
 from model_utils import ICUModel, train_model, evaluate_model, get_weights, set_weights
 
 # ── Page config ───────────────────────────────────────────────────────────────
@@ -222,7 +224,6 @@ button[data-testid="baseButton-secondary"] div[data-testid="stMarkdownContainer"
 
 # ── Paths & display constants ─────────────────────────────────────────────────
 MODEL_PATH   = "models/"
-DATA_PATH    = "data/fl_training/"
 HOSP_NAMES   = ["General ICU", "Mixed ICU", "Cardiac/Trauma ICU"]
 HOSP_COLORS  = ["#28a745", "#f0a500", "#dc3545"]
 HOSP_RGBA    = ["40,167,69", "240,165,0", "220,53,69"]
@@ -348,7 +349,7 @@ def load_client_data():
     input_dim    = len(feature_cols)
     clients = []
     for cid in range(3):
-        df = pd.read_csv(DATA_PATH + f"client_{cid}.csv")
+        df = get_fl_client_data(cid)
         y  = df["sofa_score"].values.astype(np.float32)
         X  = df.drop(columns=["sofa_score"])
         for col in feature_cols:
@@ -933,17 +934,15 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Guard: required files ─────────────────────────────────────────────────────
-_missing = [
-    f"`{DATA_PATH}client_{i}.csv`"
-    for i in range(3)
-    if not os.path.exists(DATA_PATH + f"client_{i}.csv")
-]
+_missing = []
+if not fl_training_exists():
+    _missing.append("fl_training table in the database (run `python migrate_to_db.py`)")
 if not os.path.exists(MODEL_PATH + "scaler.pkl"):
     _missing.append(f"`{MODEL_PATH}scaler.pkl`")
 if _missing:
     st.error(
-        "⛔ Missing files: " + ", ".join(_missing) +
-        ". Run `python train_federated.py` once then restart.",
+        "⛔ Missing data: " + ", ".join(_missing) +
+        ". Run `python train_federated.py` once to populate the database and save model artifacts, then restart.",
         icon="⛔",
     )
     st.stop()
@@ -1065,7 +1064,7 @@ if S["status"] == "idle":
     Uses your existing
     <span style="color:#7fb3c8;background:rgba(0,210,255,0.08);
                  padding:2px 8px;border-radius:4px;font-family:monospace;font-size:11px;">
-      data/fl_training/client_0/1/2.csv
+      fl_training table (SQLite)
     </span>
     <span style="color:#7fb3c8;">— no BigQuery or internet connection required</span>
   </div>

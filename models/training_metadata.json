@@ -1,25 +1,121 @@
 {
   "num_rounds": 100,
-  "hospitals": 3,
-  "aggregation": "FedAvg",
-  "best_round": 22,
-  "best_eval_loss": 5.83992,
-  "model_architecture": "108 \u2192 128 \u2192 64 \u2192 32 \u2192 1  (ReLU, no Dropout, FedProx)",
-  "input_features": 108,
-  "source": "server.py (real FL \u2014 MAE/R\u00b2 not available here)",
-  "completed_at": "2026-10-04 15:34:18",
-  "final_mae": 1.7588,
-  "final_r2": 0.4724,
-  "train_samples": 48150,
-  "test_samples": 9630,
-  "pred_range_min": 0.03,
-  "pred_range_max": 13.87,
   "epochs_per_round": 3,
-  "split_type": "IID",
+  "batch_size": 64,
+  "base_lr": 0.001,
+  "lr_decay": 0.99,
+  "hospitals": 3,
   "hospital_names": [
     "General ICU",
     "Mixed ICU",
     "Cardiac/Trauma ICU"
   ],
-  "tfidf_features": 200
+  "aggregation": "FedYogi (\u03b7=0.01, \u03b21=0.9, \u03b22=0.99) + FedProx (\u03bc=0.5)",
+  "split_type": "IID",
+  "train_samples": 12795,
+  "test_samples": 2559,
+  "input_features": 108,
+  "model_architecture": "108 \u2192 128 \u2192 64 \u2192 32 \u2192 1  (ReLU, no Dropout, FedProx)",
+  "best_round": 18,
+  "final_mae": 1.8968,
+  "final_r2": 0.5995,
+  "pred_range_min": -0.22,
+  "pred_range_max": 14.38,
+  "oversample": false,
+  "loss_weights": "Linear (1 + SOFA\u00d70.5) \u2014 mild high-SOFA emphasis (~2\u00d7 at SOFA=10)",
+  "optimizer": "AdamW (weight_decay=1e-4)",
+  "differential_privacy": false,
+  "dp_sensitivity": null,
+  "dp_sigma": null,
+  "dp_epsilon": null,
+  "dp_delta": null,
+  "bigquery_project": "mimic-project-2",
+  "tfidf_features": 200,
+  "tfidf_ngram": [
+    1,
+    2
+  ],
+  "notes_sample_size": 283208,
+  "risk_classification_metrics": {
+    "risk_bands": {
+      "labels": [
+        "Low (<5)",
+        "Moderate (5-<10)",
+        "High (>=10)"
+      ],
+      "confusion_matrix": [
+        [
+          1304,
+          178,
+          3
+        ],
+        [
+          378,
+          444,
+          4
+        ],
+        [
+          7,
+          192,
+          49
+        ]
+      ],
+      "per_class": {
+        "Low (<5)": {
+          "precision": 0.7720544701006513,
+          "recall": 0.8781144781144781,
+          "sensitivity": 0.8781144781144781,
+          "specificity": 0.6415270018621974,
+          "f1": 0.8216761184625079
+        },
+        "Moderate (5-<10)": {
+          "precision": 0.5454545454545454,
+          "recall": 0.5375302663438256,
+          "sensitivity": 0.5375302663438256,
+          "specificity": 0.7864974033467974,
+          "f1": 0.5414634146341464
+        },
+        "High (>=10)": {
+          "precision": 0.875,
+          "recall": 0.1975806451612903,
+          "sensitivity": 0.1975806451612903,
+          "specificity": 0.9969710082215492,
+          "f1": 0.3223684210526316
+        }
+      },
+      "macro": {
+        "precision": 0.7308363385183988,
+        "recall": 0.5377417965398646,
+        "sensitivity": 0.5377417965398646,
+        "specificity": 0.808331804476848,
+        "f1": 0.5618359847164286
+      }
+    },
+    "high_risk_alert": {
+      "predicted_sofa_threshold": 8.0,
+      "actual_high_risk_threshold": 10.0,
+      "confusion_matrix": [
+        [
+          2253,
+          58
+        ],
+        [
+          107,
+          141
+        ]
+      ],
+      "true_negative": 2253,
+      "false_positive": 58,
+      "false_negative": 107,
+      "true_positive": 141,
+      "precision": 0.7085427135678392,
+      "recall": 0.5685483870967742,
+      "sensitivity": 0.5685483870967742,
+      "specificity": 0.9749026395499784,
+      "f1": 0.6308724832214765,
+      "auroc": 0.9461499001968146,
+      "pr_auc": 0.6840148203488288
+    }
+  },
+  "evaluation_limitation": "Row-level train/test split \u2014 patient/ICU-stay IDs unavailable. Treat as initial evaluation results, not independent clinical validation."
 }

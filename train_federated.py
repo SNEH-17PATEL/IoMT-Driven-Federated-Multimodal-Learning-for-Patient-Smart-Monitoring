@@ -3,18 +3,18 @@ Federated Learning Training Script  —  Unified Edition
 =======================================================
 Combines Phase 0 (data preprocessing from BigQuery) with Phase 1–6 (FL training).
 
-Phase 0 — Preprocessing  (skipped automatically if client CSVs already exist,
-                           or set SKIP_PREPROCESSING = True to force-skip)
+Phase 0 — Preprocessing  (skipped automatically if fl_training table in the DB
+                           already has data, or set SKIP_PREPROCESSING = True)
   • Queries BigQuery: ml_dataset_final (last row per ICU stay) + clinical_notes
   • TF-IDF on clinical notes  (600 bigram features, 80K note sample)
   • Merges vitals + TF-IDF, drops IDs, fills NaN → fillna(0)
   • Train/test split  (80 / 20, stratified by High-Risk flag)
   • StandardScaler fit on X_train
-  • Splits into 3 hospital client CSVs (IID 33/33/34)
-  • Saves: scaler.pkl, tfidf_vectorizer.pkl, feature_columns.pkl, client_0/1/2.csv
+  • Splits into 3 hospital client datasets (IID 33/33/34)
+  • Saves: scaler.pkl, tfidf_vectorizer.pkl, feature_columns.pkl + fl_training table (SQLite)
 
 Phase 1-6 — FL Training  (always runs)
-  • Loads client CSVs (already StandardScaler-normalised)
+  • Loads client data from fl_training table (already StandardScaler-normalised)
   • SHAP background samples (300 rows from combined training data)
   • Flower FL simulation: 20 rounds, all-3-clients, SaveBestStrategy
       - Weighted MSE loss  (1 + SOFA×3  →  High-Risk gets ~2.4× gradient weight)
@@ -55,7 +55,6 @@ from db import init_db, get_fl_client_data, fl_training_exists
 # =============================================================
 
 # ── Paths ──
-DATA_PATH  = "data/fl_training/"
 MODEL_PATH = "models/"
 
 # ── BigQuery (Phase 0) ──
@@ -64,7 +63,7 @@ BIGQUERY_DATASET  = "Dataset"   # actual dataset name in BigQuery console
 BIGQUERY_LOCATION = "US"        # Data location shown in BigQuery → Dataset → Details
 
 # Set True to skip BigQuery + TF-IDF entirely and go straight to FL training.
-# Auto-set to True if all three client CSVs already exist.
+# Auto-set to True if fl_training table in the DB already has data.
 SKIP_PREPROCESSING = False
 
 # ── TF-IDF settings (Phase 0) ──
@@ -125,18 +124,17 @@ DP_SIGMA       = 1.0
 # ── HELPERS ───────────────────────────────────────────────────
 # =============================================================
 hospital_names = ["General ICU", "Mixed ICU", "Cardiac/Trauma ICU"]
-_client_paths  = [DATA_PATH + f"client_{i}.csv" for i in range(3)]
 
 import os
-_csvs_exist = all(os.path.exists(p) for p in _client_paths)
+_db_has_data = fl_training_exists()
 
 # =============================================================
 # ── PHASE 0: PREPROCESSING  (BigQuery → TF-IDF → Scale) ──────
 # =============================================================
 def run_preprocessing():
     """
-    Download data from BigQuery, run TF-IDF, scale, split into 3 client CSVs
-    and save all sklearn artifacts so train_federated.py can be re-run offline.
+    Download data from BigQuery, run TF-IDF, scale, split into 3 hospital client
+    datasets and save them to the fl_training SQLite table + all sklearn artifacts.
     """
     print("=" * 60)
     print("  PHASE 0 — Data Preprocessing from BigQuery")
@@ -558,7 +556,7 @@ def run_preprocessing():
     X_test_np  = X_test_scaled.astype(np.float32)
 
     # ── 0h. Split into 3 hospital client datasets (IID) ──────
-    print("\n[0h] Splitting training data into 3 hospital client CSVs (IID)...")
+    print("\n[0h] Splitting training data into 3 hospital client datasets (IID) → SQLite...")
     from sklearn.utils import shuffle as sk_shuffle
 
     data_train = X_train_df.copy()
@@ -572,23 +570,20 @@ def run_preprocessing():
         data_train.iloc[int(n * 0.66):],
     ]
 
-    # ── Save client splits: CSV (backup) + SQLite (primary) ────
+    # ── Save client splits to SQLite (primary storage) ───────
     import sqlite3 as _sqlite3
+    import pandas as _pd_local
     from db import init_db as _init_db, DB_PATH as _DB_PATH
     _init_db()
-    os.makedirs(DATA_PATH, exist_ok=True)
     _db_conn = _sqlite3.connect(_DB_PATH)
     for i, split in enumerate(splits):
         y_h = split["sofa_score"]
         X_h = split.drop(columns=["sofa_score"])
         save_df = X_h.copy()
         save_df["sofa_score"] = y_h.values
-        # Keep CSV as backup
-        save_df.to_csv(_client_paths[i], index=False)
-        # Write to SQLite — replace client's rows on retrain
+        # Replace this client's rows in the DB on every retrain
         _db_conn.execute("DELETE FROM fl_training WHERE client_id = ?", (i,))
         _db_conn.commit()
-        import pandas as _pd_local
         db_df = _pd_local.concat(
             [_pd_local.DataFrame({"client_id": [i] * len(save_df)}), save_df], axis=1
         )
@@ -610,7 +605,7 @@ def run_preprocessing():
     joblib.dump(tfidf_vec, MODEL_PATH + "tfidf_vectorizer.pkl")
     joblib.dump(X_train_df.columns.tolist(), MODEL_PATH + "feature_columns.pkl")
     print("  Saved: scaler.pkl, tfidf_vectorizer.pkl, feature_columns.pkl")
-    print("  Saved: client_0/1/2.csv (CSV backup) + fl_training table (SQLite)")
+    print("  Saved: fl_training table (SQLite) — 3 hospital client splits")
 
     return X_test_np, y_test
 
@@ -623,13 +618,13 @@ print("  ICU Federated Learning — Training Script  (Unified)")
 print("=" * 60)
 
 # ── Determine whether preprocessing is needed ────────────────
-skip = SKIP_PREPROCESSING or _csvs_exist
+skip = SKIP_PREPROCESSING or _db_has_data
 if not skip:
     X_test_np, y_test_global = run_preprocessing()
-    _csvs_exist = True   # they now exist
+    _db_has_data = True
     skip = True
 
-print("\n[1/6] Loading hospital datasets from client CSVs...")
+print("\n[1/6] Loading hospital datasets from database (fl_training table)...")
 
 scaler_obj     = joblib.load(MODEL_PATH + "scaler.pkl")
 feature_columns = list(scaler_obj.feature_names_in_)
@@ -638,11 +633,7 @@ clients_data = []
 all_X, all_y = [], []
 
 for i in range(3):
-    # Read from DB if available, fall back to CSV
-    if fl_training_exists():
-        df = get_fl_client_data(i)
-    else:
-        df = pd.read_csv(_client_paths[i])
+    df = get_fl_client_data(i)
     y  = df["sofa_score"].values.astype(np.float32)
     X  = df.drop(columns=["sofa_score"])
 
@@ -742,7 +733,7 @@ if USE_NONIID_SPLIT:
               f"High:{n_high}({n_high/len(y_h)*100:.0f}%)")
         clients_data.append((X_h, y_h))
 else:
-    print("\n  Split type: IID (client_0/1/2.csv)")
+    print("\n  Split type: IID (fl_training table in database)")
 
 # =============================================================
 # [2/6] SHAP BACKGROUND

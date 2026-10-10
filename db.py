@@ -43,16 +43,18 @@ def init_db() -> None:
     # ── Patient vitals sliding window ─────────────────────────────────────
     cur.execute("""
         CREATE TABLE IF NOT EXISTS patient_vitals (
-            id      INTEGER PRIMARY KEY AUTOINCREMENT,
-            patient INTEGER NOT NULL,
-            time    TEXT    NOT NULL,
-            HR      REAL,
-            RR      REAL,
-            SpO2    REAL,
-            Temp    REAL,
-            SBP     REAL,
-            DBP     REAL,
-            MAP     REAL
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            patient    INTEGER NOT NULL,
+            time       TEXT    NOT NULL,
+            HR         REAL,
+            RR         REAL,
+            SpO2       REAL,
+            Temp       REAL,
+            SBP        REAL,
+            DBP        REAL,
+            MAP        REAL,
+            created_at TEXT,
+            updated_at TEXT
         )
     """)
     cur.execute(
@@ -75,7 +77,9 @@ def init_db() -> None:
             SBP         REAL,
             MAP         REAL,
             GCS_Eye     INTEGER,
-            Stress      REAL
+            Stress      REAL,
+            created_at  TEXT,
+            updated_at  TEXT
         )
     """)
     cur.execute(
@@ -85,20 +89,22 @@ def init_db() -> None:
     # ── Sample patient simulation data ────────────────────────────────────
     cur.execute("""
         CREATE TABLE IF NOT EXISTS sample_patients (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            patient       INTEGER NOT NULL,
-            row_idx       INTEGER NOT NULL,
-            timestamp     TEXT,
-            HR            REAL,
-            RR            REAL,
-            SpO2          REAL,
-            Temp          REAL,
-            SBP           REAL,
-            DBP           REAL,
-            MAP           REAL,
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            patient          INTEGER NOT NULL,
+            row_idx          INTEGER NOT NULL,
+            timestamp        TEXT,
+            HR               REAL,
+            RR               REAL,
+            SpO2             REAL,
+            Temp             REAL,
+            SBP              REAL,
+            DBP              REAL,
+            MAP              REAL,
             GCS_eye_opening  INTEGER,
-            stress_score  REAL,
-            clinical_note TEXT
+            stress_score     REAL,
+            clinical_note    TEXT,
+            created_at       TEXT,
+            updated_at       TEXT
         )
     """)
     cur.execute(
@@ -109,6 +115,75 @@ def init_db() -> None:
     # fl_training is created dynamically by migrate_to_db.py with the full
     # 109-column schema (pandas to_sql). init_db() does not pre-create it
     # so that the correct column set is always used on first import.
+
+    # ── Triggers: auto-stamp created_at + updated_at on INSERT; ──────────
+    # ── auto-update updated_at on UPDATE of data columns only.   ──────────
+    # AFTER UPDATE OF <data cols> prevents infinite recursion — the trigger
+    # won't re-fire when it writes updated_at itself.
+    cur.executescript("""
+        CREATE TRIGGER IF NOT EXISTS trg_pv_created_at
+        AFTER INSERT ON patient_vitals
+        BEGIN
+            UPDATE patient_vitals
+            SET created_at = datetime('now','localtime'),
+                updated_at = datetime('now','localtime')
+            WHERE id = NEW.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_pv_updated_at
+        AFTER UPDATE OF patient, time, HR, RR, SpO2, Temp, SBP, DBP, MAP
+        ON patient_vitals
+        BEGIN
+            UPDATE patient_vitals
+            SET updated_at = datetime('now','localtime')
+            WHERE id = NEW.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_ph_created_at
+        AFTER INSERT ON prediction_history
+        BEGIN
+            UPDATE prediction_history
+            SET created_at = datetime('now','localtime'),
+                updated_at = datetime('now','localtime')
+            WHERE id = NEW.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_ph_updated_at
+        AFTER UPDATE OF patient, Timestamp, Reading, SOFA, Risk, HR, RR, SpO2, Temp, SBP, MAP, GCS_Eye, Stress
+        ON prediction_history
+        BEGIN
+            UPDATE prediction_history
+            SET updated_at = datetime('now','localtime')
+            WHERE id = NEW.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_sp_created_at
+        AFTER INSERT ON sample_patients
+        BEGIN
+            UPDATE sample_patients
+            SET created_at = datetime('now','localtime'),
+                updated_at = datetime('now','localtime')
+            WHERE id = NEW.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_sp_updated_at
+        AFTER UPDATE OF patient, row_idx, timestamp, HR, RR, SpO2, Temp, SBP, DBP, MAP, GCS_eye_opening, stress_score, clinical_note
+        ON sample_patients
+        BEGIN
+            UPDATE sample_patients
+            SET updated_at = datetime('now','localtime')
+            WHERE id = NEW.id;
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS trg_ft_created_at
+        AFTER INSERT ON fl_training
+        BEGIN
+            UPDATE fl_training
+            SET created_at = datetime('now','localtime'),
+                updated_at = datetime('now','localtime')
+            WHERE rowid = NEW.rowid;
+        END;
+    """)
 
     conn.commit()
     conn.close()

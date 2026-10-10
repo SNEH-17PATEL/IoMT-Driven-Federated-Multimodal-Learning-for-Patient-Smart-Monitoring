@@ -257,9 +257,6 @@ PATIENTS = {
     1: {
         "name":        "Patient 1 — Low Risk",
         "short":       "Low Risk",
-        "file":        "sample_patients/sample_patient01_data.csv",
-        "vitals_file": "patient_vitals/patient_vitals_01.csv",
-        "hist_file":   "prediction_history/prediction_history_01.csv",
         "icon":        "🟢",
         "description": "Post-surgical recovery — stable, improving trend",
         "color":       "#28a745",
@@ -267,9 +264,6 @@ PATIENTS = {
     2: {
         "name":        "Patient 2 — Moderate Risk",
         "short":       "Moderate Risk",
-        "file":        "sample_patients/sample_patient02_data.csv",
-        "vitals_file": "patient_vitals/patient_vitals_02.csv",
-        "hist_file":   "prediction_history/prediction_history_02.csv",
         "icon":        "🟡",
         "description": "Community-acquired pneumonia — on supplemental O₂",
         "color":       "#e6a817",
@@ -277,9 +271,6 @@ PATIENTS = {
     3: {
         "name":        "Patient 3 — High Risk",
         "short":       "High Risk",
-        "file":        "sample_patients/sample_patient03_data.csv",
-        "vitals_file": "patient_vitals/patient_vitals_03.csv",
-        "hist_file":   "prediction_history/prediction_history_03.csv",
         "icon":        "🔴",
         "description": "Septic shock — vasopressors, intubated, multi-organ failure",
         "color":       "#dc3545",
@@ -333,7 +324,7 @@ def compute_conformal_q_hat(_model, _feature_cols):
     Compute 90% conformal prediction quantile (q_hat) from FL calibration data.
 
     Method: inductive conformal prediction (split conformal).
-      1. Load FL client CSVs as calibration set (pre-scaled, same pipeline as training).
+      1. Load FL client data from fl_training table (pre-scaled, same pipeline as training).
       2. Compute nonconformity scores: |predicted − true SOFA|.
       3. q_hat = 90th percentile of those scores.
     Runtime:  interval = [pred − q_hat,  pred + q_hat]
@@ -531,7 +522,7 @@ if not GROQ_API_KEY:
     st.stop()
 
 # =============================================================
-# READ CURRENT ROW FROM PATIENT CSV
+# READ CURRENT ROW FROM DATABASE (sample_patients table)
 # =============================================================
 patient_id  = st.session_state.selected_patient
 patient_cfg = PATIENTS[patient_id]

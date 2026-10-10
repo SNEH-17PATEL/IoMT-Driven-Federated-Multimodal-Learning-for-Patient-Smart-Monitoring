@@ -11,7 +11,8 @@
 data/fl_training/*.csv
 
 # =============================================================
-# RUNTIME FILES — generated during app use or real FL demo
+# LEGACY BACKUP FILES — app now reads/writes the SQLite DB only.
+# These CSV files may exist from a previous version; keep them gitignored.
 # =============================================================
 models/patient_vitals/*.csv
 models/prediction_history/*.csv

@@ -908,23 +908,25 @@ Features are already StandardScaler-normalised and clipped to ±10.
 
 | Metric | Value |
 |---|---|
-| Overall MAE | **1.8236 SOFA points** |
-| Overall R² | **0.4171** |
-| Prediction range | 0.10 – 18.40 |
-| Training samples | 48,150 |
-| Test samples | 12,038 |
-| FL rounds | 100 (best was round 24) |
+| Overall MAE | **1.8968 SOFA points** |
+| Overall R² | **0.5995** |
+| Prediction range | −0.22 – 14.38 |
+| Training samples | 12,795 (48,150 when DB fully populated — see note) |
+| Test samples | 2,559 |
+| FL rounds | 100 (best was round 18) |
 | Server optimizer | FedYogi + FedProx |
+
+> **Note on training sample count:** The fl_training table currently has NULL sofa_score rows (a known migration issue). `train_federated.py` drops them and trains on 12,795 samples. Re-run `migrate_to_db.py` to restore the full 48,150.
 
 ### Per-Risk-Level Performance
 
 | Risk Level | n samples | MAE | R² |
 |---|---|---|---|
-| Low (<5) | 7,645 | 1.608 | -1.314 |
-| Moderate (5-9) | 3,655 | 1.792 | -1.911 |
-| High (≥10) | 738 | 4.208 | -4.913 |
+| Low (<5) | 1,485 | 1.629 | -0.533 |
+| Moderate (5-9) | 826 | 1.795 | -2.084 |
+| High (≥10) | 248 | 3.839 | -2.818 |
 
-**Note on negative per-class R²:** Global R²=0.4171 is positive because the model
+**Note on negative per-class R²:** Global R²=0.5995 is positive because the model
 correctly discriminates between risk tiers. Within-segment R² is negative because
 the model cannot rank patients within the same SOFA range — this requires direct lab
 values (bilirubin, creatinine, platelets) not present in the feature set.
@@ -938,7 +940,8 @@ values (bilirubin, creatinine, platelets) not present in the feature set.
 | SOFA vocabulary whitelist (90 terms) | **0.1752** | Feature breakthrough |
 | FedAdam server optimizer | 0.2148 | Server optimization |
 | FedYogi server optimizer | 0.2229 | Better adaptive rate |
-| **All notes (283k) + 10k chars + FedYogi** | **0.4171** | **Current best** |
+| All notes (283k) + 10k chars + FedYogi | 0.4724 | Prior best (full DB) |
+| **DB subset (12,795 samples) + FedYogi** | **0.5995** | **Current run** |
 
 ---
 

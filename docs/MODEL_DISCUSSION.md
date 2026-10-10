@@ -412,7 +412,7 @@ Round 2:
 ...repeat for 100 rounds...
 
 Final: W¹⁰⁰ (federated model) = knowledge from all 3 hospitals, zero patient data shared
-Best model: saved from round 24 (lowest server validation loss = 5.4769 → R²=0.4724)
+Best model: saved from round 18 (lowest server validation loss = 7.3165 → R²=0.5995)
 ```
 
 **Why this works for DNN but NOT for ensembles:**
@@ -606,7 +606,7 @@ Concatenate: 18 vital features + 768 BERT embedding → 786 features → DNN  (v
 
 | Model                  | FL Compatible | SHAP Method    | Performance (R²) | Complexity | Why Not Used          |
 |------------------------|---------------|----------------|------------------|------------|-----------------------|
-| **PyTorch DNN** ✅     | ✅ Yes (FedYogi+FedProx)| DeepExplainer | **0.4724**  | Medium     | **Current choice**    |
+| **PyTorch DNN** ✅     | ✅ Yes (FedYogi+FedProx)| DeepExplainer | **0.5995**  | Medium     | **Current choice**    |
 | LightGBM + XGBoost     | ❌ No (FedAvg) | TreeExplainer  | ~0.35–0.40*      | Low        | FL incompatible       |
 | Random Forest           | ❌ No         | TreeExplainer  | ~0.25–0.30*      | Low        | FL incompatible, 0%  |
 | LSTM/GRU               | ✅ Yes         | GradientExplainer | ~0.28–0.32* | High       | Integration complexity|
@@ -641,7 +641,7 @@ A **PyTorch Deep Neural Network (DNN)**:
 - SHAP via DeepExplainer
 - Trained via Flower FL framework across 3 simulated hospitals
 - Predicts raw SOFA directly (no ×24 multiplication)
-- **Performance: R²=0.4724, MAE=1.7588 SOFA points**
+- **Performance: R²=0.5995, MAE=1.8968 SOFA points** (12,795-sample DB subset; 48,150 with full DB)
 
 ### Q3: Why switch to PyTorch DNN?
 
@@ -663,11 +663,12 @@ Switching to a DNN was the only path to implementing FL.
 ### Q4: What is the performance trade-off?
 
 The ensemble likely achieves R² ≈ 0.35–0.40 on this task (tree models typically
-outperform DNNs on tabular data with <100K samples). Our DNN achieves R² = 0.25.
+outperform DNNs on tabular data with <100K samples). Our DNN achieves R² = 0.5995
+on the current 12,795-sample DB subset, and 0.4724 on the full 48,150-sample training set.
 
 This is the fundamental trade-off in the project:
-> **We accept ~10–15% lower predictive accuracy in exchange for privacy-preserving
-> Federated Learning across multiple hospitals.**
+> **We accept implementation complexity and potential accuracy variance in exchange
+> for privacy-preserving Federated Learning across multiple hospitals.**
 
 This trade-off is clinically acceptable because:
 1. The absolute difference in SOFA predictions is approximately 0.5–1 SOFA points

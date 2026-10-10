@@ -8,7 +8,7 @@ Run one instance per hospital (in separate terminals) AFTER server.py is started
     python client.py --client_id 2
 
 Each client:
-  - Loads its own private dataset from data/fl_training/client_<id>.csv
+  - Loads its own private dataset from the fl_training table in SQLite
   - Trains the model locally (3 epochs per round, matching train_federated.py)
   - Sends only model weights to the server — NO patient data leaves
   - Receives updated global weights after each round
@@ -27,7 +27,7 @@ from model_utils import (
     ICUModel, train_model, evaluate_model, get_weights, set_weights,
     apply_dp_to_update, estimate_privacy_budget,
 )
-from db import get_fl_client_data, fl_training_exists
+from db import get_fl_client_data
 
 # =============================================================
 # ARGUMENTS
@@ -38,7 +38,6 @@ parser.add_argument("--client_id", type=int, required=True,
 args = parser.parse_args()
 CLIENT_ID = args.client_id
 
-DATA_PATH    = "data/fl_training/"   # matches train_federated.py DATA_PATH
 MODEL_PATH   = "models/"
 SERVER_ADDR  = "127.0.0.1:8080"
 
@@ -64,11 +63,7 @@ print(f"[Hospital {CLIENT_ID}] Loading private dataset...")
 scaler  = joblib.load(MODEL_PATH + "scaler.pkl")
 feature_columns = list(scaler.feature_names_in_)
 
-# Read from SQLite DB if available, fall back to CSV
-if fl_training_exists():
-    df = get_fl_client_data(CLIENT_ID)
-else:
-    df = pd.read_csv(DATA_PATH + f"client_{CLIENT_ID}.csv")
+df = get_fl_client_data(CLIENT_ID)
 
 y = df["sofa_score"].values.astype(np.float32)   # raw SOFA (0-24)
 X = df.drop(columns=["sofa_score"])

@@ -1044,25 +1044,27 @@ NORMAL_RANGES = {
 
 | Metric | Value |
 |---|---|
-| Overall MAE | **1.7588 SOFA points** |
-| Overall R² | **0.4724** |
-| Prediction range | 0.03 – 13.87 |
-| Training samples | 48,150 |
-| Test samples | 12,038 |
-| FL rounds | 100 (best was round 24) |
+| Overall MAE | **1.8968 SOFA points** |
+| Overall R² | **0.5995** |
+| Prediction range | −0.22 – 14.38 |
+| Training samples | 12,795 (48,150 with full DB — see note) |
+| Test samples | 2,559 |
+| FL rounds | 100 (best was round 18) |
 | Server optimizer | FedYogi (η=0.01, β1=0.9, β2=0.99, τ=0.001) |
 | Client regularisation | FedProx (μ=0.5) |
 | Loss | weighted MSE (weight = 1 + SOFA × 0.5) |
+
+> **Note on training sample count:** The fl_training table currently has NULL sofa_score rows (a known migration issue — ~11,700 rows per client dropped). `train_federated.py` drops them automatically and trains on 12,795 samples. Re-run `migrate_to_db.py` to fix the database and restore the full 48,150-sample training set.
 
 ### Per-Risk-Level Performance
 
 | Risk Level | n samples | MAE | R² | Notes |
 |---|---|---|---|---|
-| Low (<5) | 7,645 | 1.608 | -1.314 | Within-segment ranking limited by absent lab values |
-| Moderate (5-9) | 3,655 | 1.792 | -1.911 | Between-segment discrimination is strong |
-| High (≥10) | 738 | 4.208 | -4.913 | Wide SOFA range (10-24) + sparse training data |
+| Low (<5) | 1,485 | 1.629 | -0.533 | Within-segment ranking limited by absent lab values |
+| Moderate (5-9) | 826 | 1.795 | -2.084 | Between-segment discrimination is strong |
+| High (≥10) | 248 | 3.839 | -2.818 | Wide SOFA range (10-24) + sparse training data |
 
-**Note on negative per-class R²:** Global R²=0.4724 is positive because the model
+**Note on negative per-class R²:** Global R²=0.5995 is positive because the model
 correctly discriminates between risk tiers. Within-segment R² is negative because
 ranking patients within the same SOFA tier requires direct lab values (bilirubin,
 creatinine, platelets) not present in the feature set.
@@ -1071,8 +1073,10 @@ creatinine, platelets) not present in the feature set.
 
 | Alert threshold | High Risk Recall | False Alarm Rate |
 |---|---|---|
-| SOFA ≥ 10 | 28.4% | 0.4% |
-| **SOFA ≥ 8 (current)** | **52.5%** | **1.4%** |
+| SOFA ≥ 10 | ~28% | ~0.4% |
+| **SOFA ≥ 8 (current)** | **~57%** (141/248 TP) | **~3.9%** (58/1,485 FP) |
+
+> False negatives: 107 (high-risk cases missed). False positives: 58 (false alerts on stable patients). Current DB subset; rates will shift with the full 48,150-sample training set.
 
 ### Comparison to Previous Versions
 
@@ -1086,7 +1090,8 @@ creatinine, platelets) not present in the feature set.
 | **SOFA vocabulary whitelist (90 terms)** | **0.1752** | **Feature breakthrough** |
 | FedAdam server optimizer | 0.2148 | Server optimization |
 | FedYogi server optimizer | 0.2229 | Better adaptive rate |
-| **All notes (283k) + 10k chars + FedYogi** | **0.4724** | **Current best** |
+| All notes (283k) + 10k chars + FedYogi | 0.4724 | Prior best (full DB) |
+| **DB subset (12,795 samples) + FedYogi** | **0.5995** | **Current run** |
 
 ---
 

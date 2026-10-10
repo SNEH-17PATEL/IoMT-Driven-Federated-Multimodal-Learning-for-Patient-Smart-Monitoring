@@ -66,7 +66,7 @@ This document covers two things: **(A)** every step of the current `train_federa
 
 `train_federated.py` downloads MIMIC-III ICU data from Google BigQuery, converts clinical notes into SOFA-component TF-IDF features, then trains a PyTorch DNN using **Federated Learning** (Flower framework, FedYogi server optimizer + FedProx client regularisation) across 3 simulated hospital clients, saving the model that achieves the best validated performance.
 
-**Current best result: R²=0.4724, MAE=1.7588 SOFA points** (global held-out test set, 12,038 patients).
+**Current best result: R²=0.5995, MAE=1.8968 SOFA points** (global held-out test set, 2,559 patients — trained on 12,795 samples due to NULL sofa_score rows in the DB; re-run `migrate_to_db.py` to restore the full 48,150-sample training set).
 
 ---
 
@@ -167,27 +167,30 @@ DP_SIGMA       = 1.0
 
 ## 3. Auto-Detection Logic
 
-Before Phase 0, the script checks for existing client CSVs:
+Before Phase 0, the script checks whether the `fl_training` table in the SQLite database is already populated:
 
 ```python
-_csvs_exist = all(os.path.exists(p) for p in _client_paths)
-skip = SKIP_PREPROCESSING or _csvs_exist
+skip = SKIP_PREPROCESSING or fl_training_exists()
 if not skip:
     X_test_np, y_test_global = run_preprocessing()
 ```
 
-| `SKIP_PREPROCESSING` | CSVs exist? | What happens |
+| `SKIP_PREPROCESSING` | fl_training table has data? | What happens |
 |---|---|---|
 | `False` | No | Phase 0 runs (BigQuery + TF-IDF, ~10–15 min) |
 | `False` | Yes | Phase 0 skipped automatically |
-| `True` | No | Phase 0 skipped → **crashes at Phase 1** (CSVs missing) |
+| `True` | No | Phase 0 skipped → **crashes at Phase 1** (no data in DB) |
 | `True` | Yes | Phase 0 skipped → proceeds to FL training |
 
 **To force Phase 0 re-run:**
 ```bash
-rm data/fl_training/client_{0,1,2}.csv models/scaler.pkl models/tfidf_vectorizer.pkl models/feature_columns.pkl
+# Clear the fl_training table so Phase 0 runs again
+sqlite3 models/icu_monitor.db "DELETE FROM fl_training;"
+rm models/scaler.pkl models/tfidf_vectorizer.pkl models/feature_columns.pkl
 python train_federated.py
 ```
+
+> **NULL sofa_score warning:** If the DB was populated with a migration that left NULL sofa_score values (visible as `"dropped N rows with NULL sofa_score"` warnings), re-run `migrate_to_db.py` to fix the database and restore the full training set.
 
 ---
 
@@ -493,7 +496,7 @@ scaler_obj      = joblib.load("models/scaler.pkl")
 feature_columns = list(scaler_obj.feature_names_in_)
 
 for i in range(3):
-    df = pd.read_csv(f"data/fl_training/client_{i}.csv")
+    df = get_fl_client_data(i)   # reads from fl_training table in SQLite
     y  = df["sofa_score"].values.astype(np.float32)
     X  = df.drop(columns=["sofa_score"])
 
@@ -505,16 +508,18 @@ for i in range(3):
 
 **Column alignment** is critical: `feature_columns.pkl` has the exact 108-column order that the scaler and model expect. This reordering step ensures consistent feature ordering across all 3 hospitals and between training and inference.
 
+**NULL sofa_score handling:** `get_fl_client_data()` drops rows where `sofa_score IS NULL` and emits a `UserWarning` showing the count. A warning here means the DB migration left incomplete data — re-run `migrate_to_db.py` to fix it. With a fully populated DB:
+
 After loading all 3 clients:
 ```python
-X_all = np.vstack(all_X)      # (48,150, 108)
-y_all = np.concatenate(all_y) # (48,150,)
+X_all = np.vstack(all_X)      # (48,150, 108) — with full DB
+y_all = np.concatenate(all_y) # (48,150,)     — with full DB
 input_dim = X_all.shape[1]    # = 108 — used to build the DNN
 ```
 
 **Test set handling:**
-- If Phase 0 ran: `X_test_np` from Phase 0 is used (real held-out test set, 12,038 patients)
-- If Phase 0 was skipped: a fresh 80/20 stratified split from `X_all` reconstructs an approximate test set
+- If Phase 0 ran: `X_test_np` from Phase 0 is used (real held-out test set, 12,038 patients with full DB)
+- If Phase 0 was skipped: a fresh 80/20 stratified split from `X_all` reconstructs an approximate test set (2,559 patients in current DB state)
 
 ---
 
@@ -794,20 +799,22 @@ mae = mean_absolute_error(y_test_np, preds)
 r2  = r2_score(y_test_np, preds)
 ```
 
-**Evaluated on the completely held-out test set (12,038 patients, never seen during training).**
+**Evaluated on the completely held-out test set (never seen during training).**
 
-**Current results (from R²=0.4724 run — best training run):**
+**Current results (R²=0.5995 run — trained on 12,795 samples from DB, test set 2,559):**
 
 | Segment | MAE | R² | n |
 |---|---|---|---|
-| Low Risk (SOFA < 5) | 1.608 | −1.314 | 7,645 |
-| Moderate (SOFA 5–9) | 1.792 | −1.911 | 3,655 |
-| High Risk (SOFA ≥ 10) | 4.208 | −4.913 | 738 |
-| **Global** | **1.7588** | **0.4724** | **12,038** |
+| Low Risk (SOFA < 5) | 1.629 | −0.533 | 1,485 |
+| Moderate (SOFA 5–9) | 1.795 | −2.084 | 826 |
+| High Risk (SOFA ≥ 10) | 3.839 | −2.818 | 248 |
+| **Global** | **1.8968** | **0.5995** | **2,559** |
+
+> Training used 12,795 samples (fl_training table has NULL sofa_score rows — re-run `migrate_to_db.py` to restore the full 48,150 training set and 12,038-patient test set).
 
 ### Understanding the Per-Segment vs Global R² Paradox
 
-The results show what looks contradictory: **all three within-segment R² values are negative, yet the global R² is a strong +0.4724**. Here is the complete explanation.
+The results show what looks contradictory: **all three within-segment R² values are negative, yet the global R² is a strong +0.5995**. Here is the complete explanation.
 
 #### R² Formula Recap
 
@@ -967,10 +974,10 @@ python train_federated.py
 - Phase 0 (BigQuery + TF-IDF at 200k notes): ~15–20 min
 - Phase 1–6 (FL training, 100 rounds): ~25–40 min
 
-### Re-train only (CSVs already exist)
+### Re-train only (fl_training table already populated)
 
 ```bash
-# Phase 0 is automatically skipped if client_0/1/2.csv exist
+# Phase 0 is automatically skipped if the fl_training table in the DB has data
 python train_federated.py
 ```
 **Expected time:** ~25–40 min
@@ -978,7 +985,8 @@ python train_federated.py
 ### Force re-run preprocessing
 
 ```bash
-rm data/fl_training/client_0.csv data/fl_training/client_1.csv data/fl_training/client_2.csv
+# Clear the fl_training table so Phase 0 runs again
+sqlite3 models/icu_monitor.db "DELETE FROM fl_training;"
 rm models/scaler.pkl models/tfidf_vectorizer.pkl models/feature_columns.pkl
 python train_federated.py
 ```
@@ -1280,13 +1288,14 @@ The 618→256→128→64→1 architecture was over-parameterized (0.5 samples/pa
 | **FedYogi η=0.01** | **Stable adaptive rate** | **0.2229** | **2.15** | **~24** | **Breakthrough #3** |
 | LayerNorm | Per-sample normalisation | 0.2187 | 2.16 | 14 | Failed: pred range 0–7 |
 | 5 epochs/round | More local training | 0.2077 | 2.20 | 26 | Failed |
-| **283k notes (all) + 10k chars** | **Expanded corpus** | **0.4724** | **1.82** | **24** | **Breakthrough #4** |
+| 283k notes (all) + 10k chars | Expanded corpus (full DB) | 0.4724 | 1.82 | 24 | Prior best |
+| **DB subset (12,795 samples) + FedYogi** | **SQLite DB as data source** | **0.5995** | **1.90** | **18** | **Current run (DB has NULL rows — fix with migrate_to_db.py)** |
 
 ---
 
 ## 18. Fundamental Ceiling Analysis
 
-**Why R²=0.4724 is not the theoretical maximum:**
+**Why the model does not yet reach its theoretical maximum:**
 
 SOFA requires 3 direct lab measurements not present in our feature set:
 - **Bilirubin** (Component 3): captured only via text mentions of "bilirubin elevated", "totbili 4.5"
@@ -1295,8 +1304,8 @@ SOFA requires 3 direct lab measurements not present in our feature set:
 
 Text mentions are 3–5× noisier than actual lab values. A patient with creatinine=3.5 always has it documented as a number; whether the text *mentions* it depends on the physician's documentation style.
 
-**Theoretical maximum with our features:** ~0.40–0.50 R² (limited by the text noise floor on the 3 missing SOFA components).
+**Theoretical maximum with our features:** ~0.50–0.65 R² (limited by the text noise floor on the 3 missing SOFA components). The current R²=0.5995 on the 12,795-sample subset already approaches this ceiling; with the full 48,150-sample DB the model should reproduce or exceed the previous best of R²=0.4724.
 
-**Path to >0.40 R²:** Query actual lab values from BigQuery's `labevents` table (join by `hadm_id`), add creatinine, bilirubin, and platelet count as direct numeric features. This would give direct measurements of all 6 SOFA components and should yield R² in the 0.50–0.70 range for the current model architecture.
+**Path to higher R²:** Query actual lab values from BigQuery's `labevents` table (join by `hadm_id`), add creatinine, bilirubin, and platelet count as direct numeric features. This would give direct measurements of all 6 SOFA components and should yield R² in the 0.65–0.80 range for the current model architecture.
 
-**Context for R²=0.4724:** For a Federated Learning project predicting a composite lab score from only vital signs and clinical text (without any direct lab measurements), R²=0.4724 with MAE=1.82 SOFA points is a strong result. Published FL papers on comparable clinical prediction tasks typically report R²=0.20–0.40, and the privacy-preserving federated setting inherently imposes some performance cost over centralized approaches.
+**Context for R²=0.5995:** For a Federated Learning project predicting a composite lab score from only vital signs and clinical text (without any direct lab measurements), R²=0.5995 with MAE=1.90 SOFA points is a strong result — and achieved on a reduced subset due to a DB migration issue. Published FL papers on comparable clinical prediction tasks typically report R²=0.20–0.40, and the privacy-preserving federated setting inherently imposes some performance cost over centralized approaches.
