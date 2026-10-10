@@ -174,16 +174,25 @@ def init_db() -> None:
             SET updated_at = datetime('now','localtime')
             WHERE id = NEW.id;
         END;
-
-        CREATE TRIGGER IF NOT EXISTS trg_ft_created_at
-        AFTER INSERT ON fl_training
-        BEGIN
-            UPDATE fl_training
-            SET created_at = datetime('now','localtime'),
-                updated_at = datetime('now','localtime')
-            WHERE rowid = NEW.rowid;
-        END;
     """)
+
+    # fl_training only exists after migrate_to_db.py imports the FL client CSVs,
+    # which are not in the repo (MIMIC-III licence). Creating this trigger
+    # unconditionally crashed init_db() — and therefore app.py — on every fresh clone.
+    _has_ft = cur.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='fl_training'"
+    ).fetchone()
+    if _has_ft:
+        cur.executescript("""
+            CREATE TRIGGER IF NOT EXISTS trg_ft_created_at
+            AFTER INSERT ON fl_training
+            BEGIN
+                UPDATE fl_training
+                SET created_at = datetime('now','localtime'),
+                    updated_at = datetime('now','localtime')
+                WHERE rowid = NEW.rowid;
+            END;
+        """)
 
     conn.commit()
     conn.close()
@@ -344,6 +353,9 @@ def fl_training_exists() -> bool:
     """Return True if fl_training table has any rows."""
     conn = get_conn()
     cur  = conn.cursor()
-    n = cur.execute("SELECT COUNT(*) FROM fl_training").fetchone()[0]
+    try:
+        n = cur.execute("SELECT COUNT(*) FROM fl_training").fetchone()[0]
+    except Exception:
+        n = 0   # table not created yet (FL client CSVs never imported)
     conn.close()
     return n > 0

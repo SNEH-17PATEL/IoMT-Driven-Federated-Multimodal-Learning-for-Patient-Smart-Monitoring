@@ -89,20 +89,13 @@ st.markdown("""
 
 /* ── Patient selector cards ── */
 .pcard {
+    border:1.5px solid #1e3a50; background:rgba(12,26,46,0.7);
     border-radius:16px; padding:22px 20px; margin:6px 0;
     animation:slideIn 0.4s ease; transition:transform 0.15s, box-shadow 0.15s;
 }
 .pcard:hover { transform:translateY(-3px); box-shadow:0 8px 30px rgba(0,0,0,0.4); }
-.pcard-low  { border:2.5px solid #28a745; background:linear-gradient(140deg,rgba(40,167,69,0.18),rgba(40,167,69,0.06)); }
-.pcard-mod  { border:2.5px solid #f0a500; background:linear-gradient(140deg,rgba(240,165,0,0.18),rgba(240,165,0,0.06)); }
-.pcard-high { border:2.5px solid #dc3545; background:linear-gradient(140deg,rgba(220,53,69,0.18),rgba(220,53,69,0.06)); }
 .pcard h3   { margin:0 0 6px 0; font-size:20px; color:#e8f4ff; }
 .pcard p    { margin:4px 0; color:#b8d0e0; font-size:13px; }
-.pcard .tag { display:inline-block; border-radius:20px; padding:3px 12px;
-              font-size:11px; font-weight:800; letter-spacing:0.8px; }
-.tag-low    { background:rgba(40,167,69,0.25);  color:#5fda80; border:1.5px solid #28a745; }
-.tag-mod    { background:rgba(240,165,0,0.25);  color:#ffc93c; border:1.5px solid #f0a500; }
-.tag-high   { background:rgba(220,53,69,0.25);  color:#ff7b7b; border:1.5px solid #dc3545; }
 
 /* ── Vital sign cards ── */
 .vcard {
@@ -255,25 +248,19 @@ VALID_RANGES = {
 # =============================================================
 PATIENTS = {
     1: {
-        "name":        "Patient 1 — Low Risk",
-        "short":       "Low Risk",
-        "icon":        "🟢",
+        "name":        "Patient 1",
+        "icon":        "🧑‍⚕️",
         "description": "Post-surgical recovery — stable, improving trend",
-        "color":       "#28a745",
     },
     2: {
-        "name":        "Patient 2 — Moderate Risk",
-        "short":       "Moderate Risk",
-        "icon":        "🟡",
+        "name":        "Patient 2",
+        "icon":        "🧑‍⚕️",
         "description": "Community-acquired pneumonia — on supplemental O₂",
-        "color":       "#e6a817",
     },
     3: {
-        "name":        "Patient 3 — High Risk",
-        "short":       "High Risk",
-        "icon":        "🔴",
+        "name":        "Patient 3",
+        "icon":        "🧑‍⚕️",
         "description": "Septic shock — vasopressors, intubated, multi-organ failure",
-        "color":       "#dc3545",
     },
 }
 
@@ -402,44 +389,12 @@ if "row_indices" not in st.session_state:
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 
 # =============================================================
-# SIDEBAR
-# =============================================================
-st.sidebar.title("🏥 ICU Monitor")
-st.sidebar.caption("Continuous Patient Monitoring")
-st.sidebar.divider()
-
-if st.session_state.selected_patient is not None:
-    pcfg_side = PATIENTS[st.session_state.selected_patient]
-    st.sidebar.info(
-        f"📡 **Monitoring:**\n{pcfg_side['icon']} {pcfg_side['name']}"
-    )
-    if st.sidebar.button("⏹️ Stop Monitoring", use_container_width=True, type="secondary"):
-        st.session_state.selected_patient = None
-        st.rerun()
-    st.sidebar.divider()
-
-with st.sidebar.expander("ℹ️ Model Information"):
-    _m = training_meta
-    st.caption(f"**Algorithm:** Federated DNN  •  FedAvg")
-    st.caption(
-        f"**Accuracy:** MAE = {_m['final_mae']:.3f} SOFA pts  "
-        f"|  R² = {_m['final_r2']:.3f}"
-    )
-    st.caption(
-        f"**Training:** {_m['train_samples']:,} ICU samples  "
-        f"•  {_m['num_rounds']} FL rounds  "
-        f"•  {_m['hospitals']} hospitals"
-    )
-    dp_status = "Enabled" if _m.get("differential_privacy") else "Disabled"
-    st.caption(f"**Privacy:** {dp_status}  •  Split: {_m.get('split_type','IID')}")
-
-# =============================================================
 # HEADER
 # =============================================================
 st.title("🏥 ICU Clinical Decision Support System")
 st.caption(
     "Multimodal Intelligence System — Continuous Monitoring | "
-    "Federated Learning | SHAP Explainability | LLM Self-Consistency"
+    "Federated Learning | SHAP Explainability | LLM Clinical Report"
 )
 
 # =============================================================
@@ -464,34 +419,28 @@ if st.session_state.selected_patient is None:
         </div>
         """, unsafe_allow_html=True)
 
+        # Cards describe the clinical scenario only. The risk level is what the
+        # model predicts, so it is never shown before monitoring starts.
         _CARD_CFG = [
-            (1, "pcard-low",  "tag-low",  "LOW RISK",      "🟢",
-             "0 – 4", "Post-surgical recovery. Alert and oriented. No active infection."),
-            (2, "pcard-mod",  "tag-mod",  "MODERATE RISK", "🟡",
-             "5 – 9", "Community-acquired pneumonia. On supplemental O₂ 4L/min. Elevated WBC."),
-            (3, "pcard-high", "tag-high", "HIGH RISK",      "🔴",
-             "≥ 10",  "Septic shock. Intubated & ventilated. Vasopressors. Multi-organ failure."),
+            (1, "Alert and oriented. No active infection."),
+            (2, "On supplemental O₂ 4L/min. Elevated WBC."),
+            (3, "Intubated & ventilated. Vasopressors. Multi-organ failure."),
         ]
 
         col1, col2, col3 = st.columns(3)
         _cols = [col1, col2, col3]
         _clicked_patient = None
-        for pid, card_cls, tag_cls, risk_label_txt, icon, sofa_range, desc in _CARD_CFG:
+        for pid, desc in _CARD_CFG:
             with _cols[pid - 1]:
                 pcfg = PATIENTS[pid]
                 st.markdown(f"""
-                <div class="pcard {card_cls}">
-                    <div style="display:flex;justify-content:space-between;align-items:center;">
-                        <span style="font-size:28px;">{icon}</span>
-                        <span class="tag {tag_cls}">{risk_label_txt}</span>
-                    </div>
-                    <h3 style="margin:10px 0 4px 0;">Patient {pid}</h3>
+                <div class="pcard">
+                    <h3 style="margin:0 0 4px 0;">Patient {pid}</h3>
                     <p style="font-size:14px;font-weight:600;color:#c8dced;">{pcfg['description'].split(' — ')[0]}</p>
                     <p style="font-size:12px;color:#8ab8cc;margin-top:4px;">{desc}</p>
                     <div style="margin-top:14px;padding:9px 12px;background:rgba(0,0,0,0.35);
                                 border:1px solid rgba(200,220,237,0.15);
                                 border-radius:8px;font-size:12px;color:#c8dced;">
-                        <b style="color:#7fb3c8;">Expected SOFA:</b>&nbsp;{sofa_range}&nbsp;&nbsp;|&nbsp;&nbsp;
                         <b style="color:#7fb3c8;">30 readings</b>&nbsp;× 10-min intervals
                     </div>
                 </div>
@@ -507,18 +456,9 @@ if st.session_state.selected_patient is None:
         if _clicked_patient is not None:
             st.session_state.selected_patient = _clicked_patient
             st.session_state.row_indices[_clicked_patient] = 0
+            st.session_state.pop("_last_reading_key", None)   # first reading is always new
             st.rerun()
 
-    st.stop()
-
-# =============================================================
-# GROQ KEY CHECK
-# =============================================================
-if not GROQ_API_KEY:
-    st.error(
-        "⛔ Groq API key required. Add `GROQ_API_KEY=your_key` to the `.env` file "
-        "in the `icu_monitor/` directory and restart the app."
-    )
     st.stop()
 
 # =============================================================
@@ -566,11 +506,6 @@ if len(get_patient_vitals(patient_id, limit=1)) == 0:
 # =============================================================
 # MONITORING STATUS BAR
 # =============================================================
-cycle_num = row_idx // total_rows + 1
-_now = datetime.now().strftime("%H:%M:%S")
-_risk_colors = {1: "#28a745", 2: "#f0a500", 3: "#dc3545"}
-_accent = _risk_colors[patient_id]
-
 st.markdown(f"""
 <div class="monitor-banner">
     <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
@@ -589,14 +524,6 @@ st.markdown(f"""
             <div style="text-align:center;">
                 <div style="color:#7fb3c8; font-size:10px; text-transform:uppercase; letter-spacing:0.8px;">Reading</div>
                 <div style="color:white; font-weight:800; font-size:20px; line-height:1.1;">{cur_idx + 1}<span style="font-size:13px;color:#7fb3c8;">/{total_rows}</span></div>
-            </div>
-            <div style="text-align:center;">
-                <div style="color:#7fb3c8; font-size:10px; text-transform:uppercase; letter-spacing:0.8px;">Cycle</div>
-                <div style="color:white; font-weight:800; font-size:20px; line-height:1.1;">#{cycle_num}</div>
-            </div>
-            <div style="text-align:center;">
-                <div style="color:#7fb3c8; font-size:10px; text-transform:uppercase; letter-spacing:0.8px;">Time</div>
-                <div style="color:#00d2ff; font-weight:800; font-size:20px; font-family:monospace; line-height:1.1;">{_now}</div>
             </div>
         </div>
     </div>
@@ -620,13 +547,7 @@ _top_bar = st.empty()   # progress bar
 _top_cd.markdown(f"""
 <div class="cdbar" style="margin-top:4px; margin-bottom:2px;">
     <span class="live-dot"></span>
-    <span style="font-weight:700; letter-spacing:0.5px;">CONTINUOUS MONITORING</span>
-    <span style="color:#4a7a8a;">|</span>
-    <span>{patient_cfg['icon']} {patient_cfg['name']}</span>
-    <span style="color:#4a7a8a;">|</span>
-    <span>Reading <b style="color:#00d2ff;">{cur_idx + 1}/{total_rows}</b></span>
-    <span style="color:#4a7a8a;">|</span>
-    <span style="color:#aaa; font-style:italic;">⚙ Processing data…</span>
+    <span style="color:#aaa; font-style:italic;">⚙ Processing reading…</span>
 </div>
 """, unsafe_allow_html=True)
 _top_bar.progress(0.0)
@@ -637,18 +558,16 @@ _top_bar.progress(0.0)
 st.markdown("<div style='font-size:17px;font-weight:700;margin:14px 0 8px 0;'>📊 Latest Vitals — Current Reading</div>",
             unsafe_allow_html=True)
 
-def _vcard(label, value, fmt, unit, lo, hi):
+def _vcard(label, value, fmt, unit, lo, hi, normal_txt=None):
     """Render a colored vital sign card as HTML."""
     val_fmt = f"{value:{fmt}}"
+    rng = normal_txt or f"Normal: {lo}–{hi} {unit}"
     if lo <= value <= hi:
         cls = "v-ok";  s_cls = "vstatus-ok";  s_txt = "✓ Normal"
-        rng = f"Normal: {lo}–{hi} {unit}"
     elif value < lo:
         cls = "v-bad"; s_cls = "vstatus-bad"; s_txt = "⚠ Below Normal"
-        rng = f"Normal: {lo}–{hi} {unit}"
     else:
         cls = "v-bad"; s_cls = "vstatus-bad"; s_txt = "⚠ Above Normal"
-        rng = f"Normal: {lo}–{hi} {unit}"
     return f"""
     <div class="vcard {cls}">
         <div class="vlabel">{label}</div>
@@ -661,37 +580,26 @@ def _vcard(label, value, fmt, unit, lo, hi):
 gcs_labels = {4: "Spontaneous", 3: "To Voice", 2: "To Pain", 1: "No Response"}
 _lo_hi = NORMAL_RANGES
 
-row1_html = "".join([
+_cards_html = "".join([
     _vcard("❤️ Heart Rate",      HR,   ".0f", "bpm",    *_lo_hi["HR"]),
     _vcard("🫁 Resp. Rate",       RR,   ".0f", "br/min", *_lo_hi["RR"]),
     _vcard("💧 SpO₂",            SpO2, ".1f", "%",      _lo_hi["SpO2"][0], _lo_hi["SpO2"][1]),
     _vcard("🌡️ Temperature",     Temp, ".1f", "°C",     *_lo_hi["Temp"]),
-])
-row2_html = "".join([
     _vcard("🩸 Systolic BP",     SBP,  ".0f", "mmHg",   *_lo_hi["SBP"]),
     _vcard("🩸 Diastolic BP",    DBP,  ".0f", "mmHg",   *_lo_hi["DBP"]),
     _vcard("📉 Mean Art. Press.", MAP,  ".0f", "mmHg",   *_lo_hi["MAP"]),
-    f"""<div class="vcard v-ok">
-        <div class="vlabel">🧠 GCS Eye Opening</div>
-        <div class="vnum" style="font-size:22px;">{GCS_eye}<span style="font-size:14px;font-weight:500;">/4</span></div>
-        <div class="vunit">{gcs_labels.get(GCS_eye,'?')}</div>
-        <div class="vstatus-ok">Neurological</div>
-        <div class="vrange">Stress: {stress}/10</div>
-    </div>""",
+    _vcard("🧠 GCS Eye Opening", GCS_eye, "d", "/ 4 · " + gcs_labels.get(GCS_eye, "?"), 4, 4,
+           normal_txt="Normal: 4 (spontaneous)"),
+    _vcard("😰 Stress Score",    stress,  "d", "/ 10",  0, 4, normal_txt="Normal: 0–4"),
 ])
 
 st.markdown(
-    f'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;">{row1_html}</div>',
-    unsafe_allow_html=True
-)
-st.markdown(
-    f'<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:6px;">{row2_html}</div>',
+    f'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px;">{_cards_html}</div>',
     unsafe_allow_html=True
 )
 
 with st.expander("📋 Clinical Notes", expanded=False):
     st.write(clinical_note)
-    st.caption(f"Stress Score: {stress}/10")
 
 st.divider()
 
@@ -1473,6 +1381,16 @@ RISK_MAP = {
     "stress":      "High physiological stress",
 }
 
+def risk_factors_for(feature):
+    """
+    RISK_MAP labels that apply to one feature, matched on whole words.
+    Plain substring matching mislabelled terms such as "norepinephrine"
+    (contains "hr") as "Abnormal heart rate".
+    """
+    words = feature.lower().replace("_", " ")
+    return [v for k, v in RISK_MAP.items() if re.search(r"\b" + re.escape(k.lower()) + r"\b", words)]
+
+
 CLINICAL_KEYWORDS = [
     "HR", "RR", "SpO2", "Temp", "SBP", "DBP", "MAP", "GCS", "stress",
     "hypotension", "respiratory", "mental", "septic", "failure",
@@ -1484,12 +1402,19 @@ CLINICAL_KEYWORDS = [
 # PIPELINE
 # =============================================================
 
+# A rerun that is NOT a new reading (e.g. the user switching tabs) must not
+# log the reading twice or call the LLM again. Each reading is identified by
+# (patient, row index); writes and LLM calls happen once per reading.
+_reading_key = (patient_id, row_idx)
+_is_new_reading = st.session_state.get("_last_reading_key") != _reading_key
+
 # -- 1. SLIDING WINDOW (database) --
-append_patient_vitals(patient_id, {
-    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    "HR": HR, "RR": RR, "SpO2": SpO2, "Temp": Temp,
-    "SBP": SBP, "DBP": DBP, "MAP": MAP,
-})
+if _is_new_reading:
+    append_patient_vitals(patient_id, {
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "HR": HR, "RR": RR, "SpO2": SpO2, "Temp": Temp,
+        "SBP": SBP, "DBP": DBP, "MAP": MAP,
+    })
 vitals_df = get_patient_vitals(patient_id, limit=20)
 
 # -- 2. TREND FEATURES --
@@ -1568,7 +1493,8 @@ elif sofa_score >= 5:
     )
 
 # -- 8b. SAVE PREDICTION HISTORY (database) --
-append_prediction(patient_id, {
+if _is_new_reading:
+  append_prediction(patient_id, {
     "Timestamp":  datetime.now().strftime("%Y-%m-%d %H:%M"),
     "Reading":    f"{cur_idx + 1}/{total_rows}",
     "SOFA":       round(sofa_score, 1),
@@ -1581,7 +1507,7 @@ append_prediction(patient_id, {
     "MAP":        MAP,
     "GCS Eye":    GCS_eye,
     "Stress":     stress,
-})
+  })
 
 # -- 9. SHAP --
 shap_vals = None
@@ -1621,13 +1547,13 @@ if shap_vals is not None:
 
     clinical_explanations = [
         interpret_shap(r["feature"], r["original_value"], r["impact"])
-        for _, r in top_shap.iterrows()
+        for _, r in top_shap[top_shap["impact"] > 0].iterrows()
     ]
 
     seen = set()
-    for _, r in top_shap.iterrows():
-        for k, v in RISK_MAP.items():
-            if k.lower() in r["feature"].lower() and v not in seen:
+    for _, r in top_shap[top_shap["impact"] > 0].iterrows():
+        for v in risk_factors_for(r["feature"]):
+            if v not in seen:
                 key_risks.append(v)
                 seen.add(v)
 
@@ -1746,19 +1672,30 @@ Be specific and clinically precise. Base reasoning strictly on the data above.
 Do NOT add a disclaimer, footnote, or asterisk note at the end — a clinical disclaimer is already displayed by the system."""
 
 # -- 12. LLM ASSESSMENT (1 main call) --
-with st.spinner("Generating AI clinical assessment..."):
-    try:
-        responses     = get_multiple_llm_responses(GROQ_API_KEY, final_prompt, n=1)
-        main_response = responses[0]
-        llm_ok        = True
-    except Exception as e:
-        responses     = []
-        main_response = f"⚠️ LLM unavailable: {e}"
-        llm_ok        = False
+responses, main_response, llm_ok, llm_error = [], "", False, ""
+_judge_result = None
+_llm_cache = st.session_state.get("_llm_cache")
+if not _is_new_reading and _llm_cache and _llm_cache[0] == _reading_key:
+    _, responses, main_response, llm_ok, llm_error, _judge_result = _llm_cache
+elif not GROQ_API_KEY:
+    llm_error = "no GROQ_API_KEY is set in the .env file"
+else:
+    with st.spinner("Generating AI clinical assessment..."):
+        try:
+            responses     = get_multiple_llm_responses(GROQ_API_KEY, final_prompt, n=1)
+            main_response = responses[0]
+            llm_ok        = True
+        except Exception as e:
+            _msg = str(e)
+            if "401" in _msg or "invalid_api_key" in _msg.lower():
+                llm_error = "the Groq API key in .env was rejected (invalid key)"
+            elif "429" in _msg:
+                llm_error = "the Groq rate limit was reached — it will retry on the next reading"
+            else:
+                llm_error = f"the Groq service could not be reached ({type(e).__name__})"
 
 # -- 12b. JUDGE LLM CALL (2nd call — G-Eval F1 + RAGAS Faithfulness F2) --
-_judge_result = None
-if llm_ok and GROQ_API_KEY:
+if _is_new_reading and llm_ok and GROQ_API_KEY:
     with st.spinner("Running AI quality validation (G-Eval + RAGAS faithfulness check)..."):
         _judge_result = call_judge_llm(
             GROQ_API_KEY, main_response,
@@ -1766,6 +1703,10 @@ if llm_ok and GROQ_API_KEY:
              "SBP": SBP, "stress": stress, "GCS_eye": GCS_eye},
             sofa_score,
         )
+
+st.session_state["_llm_cache"] = (_reading_key, responses, main_response,
+                                  llm_ok, llm_error, _judge_result)
+st.session_state["_last_reading_key"] = _reading_key
 
 # -- 12c. COMPUTE 9-METHOD RELIABILITY --
 _vitals_llm = {"SpO2": SpO2, "MAP": MAP, "HR": HR, "RR": RR,
@@ -1781,12 +1722,14 @@ else:
 # =============================================================
 # DISPLAY — FOUR TABS
 # =============================================================
+# key + on_change="rerun" make Streamlit remember the open tab, so the
+# 30-second auto-refresh no longer snaps the page back to the first tab.
 tab1, tab2, tab3, tab4 = st.tabs([
     "📊 Risk Assessment",
     "🔍 Explainability",
     "🧠 AI Clinical Report",
     "🔒 Federated Learning"
-])
+], key="main_tabs", on_change="rerun")
 
 # ---- TAB 1: RISK ASSESSMENT ----
 with tab1:
@@ -1853,112 +1796,6 @@ with tab1:
             </svg>
         </div>
         """, unsafe_allow_html=True)
-
-        # ── Model accuracy mini-tiles (2×2 grid) ──
-        st.markdown(f"""
-        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;">
-            <div style="background:linear-gradient(135deg,#e8f4fd,#d0eaf8);border-radius:10px;
-                        padding:12px 8px;text-align:center;border:1px solid #90cdf4;">
-                <div style="font-size:9px;font-weight:700;color:#2b6cb0;letter-spacing:0.7px;
-                            text-transform:uppercase;">Model MAE</div>
-                <div style="font-size:22px;font-weight:900;color:#1a365d;line-height:1.1;">
-                    {_m['final_mae']:.2f}</div>
-                <div style="font-size:9px;color:#4a90d9;">SOFA pts</div>
-            </div>
-            <div style="background:linear-gradient(135deg,#f0fff4,#c6f6d5);border-radius:10px;
-                        padding:12px 8px;text-align:center;border:1px solid #9ae6b4;">
-                <div style="font-size:9px;font-weight:700;color:#276749;letter-spacing:0.7px;
-                            text-transform:uppercase;">R² Score</div>
-                <div style="font-size:22px;font-weight:900;color:#1a4731;line-height:1.1;">
-                    {_m['final_r2']:.3f}</div>
-                <div style="font-size:9px;color:#38a169;">variance</div>
-            </div>
-            <div style="background:linear-gradient(135deg,#fffaf0,#feebc8);border-radius:10px;
-                        padding:12px 8px;text-align:center;border:1px solid #f6ad55;">
-                <div style="font-size:9px;font-weight:700;color:#7b341e;letter-spacing:0.7px;
-                            text-transform:uppercase;">Trained on</div>
-                <div style="font-size:22px;font-weight:900;color:#7b341e;line-height:1.1;">
-                    {_m['train_samples']//1000}K</div>
-                <div style="font-size:9px;color:#c05621;">patients</div>
-            </div>
-            <div style="background:linear-gradient(135deg,#faf5ff,#e9d8fd);border-radius:10px;
-                        padding:12px 8px;text-align:center;border:1px solid #d6bcfa;">
-                <div style="font-size:9px;font-weight:700;color:#553c9a;letter-spacing:0.7px;
-                            text-transform:uppercase;">FL Rounds</div>
-                <div style="font-size:22px;font-weight:900;color:#44337a;line-height:1.1;">
-                    {_m['num_rounds']}</div>
-                <div style="font-size:9px;color:#805ad5;">{_m['hospitals']} hospitals</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # ── Held-out Risk Classification Metrics (AUROC / PR-AUC) ──
-    _risk_metrics = _m.get("risk_classification_metrics")
-    with st.expander("📈 Held-out Risk Classification Metrics (AUROC · PR-AUC · Confusion Matrix)"):
-        if not _risk_metrics:
-            st.info(
-                "Metrics not yet generated. Run `python train_federated.py` to compute "
-                "AUROC, PR-AUC, and confusion matrices on the held-out test set."
-            )
-        else:
-            st.caption(
-                _m.get("evaluation_limitation",
-                       "Row-level split — patient IDs unavailable. Initial results only.")
-            )
-            _bands = _risk_metrics["risk_bands"]
-            _alert = _risk_metrics["high_risk_alert"]
-
-            # AUROC + PR-AUC headline tiles
-            _r1, _r2, _r3, _r4 = st.columns(4)
-            for _col, _lbl, _val, _tc, _bg, _brd in [
-                (_r1, "AUROC",        _alert["auroc"],   "#64b5f6","rgba(21,101,192,0.2)","#1565c0"),
-                (_r2, "PR-AUC",       _alert["pr_auc"],  "#ce93d8","rgba(106,27,154,0.2)","#6a1b9a"),
-                (_r3, "Sensitivity",  _alert["sensitivity"], "#5fda80","rgba(46,125,50,0.2)","#2e7d32"),
-                (_r4, "Specificity",  _alert["specificity"], "#ff8a65","rgba(230,81,0,0.2)","#e65100"),
-            ]:
-                with _col:
-                    _disp = "N/A" if _val is None else f"{_val:.3f}"
-                    st.markdown(f"""
-<div style="background:{_bg};border:1.5px solid {_brd};border-radius:10px;
-            padding:12px 8px;text-align:center;margin-bottom:8px;">
-    <div style="font-size:9px;font-weight:700;color:{_tc};text-transform:uppercase;
-                letter-spacing:0.7px;">{_lbl}</div>
-    <div style="font-size:24px;font-weight:900;color:{_tc};line-height:1.2;">{_disp}</div>
-</div>""", unsafe_allow_html=True)
-
-            # False negative / positive counts
-            st.markdown(
-                f"**Alert threshold:** predicted SOFA ≥ {_alert['predicted_sofa_threshold']:.0f} &nbsp;·&nbsp; "
-                f"**True high-risk:** actual SOFA ≥ {_alert['actual_high_risk_threshold']:.0f} &nbsp;·&nbsp; "
-                f"Missed high-risk cases (FN): **{_alert['false_negative']:,}** &nbsp;·&nbsp; "
-                f"False alerts (FP): **{_alert['false_positive']:,}**"
-            )
-
-            # Risk-band confusion matrix
-            _bl = _bands["labels"]
-            st.markdown("**Risk-band confusion matrix** — rows = actual class, columns = predicted class")
-            st.dataframe(
-                pd.DataFrame(_bands["confusion_matrix"], index=_bl, columns=_bl),
-                use_container_width=True,
-            )
-
-            # Per-class metrics
-            st.markdown("**Per-class metrics**")
-            st.dataframe(
-                pd.DataFrame.from_dict(_bands["per_class"], orient="index").round(3),
-                use_container_width=True,
-            )
-
-            # Alert confusion matrix
-            st.markdown("**High-risk alert confusion matrix**")
-            st.dataframe(
-                pd.DataFrame(
-                    _alert["confusion_matrix"],
-                    index=["Actual not high-risk", "Actual high-risk"],
-                    columns=["Predicted no alert", "Predicted alert"],
-                ),
-                use_container_width=True,
-            )
 
     # ── SOFA Prediction Validation Panel ──
     st.markdown("<div style='margin-top:14px;'></div>", unsafe_allow_html=True)
@@ -2044,7 +1881,13 @@ with tab1:
     <div style="font-size:16px;flex-shrink:0;padding-top:2px;">{_vstatus}</div>
 </div>"""
 
-    st.markdown(f"""
+    _n_pass = sum(1 for *_x, _st in _val_rows if _st == "✅")
+    _n_warn = sum(1 for *_x, _st in _val_rows if _st == "⚠️")
+    _val_summary = (f"🔬 SOFA prediction validation: {_n_pass}/{len(_val_rows)} checks passed"
+                    + (f" · ⚠️ {_n_warn} need review" if _n_warn else " ✓")
+                    + f"  ·  90% interval [{_conf_lo} – {_conf_hi}]")
+    with st.expander(_val_summary, expanded=_n_warn > 0):
+      st.markdown(f"""
 <div style="background:rgba(6,14,28,0.97);border:1.5px solid #1e3a50;
             border-radius:12px;padding:16px 18px;margin-top:4px;">
     <div style="font-size:11px;font-weight:800;color:#00d2ff;letter-spacing:1.8px;
@@ -2083,59 +1926,6 @@ System re-assesses every 30 seconds — watch the SOFA trajectory over readings.
     # ── Vital Sign Trend Charts ──
     st.plotly_chart(build_trend_chart(vitals_df), use_container_width=True)
     st.divider()
-
-    # ── Trend Summary ──
-    st.markdown("<div style='font-size:18px;font-weight:800;color:#e8f4ff;margin-bottom:10px;border-left:3px solid #7fb3c8;padding-left:10px;'>📈 Vital Sign Trends</div>",
-                unsafe_allow_html=True)
-    _dir_style = {
-        "increasing": ("🔺", "#dc3545", "#fff0f0"),
-        "decreasing": ("🔻", "#28a745", "#f0fff4"),
-        "stable":     ("➡", "#0066cc", "#f0f4ff"),
-    }
-    _rng_style = {
-        "high":   ("HIGH",   "#dc3545", "#fff0f0"),
-        "low":    ("LOW",    "#ff9800", "#fff8e1"),
-        "normal": ("NORMAL", "#28a745", "#f0fff4"),
-    }
-
-    def _trend_badge(line):
-        try:
-            vital, rest = line.split(" → ")
-            rng, dirn = rest.split(" & ")
-        except Exception:
-            return f"<span style='font-size:13px;'>{line}</span>"
-        d_icon, d_col, _ = _dir_style.get(dirn.strip(), ("•", "#555", "#eee"))
-        r_lbl, r_col, r_bg = _rng_style.get(rng.strip(), (rng.upper(), "#555", "#eee"))
-        return (
-            f"<span style='font-size:13px;font-weight:700;color:#d0e0ec;min-width:60px;"
-            f"display:inline-block;'>{vital}</span>"
-            f"<span style='margin:0 6px;color:#4a6a8a;'>→</span>"
-            f"<span style='background:{r_bg};color:{r_col};border:1.5px solid {r_col};"
-            f"border-radius:5px;padding:2px 9px;font-size:11px;font-weight:800;"
-            f"margin-right:5px;letter-spacing:0.3px;'>{r_lbl}</span>"
-            f"<span style='background:rgba(20,40,65,0.9);border-radius:5px;padding:2px 9px;"
-            f"font-size:11px;font-weight:700;color:{d_col};border:1px solid #2a4a6a;'>"
-            f"{d_icon} {dirn.strip()}</span>"
-        )
-
-    _trend_html = ""
-    for i, line in enumerate(trend_lines):
-        _trend_html += f"<div style='padding:6px 10px;background:{'#fafafa' if i%2==0 else 'white'};" \
-                       f"border-radius:6px;margin:3px 0;'>{_trend_badge(line)}</div>"
-
-    tl, tr = st.columns(2)
-    with tl:
-        for i, line in enumerate(trend_lines[:4]):
-            bg = "rgba(14,28,48,0.9)" if i % 2 == 0 else "rgba(10,20,38,0.9)"
-            st.markdown(f"<div style='padding:8px 12px;background:{bg};"
-                        f"border-radius:8px;margin:4px 0;border-left:3px solid #2a4a6a;'>"
-                        f"{_trend_badge(line)}</div>", unsafe_allow_html=True)
-    with tr:
-        for i, line in enumerate(trend_lines[4:]):
-            bg = "rgba(14,28,48,0.9)" if i % 2 == 0 else "rgba(10,20,38,0.9)"
-            st.markdown(f"<div style='padding:8px 12px;background:{bg};"
-                        f"border-radius:8px;margin:4px 0;border-left:3px solid #2a4a6a;'>"
-                        f"{_trend_badge(line)}</div>", unsafe_allow_html=True)
 
     # ── Prediction History (colour-coded by risk) ──
     _ph = get_prediction_history(patient_id, limit=50)
@@ -2217,14 +2007,30 @@ with tab2:
             🔬 SHAP Feature Impact Analysis
         </div>
         <div style="font-size:12px;color:#8ab8cc;margin-bottom:14px;">
-            How much each feature <em>shifted</em> this patient's predicted SOFA away from baseline.
-            Wider bar = stronger influence. Colour = direction.
+            Features that pushed this patient's predicted SOFA <em>up</em> from the model baseline.
+            Wider bar = stronger influence.
         </div>
         """, unsafe_allow_html=True)
 
-        _max_imp = top_shap["abs_impact"].max() if not top_shap.empty else 1.0
+        # Only features that pushed the SOFA estimate UP are shown as drivers.
+        # Negative SHAP values on clearly abnormal vitals (e.g. low SpO₂ "reducing"
+        # risk) reflect training-data correlations, not clinical logic, and read
+        # as errors on a bedside screen.
+        _shap_up   = top_shap[top_shap["impact"] > 0]
+        _n_down    = int((top_shap["impact"] <= 0).sum())
+        _max_imp   = _shap_up["abs_impact"].max() if not _shap_up.empty else 1.0
+        _up_expl   = [interpret_shap(r["feature"], r["original_value"], r["impact"])
+                      for _, r in _shap_up.iterrows()]
+        _up_risks, _seen_r = [], set()
+        for _, r in _shap_up.iterrows():
+            for v in risk_factors_for(r["feature"]):
+                if v not in _seen_r:
+                    _up_risks.append(v)
+                    _seen_r.add(v)
 
-        for _, _r in top_shap.iterrows():
+        if _shap_up.empty:
+            st.info("No feature pushed the SOFA estimate above the model baseline for this reading.")
+        for _, _r in _shap_up.iterrows():
             _feat  = _r["feature"]
             _orig  = _r["original_value"]
             _imp   = _r["impact"]
@@ -2267,6 +2073,9 @@ with tab2:
             </div>
             """, unsafe_allow_html=True)
 
+        if _n_down:
+            st.caption(f"{_n_down} other top-ranked feature(s) lowered the estimate and are not listed as drivers.")
+
         st.divider()
 
         # ─────────────────────────────────────────────────────────────
@@ -2280,7 +2089,7 @@ with tab2:
         """, unsafe_allow_html=True)
 
         _ci_left, _ci_right = st.columns(2)
-        for _i, _exp in enumerate(clinical_explanations):
+        for _i, _exp in enumerate(_up_expl):
             _is_inc = "increasing risk" in _exp
             _ci_bg  = "linear-gradient(135deg,rgba(220,53,69,0.14),rgba(220,53,69,0.04))" if _is_inc else "linear-gradient(135deg,rgba(40,167,69,0.14),rgba(40,167,69,0.04))"
             _ci_brd = "#dc3545" if _is_inc else "#28a745"
@@ -2310,7 +2119,7 @@ with tab2:
         </div>
         """, unsafe_allow_html=True)
 
-        if key_risks:
+        if _up_risks:
             _RISK_ICONS = {
                 "Low oxygen levels":              ("💧", "#64b5f6", "rgba(21,101,192,0.2)",  "#1565c0"),
                 "Respiratory distress":           ("🫁", "#ce93d8", "rgba(123,31,162,0.2)",  "#7b1fa2"),
@@ -2326,7 +2135,7 @@ with tab2:
             }
 
             _chips_html = '<div style="display:flex;flex-wrap:wrap;gap:10px;margin:4px 0;">'
-            for _risk in key_risks:
+            for _risk in _up_risks:
                 _rico, _tcol, _rbg2, _rbrd = _RISK_ICONS.get(
                     _risk, ("⚠️", "#ff7b7b", "rgba(183,28,28,0.2)", "#b71c1c")
                 )
@@ -2350,34 +2159,6 @@ with tab2:
                 "✅ No specific clinical risk factors flagged by the model for this reading.</div>",
                 unsafe_allow_html=True
             )
-
-        st.divider()
-
-        with st.expander("ℹ️ About SHAP — understanding counterintuitive results"):
-            st.markdown("""
-**What SHAP values represent:**
-SHAP (SHapley Additive exPlanations) quantifies how much each feature
-*shifted* this patient's predicted SOFA away from the model's baseline.
-↑ means the feature pushed the prediction toward a higher (worse) SOFA score;
-↓ means it pushed it lower (toward better).
-
-**Why some results may seem counterintuitive:**
-SHAP explains what the *model* learned — not established clinical logic.
-MIMIC-III training data contains correlations that can differ from clinical intuition:
-
-- A high **Stress Score** might appear as "reducing risk" because, in the training
-  data, responsive/agitated patients often had lower SOFA than unresponsive ones
-  (consciousness implies less organ failure).
-- Clinical notes containing certain terms might be associated with lower SOFA in
-  the training cohort for reasons unrelated to the term itself (e.g., documentation
-  patterns, patient selection bias).
-
-**How to use SHAP correctly:**
-- Use the feature importance ranking to understand *which signals* drove this prediction.
-- Do not interpret individual SHAP directions as clinical ground truth.
-- The LLM report in Tab 3 integrates all information including trends and clinical notes
-  to provide holistic reasoning beyond what SHAP alone shows.
-""")
 
     else:
         st.info(
@@ -2424,7 +2205,7 @@ with tab3:
 
     # ── 8-Method Reliability Banner ──
     # Top summary bar
-    st.markdown(f"""
+    _banner_html = (f"""
     <div style="background:{_rel_bg};border:2px solid {_rel_brd};border-radius:14px;
                 padding:16px 20px;margin-bottom:12px;box-shadow:0 3px 16px rgba(0,0,0,0.35);">
         <div style="display:flex;justify-content:space-between;align-items:center;
@@ -2453,7 +2234,16 @@ with tab3:
             </div>
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """)
+    if llm_ok:
+        st.markdown(_banner_html, unsafe_allow_html=True)
+    else:
+        st.warning(
+            f"**AI clinical report unavailable** — {llm_error}. "
+            "The SOFA prediction, validation checks and SHAP explanation are "
+            "computed locally and are not affected.",
+            icon="🧠",
+        )
 
     # 8-component breakdown grid
     if _rel_breakdown:
@@ -2685,7 +2475,7 @@ with tab3:
                 unsafe_allow_html=True,
             )
             st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
-    else:
+    elif llm_ok:
         _fb = re.sub(r'<br\s*/?>', '\n', main_response)
         st.markdown(_fb)
 
@@ -2747,6 +2537,12 @@ with tab3:
 # ---- TAB 4: FEDERATED LEARNING INFO ----
 with tab4:
     m = training_meta
+    # Short aggregation name for the diagram, taken from the same metadata
+    # the configuration tiles use, so the tab never contradicts itself.
+    _agg_short = ("FedYogi + FedProx" if "FedYogi" in str(m.get("aggregation", ""))
+                  else str(m.get("aggregation", "FedAvg")).split(" (")[0])
+    _hn = (m.get("hospital_names") or ["Hospital 0", "Hospital 1", "Hospital 2"]) + ["", "", ""]
+    _per_site = f"~{m['train_samples'] // max(1, m['hospitals']):,} training samples"
 
     # ── Tab header banner ──
     st.markdown("""
@@ -2774,7 +2570,7 @@ with tab4:
         'box-shadow:0 0 20px rgba(0,210,255,0.15);">'
         '<div style="font-size:20px;margin-bottom:4px;">🖥</div>'
         '<div style="font-size:13px;font-weight:800;color:#00d2ff;letter-spacing:0.5px;">Global FL Server</div>'
-        '<div style="font-size:11px;color:#7fb3c8;margin-top:2px;">Flower Framework · FedAvg Aggregation</div>'
+        f'<div style="font-size:11px;color:#7fb3c8;margin-top:2px;">Flower Framework · {_agg_short} Aggregation</div>'
         '</div></div>'
 
         '<div style="text-align:center;color:#00d2ff;font-size:12px;margin:8px 0;font-weight:600;">'
@@ -2786,8 +2582,8 @@ with tab4:
         'border-radius:10px;padding:12px 16px;text-align:center;flex:1;max-width:200px;">'
         '<div style="font-size:16px;margin-bottom:4px;">🏥</div>'
         '<div style="font-size:12px;font-weight:700;color:#81c784;">Hospital 0</div>'
-        '<div style="font-size:10px;color:#aaa;">General ICU</div>'
-        '<div style="font-size:11px;color:#4caf50;font-weight:600;margin-top:4px;">~15,889 patients</div>'
+        f'<div style="font-size:10px;color:#aaa;">{_hn[0]}</div>'
+        f'<div style="font-size:11px;color:#4caf50;font-weight:600;margin-top:4px;">{_per_site}</div>'
         '<div style="font-size:10px;color:#666;margin-top:6px;background:rgba(0,0,0,0.3);'
         'border-radius:4px;padding:4px;">🔒 PRIVATE data</div></div>'
 
@@ -2795,8 +2591,8 @@ with tab4:
         'border-radius:10px;padding:12px 16px;text-align:center;flex:1;max-width:200px;">'
         '<div style="font-size:16px;margin-bottom:4px;">🏥</div>'
         '<div style="font-size:12px;font-weight:700;color:#ffd54f;">Hospital 1</div>'
-        '<div style="font-size:10px;color:#aaa;">Mixed ICU</div>'
-        '<div style="font-size:11px;color:#f0a500;font-weight:600;margin-top:4px;">~15,890 patients</div>'
+        f'<div style="font-size:10px;color:#aaa;">{_hn[1]}</div>'
+        f'<div style="font-size:11px;color:#f0a500;font-weight:600;margin-top:4px;">{_per_site}</div>'
         '<div style="font-size:10px;color:#666;margin-top:6px;background:rgba(0,0,0,0.3);'
         'border-radius:4px;padding:4px;">🔒 PRIVATE data</div></div>'
 
@@ -2804,8 +2600,8 @@ with tab4:
         'border-radius:10px;padding:12px 16px;text-align:center;flex:1;max-width:200px;">'
         '<div style="font-size:16px;margin-bottom:4px;">🏥</div>'
         '<div style="font-size:12px;font-weight:700;color:#ef9a9a;">Hospital 2</div>'
-        '<div style="font-size:10px;color:#aaa;">Cardiac/Trauma ICU</div>'
-        '<div style="font-size:11px;color:#dc3545;font-weight:600;margin-top:4px;">~16,372 patients</div>'
+        f'<div style="font-size:10px;color:#aaa;">{_hn[2]}</div>'
+        f'<div style="font-size:11px;color:#dc3545;font-weight:600;margin-top:4px;">{_per_site}</div>'
         '<div style="font-size:10px;color:#666;margin-top:6px;background:rgba(0,0,0,0.3);'
         'border-radius:4px;padding:4px;">🔒 PRIVATE data</div></div>'
 
@@ -2819,8 +2615,8 @@ with tab4:
         '<div style="display:flex;justify-content:center;margin:8px 0;">'
         '<div style="background:rgba(106,27,154,0.2);border:2px solid #9c27b0;'
         'border-radius:12px;padding:12px 36px;text-align:center;">'
-        '<div style="font-size:13px;font-weight:800;color:#ce93d8;">④ FedAvg: Average all hospital weights</div>'
-        '<div style="font-size:11px;color:#7fb3c8;margin-top:4px;">→ Improved global model · Repeat for 100 rounds</div>'
+        f'<div style="font-size:13px;font-weight:800;color:#ce93d8;">④ {_agg_short}: aggregate all hospital weights</div>'
+        f'<div style="font-size:11px;color:#7fb3c8;margin-top:4px;">→ Improved global model · Repeat for {m["num_rounds"]} rounds</div>'
         '</div></div>'
 
         '</div>',
@@ -2840,8 +2636,8 @@ with tab4:
         ("Hospitals",        str(m["hospitals"]),         "#ce93d8","rgba(106,27,154,0.2)","#6a1b9a","ICU sites"),
         ("Epochs / Round",   str(m["epochs_per_round"]), "#5fda80","rgba(46,125,50,0.2)", "#2e7d32","local training epochs"),
         ("Aggregation",      m["aggregation"],            "#ff8a65","rgba(230,81,0,0.2)",  "#e65100","weight averaging method"),
-        ("Training Samples", f"{m['train_samples']:,}",  "#4db6ac","rgba(0,105,92,0.2)",  "#00695c","real ICU patients"),
-        ("Test Samples",     f"{m['test_samples']:,}",    "#aed581","rgba(85,139,47,0.2)", "#558b2f","held-out patients"),
+        ("Training Samples", f"{m['train_samples']:,}",  "#4db6ac","rgba(0,105,92,0.2)",  "#00695c","ICU samples"),
+        ("Test Samples",     f"{m['test_samples']:,}",    "#aed581","rgba(85,139,47,0.2)", "#558b2f","held-out samples"),
         ("Best Round",       str(m["best_round"]),        "#ffb74d","rgba(245,127,23,0.2)","#f57f17","lowest eval loss"),
         ("Split Type",       m["split_type"],             "#b39ddb","rgba(69,39,160,0.2)", "#4527a0","data distribution"),
     ]
@@ -2876,7 +2672,7 @@ with tab4:
          "Average prediction error on held-out ICU patients"),
         ("R² Score",         f"{m['final_r2']:.3f}",  "variance",    "#5fda80","rgba(46,125,50,0.2)","#2e7d32",
          "Proportion of variance explained by the model"),
-        ("Pred Range Min",   f"{m['pred_range_min']:.1f}", "SOFA",   "#4db6ac","rgba(0,105,92,0.2)","#00695c",
+        ("Pred Range Min",   f"{max(0.0, m['pred_range_min']):.1f}", "SOFA",   "#4db6ac","rgba(0,105,92,0.2)","#00695c",
          "Lowest predicted SOFA across test set"),
         ("Pred Range Max",   f"{m['pred_range_max']:.1f}", "SOFA",   "#ff8a65","rgba(230,81,0,0.2)","#e65100",
          "Highest predicted SOFA across test set"),
@@ -2897,154 +2693,167 @@ with tab4:
             </div>
             """, unsafe_allow_html=True)
 
-    st.divider()
 
-    # ── Model Architecture ──
-    st.markdown("<div style='font-size:18px;font-weight:800;color:#e8f4ff;margin-bottom:12px;"
-                "border-left:3px solid #007BB5;padding-left:10px;'>🧠 Model Architecture (PyTorch DNN)</div>",
-                unsafe_allow_html=True)
-
-    _layers = [
-        ("INPUT",  "108 features", "18 vitals (trends + latest + GCS) + 90 SOFA-vocab TF-IDF", "#64b5f6","rgba(21,101,192,0.2)"),
-        ("Linear", "108 → 128",   "Fully connected · ReLU activation",                         "#5fda80","rgba(46,125,50,0.2)"),
-        ("Linear", "128 →  64",   "Fully connected · ReLU activation",                         "#5fda80","rgba(46,125,50,0.2)"),
-        ("Linear", " 64 →  32",   "Fully connected · ReLU activation",                         "#5fda80","rgba(46,125,50,0.2)"),
-        ("Linear", " 32 →   1",   "Output layer · No activation (regression)",                 "#ce93d8","rgba(106,27,154,0.2)"),
-        ("OUTPUT", "SOFA (0–24)", "Predicted SOFA score · clip(0, 24)",                        "#ff8a65","rgba(230,81,0,0.2)"),
-    ]
-
-    _arch_html = ""
-    for _i, (_ltype, _ldim, _ldesc, _tc, _bg) in enumerate(_layers):
-        _arrow = "<div style='text-align:center;font-size:18px;color:#4a6a8a;margin:2px 0;'>↓</div>" if _i < len(_layers)-1 else ""
-        _arch_html += f"""
-        <div style="background:{_bg};border:1.5px solid {_tc};border-radius:8px;
-                    padding:10px 16px;display:flex;align-items:center;gap:12px;">
-            <div style="background:{_tc};color:#0a1628;border-radius:5px;padding:3px 8px;
-                        font-size:10px;font-weight:800;letter-spacing:0.5px;
-                        white-space:nowrap;">{_ltype}</div>
-            <div style="font-size:14px;font-weight:700;color:{_tc};min-width:80px;">{_ldim}</div>
-            <div style="font-size:11px;color:#9ab8cc;">{_ldesc}</div>
-        </div>{_arrow}"""
-
-    _la, _lb = st.columns([3, 2])
-    with _la:
-        st.markdown(_arch_html, unsafe_allow_html=True)
-    with _lb:
-        st.markdown(f"""
-        <div style="background:rgba(14,28,48,0.95);border:1.5px solid #1e3a50;border-radius:12px;
-                    padding:16px;font-size:12px;color:#c8dced;line-height:1.8;height:100%;">
-            <div style="font-size:13px;font-weight:700;color:#b8d0e0;margin-bottom:8px;">
-                🔧 Training Details
-            </div>
-            <b style="color:#7fb3c8;">Optimizer:</b> AdamW (weight_decay=1e-4)<br>
-            <b style="color:#7fb3c8;">Loss:</b> Weighted MSE — high-SOFA patients get up to 4.7× gradient weight<br>
-            <b style="color:#7fb3c8;">No Dropout</b> — causes FL divergence; regularised by AdamW instead<br>
-            <b style="color:#7fb3c8;">Parameters:</b> ~23,000 total trainable weights<br>
-            <b style="color:#7fb3c8;">FL Framework:</b> Flower (flwr) · FedYogi + FedProx<br>
-            <b style="color:#7fb3c8;">Best round:</b> {m['best_round']} of {m['num_rounds']}
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.divider()
-
-    # ── Differential Privacy ──
-    st.markdown("<div style='font-size:18px;font-weight:800;color:#e8f4ff;margin-bottom:12px;"
-                "border-left:3px solid #007BB5;padding-left:10px;'>🔐 Differential Privacy</div>",
-                unsafe_allow_html=True)
-
-    if m.get("differential_privacy"):
-        st.markdown(f"""
-        <div style="background:rgba(46,125,50,0.15);border:2px solid #4caf50;
-                    border-left:6px solid #2e7d32;border-radius:0 12px 12px 0;padding:16px 20px;">
-            <div style="font-size:14px;font-weight:800;color:#5fda80;margin-bottom:8px;">
-                ✅ Differential Privacy ENABLED
-            </div>
-            <div style="display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:#c8dced;">
-                <span><b style="color:#7fb3c8;">σ (noise multiplier):</b> {m['dp_sigma']}</span>
-                <span><b style="color:#7fb3c8;">S (sensitivity):</b> {m['dp_sensitivity']}</span>
-                <span><b style="color:#7fb3c8;">ε (privacy budget):</b> ≈{m['dp_epsilon']}</span>
-                <span><b style="color:#7fb3c8;">δ:</b> {m['dp_delta']}</span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        _dp_steps = [
-            ("①", "Compute update", "local_weights − global_weights", "#64b5f6"),
-            ("②", "Clip L2 norm",   "Bounds any patient's max influence (sensitivity S)", "#ff8a65"),
-            ("③", "Add noise",      "Gaussian N(0, (σ·S)²) to every weight parameter", "#ce93d8"),
-            ("④", "Transmit",       "Server receives noisy update — cannot trace individuals", "#5fda80"),
-        ]
-        st.markdown("""
-        <div style="background:rgba(240,165,0,0.12);border:1.5px solid #f0a500;
-                    border-left:5px solid #f0a500;border-radius:0 12px 12px 0;
-                    padding:14px 18px;margin-bottom:12px;">
-            <div style="font-size:13px;font-weight:700;color:#ffc93c;">
-                ⚙️ Differential Privacy: Disabled in current build
-            </div>
-            <div style="font-size:11px;color:#b8d0e0;margin-top:4px;">
-                Model trained with plain FedAvg (no noise). Enable: set
-                <code style="background:rgba(0,0,0,0.4);padding:1px 5px;border-radius:3px;">USE_DP = True</code>
-                in train_federated.py and retrain.
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        _dp_html = '<div style="display:flex;flex-direction:column;gap:8px;">'
-        for _step, _title, _desc, _tc in _dp_steps:
-            _dp_html += (
-                f"<div style='display:flex;align-items:flex-start;gap:12px;"
-                f"background:rgba(8,16,32,0.95);border:1px solid #1e3a50;"
-                f"border-radius:8px;padding:10px 14px;'>"
-                f"<div style='background:{_tc};color:#0a1628;border-radius:50%;width:24px;height:24px;"
-                f"display:flex;align-items:center;justify-content:center;font-size:11px;"
-                f"font-weight:800;flex-shrink:0;'>{_step}</div>"
-                f"<div><div style='font-size:12px;font-weight:700;color:{_tc};'>{_title}</div>"
-                f"<div style='font-size:11px;color:#8ab8cc;margin-top:2px;'>{_desc}</div></div>"
-                f"</div>"
+    # ── Held-out Risk Classification Metrics (AUROC / PR-AUC) ──
+    _m = m
+    _risk_metrics = _m.get("risk_classification_metrics")
+    with st.expander("📈 Held-out Risk Classification Metrics (AUROC · PR-AUC · Confusion Matrix)"):
+        if not _risk_metrics:
+            st.info(
+                "Metrics not yet generated. Run `python train_federated.py` to compute "
+                "AUROC, PR-AUC, and confusion matrices on the held-out test set."
             )
-        _dp_html += "</div>"
-        st.markdown(
-            "<div style='font-size:12px;font-weight:700;color:#b8d0e0;margin-bottom:8px;'>What DP would add:</div>",
-            unsafe_allow_html=True
-        )
-        st.markdown(_dp_html, unsafe_allow_html=True)
+        else:
+            st.caption(
+                _m.get("evaluation_limitation",
+                       "Row-level split — patient IDs unavailable. Initial results only.")
+            )
+            _bands = _risk_metrics["risk_bands"]
+            _alert = _risk_metrics["high_risk_alert"]
+
+            # AUROC + PR-AUC headline tiles
+            _r1, _r2, _r3, _r4 = st.columns(4)
+            for _col, _lbl, _val, _tc, _bg, _brd in [
+                (_r1, "AUROC",        _alert["auroc"],   "#64b5f6","rgba(21,101,192,0.2)","#1565c0"),
+                (_r2, "PR-AUC",       _alert["pr_auc"],  "#ce93d8","rgba(106,27,154,0.2)","#6a1b9a"),
+                (_r3, "Sensitivity",  _alert["sensitivity"], "#5fda80","rgba(46,125,50,0.2)","#2e7d32"),
+                (_r4, "Specificity",  _alert["specificity"], "#ff8a65","rgba(230,81,0,0.2)","#e65100"),
+            ]:
+                with _col:
+                    _disp = "N/A" if _val is None else f"{_val:.3f}"
+                    st.markdown(f"""
+<div style="background:{_bg};border:1.5px solid {_brd};border-radius:10px;
+            padding:12px 8px;text-align:center;margin-bottom:8px;">
+    <div style="font-size:9px;font-weight:700;color:{_tc};text-transform:uppercase;
+                letter-spacing:0.7px;">{_lbl}</div>
+    <div style="font-size:24px;font-weight:900;color:{_tc};line-height:1.2;">{_disp}</div>
+</div>""", unsafe_allow_html=True)
+
+            # False negative / positive counts
+            st.markdown(
+                f"**Alert threshold:** predicted SOFA ≥ {_alert['predicted_sofa_threshold']:.0f} &nbsp;·&nbsp; "
+                f"**True high-risk:** actual SOFA ≥ {_alert['actual_high_risk_threshold']:.0f} &nbsp;·&nbsp; "
+                f"Missed high-risk cases (FN): **{_alert['false_negative']:,}** &nbsp;·&nbsp; "
+                f"False alerts (FP): **{_alert['false_positive']:,}**"
+            )
+
+            # Risk-band confusion matrix
+            _bl = _bands["labels"]
+            st.markdown("**Risk-band confusion matrix** — rows = actual class, columns = predicted class")
+            st.dataframe(
+                pd.DataFrame(_bands["confusion_matrix"], index=_bl, columns=_bl),
+                use_container_width=True,
+            )
+
+            # Per-class metrics
+            st.markdown("**Per-class metrics**")
+            st.dataframe(
+                pd.DataFrame.from_dict(_bands["per_class"], orient="index").round(3),
+                use_container_width=True,
+            )
+
+            # Alert confusion matrix
+            st.markdown("**High-risk alert confusion matrix**")
+            st.dataframe(
+                pd.DataFrame(
+                    _alert["confusion_matrix"],
+                    index=["Actual not high-risk", "Actual high-risk"],
+                    columns=["Predicted no alert", "Predicted alert"],
+                ),
+                use_container_width=True,
+            )
 
     st.divider()
 
-    # ── Feature Vector Breakdown (visual bars) ──
-    st.markdown("<div style='font-size:18px;font-weight:800;color:#e8f4ff;margin-bottom:12px;"
-                "border-left:3px solid #007BB5;padding-left:10px;'>🔢 Feature Vector Breakdown — 108 total</div>",
-                unsafe_allow_html=True)
+    # ── Differential Privacy (one line: the feature exists but is off) ──
+    if m.get("differential_privacy"):
+        st.success(f"🔐 Differential privacy enabled · σ={m['dp_sigma']} · S={m['dp_sensitivity']} "
+                   f"· ε≈{m['dp_epsilon']} · δ={m['dp_delta']}")
+    else:
+        st.caption("🔐 Differential privacy: supported (clip + Gaussian noise on weight updates) "
+                   "but disabled in this build. Enable with USE_DP = True in train_federated.py.")
 
-    _feat_rows = [
-        ("📈 Trend Vitals",         9,  108, "#64b5f6","rgba(21,101,192,0.18)","#1565c0",
-         "HR_mean, HR_std, RR_mean, SpO₂_mean, SpO₂_min, Temp_mean, SBP_mean, DBP_mean, MAP_mean"),
-        ("📊 Latest Vitals",         7,  108, "#5fda80","rgba(46,125,50,0.18)","#2e7d32",
-         "latest_HR, latest_RR, latest_SpO₂, latest_Temp, latest_SBP, latest_DBP, latest_MAP"),
-        ("👁️ Computer Vision",       2,  108, "#ce93d8","rgba(106,27,154,0.18)","#6a1b9a",
-         "GCS Eye Opening (1–4 scale), Stress Score (0–10)"),
-        ("📝 Clinical NLP (TF-IDF)", 90, 108, "#ff8a65","rgba(230,81,0,0.18)","#e65100",
-         "90 SOFA-vocabulary whitelist terms: creatinine, bilirubin, vasopressor, intubated, sepsis … directly mapped to 6 SOFA organ components"),
-    ]
+    with st.expander("🧠 Model architecture, training details & feature breakdown"):
+        # ── Model Architecture ──
+        st.markdown("<div style='font-size:18px;font-weight:800;color:#e8f4ff;margin-bottom:12px;"
+                    "border-left:3px solid #007BB5;padding-left:10px;'>🧠 Model Architecture (PyTorch DNN)</div>",
+                    unsafe_allow_html=True)
 
-    for _flabel, _fcount, _ftotal, _ftc, _fbg, _fbrd, _fex in _feat_rows:
-        _fw = _fcount / _ftotal * 100
-        st.markdown(f"""
-        <div style="background:{_fbg};border-left:5px solid {_fbrd};border-radius:0 10px 10px 0;
-                    padding:12px 16px;margin:6px 0;box-shadow:0 2px 8px rgba(0,0,0,0.3);">
-            <div style="display:flex;justify-content:space-between;align-items:center;
-                        margin-bottom:6px;">
-                <div style="font-size:13px;font-weight:700;color:{_ftc};">{_flabel}</div>
-                <div style="font-size:14px;font-weight:900;color:{_ftc};">
-                    {_fcount} <span style="font-size:10px;color:#8ab8cc;">/ 108 features ({_fw:.1f}%)</span>
+        _layers = [
+            ("INPUT",  "108 features", "18 vitals (trends + latest + GCS) + 90 SOFA-vocab TF-IDF", "#64b5f6","rgba(21,101,192,0.2)"),
+            ("Linear", "108 → 128",   "Fully connected · ReLU activation",                         "#5fda80","rgba(46,125,50,0.2)"),
+            ("Linear", "128 →  64",   "Fully connected · ReLU activation",                         "#5fda80","rgba(46,125,50,0.2)"),
+            ("Linear", " 64 →  32",   "Fully connected · ReLU activation",                         "#5fda80","rgba(46,125,50,0.2)"),
+            ("Linear", " 32 →   1",   "Output layer · No activation (regression)",                 "#ce93d8","rgba(106,27,154,0.2)"),
+            ("OUTPUT", "SOFA (0–24)", "Predicted SOFA score · clip(0, 24)",                        "#ff8a65","rgba(230,81,0,0.2)"),
+        ]
+
+        _arch_html = ""
+        for _i, (_ltype, _ldim, _ldesc, _tc, _bg) in enumerate(_layers):
+            _arrow = "<div style='text-align:center;font-size:18px;color:#4a6a8a;margin:2px 0;'>↓</div>" if _i < len(_layers)-1 else ""
+            _arch_html += f"""
+            <div style="background:{_bg};border:1.5px solid {_tc};border-radius:8px;
+                        padding:10px 16px;display:flex;align-items:center;gap:12px;">
+                <div style="background:{_tc};color:#0a1628;border-radius:5px;padding:3px 8px;
+                            font-size:10px;font-weight:800;letter-spacing:0.5px;
+                            white-space:nowrap;">{_ltype}</div>
+                <div style="font-size:14px;font-weight:700;color:{_tc};min-width:80px;">{_ldim}</div>
+                <div style="font-size:11px;color:#9ab8cc;">{_ldesc}</div>
+            </div>{_arrow}"""
+
+        _la, _lb = st.columns([3, 2])
+        with _la:
+            st.markdown(_arch_html, unsafe_allow_html=True)
+        with _lb:
+            st.markdown(f"""
+            <div style="background:rgba(14,28,48,0.95);border:1.5px solid #1e3a50;border-radius:12px;
+                        padding:16px;font-size:12px;color:#c8dced;line-height:1.8;height:100%;">
+                <div style="font-size:13px;font-weight:700;color:#b8d0e0;margin-bottom:8px;">
+                    🔧 Training Details
                 </div>
+                <b style="color:#7fb3c8;">Optimizer:</b> AdamW (weight_decay=1e-4)<br>
+                <b style="color:#7fb3c8;">Loss:</b> Weighted MSE — {m.get('loss_weights', 'linear high-SOFA weighting')}<br>
+                <b style="color:#7fb3c8;">No Dropout</b> — causes FL divergence; regularised by AdamW instead<br>
+                <b style="color:#7fb3c8;">Parameters:</b> ~23,000 total trainable weights<br>
+                <b style="color:#7fb3c8;">FL Framework:</b> Flower (flwr) · FedYogi + FedProx<br>
+                <b style="color:#7fb3c8;">Best round:</b> {m['best_round']} of {m['num_rounds']}
             </div>
-            <div style="background:rgba(255,255,255,0.1);border-radius:6px;height:10px;margin-bottom:6px;overflow:hidden;">
-                <div style="width:{_fw:.0f}%;background:{_fbrd};height:100%;border-radius:6px;"></div>
+            """, unsafe_allow_html=True)
+
+        # ── Feature Vector Breakdown (visual bars) ──
+        st.markdown("<div style='font-size:18px;font-weight:800;color:#e8f4ff;margin-bottom:12px;"
+                    "border-left:3px solid #007BB5;padding-left:10px;'>🔢 Feature Vector Breakdown — 108 total</div>",
+                    unsafe_allow_html=True)
+
+        _feat_rows = [
+            ("📈 Trend Vitals",         9,  108, "#64b5f6","rgba(21,101,192,0.18)","#1565c0",
+             "HR_mean, HR_std, RR_mean, SpO₂_mean, SpO₂_min, Temp_mean, SBP_mean, DBP_mean, MAP_mean"),
+            ("📊 Latest Vitals",         7,  108, "#5fda80","rgba(46,125,50,0.18)","#2e7d32",
+             "latest_HR, latest_RR, latest_SpO₂, latest_Temp, latest_SBP, latest_DBP, latest_MAP"),
+            ("👁️ Computer Vision",       2,  108, "#ce93d8","rgba(106,27,154,0.18)","#6a1b9a",
+             "GCS Eye Opening (1–4 scale), Stress Score (0–10)"),
+            ("📝 Clinical NLP (TF-IDF)", 90, 108, "#ff8a65","rgba(230,81,0,0.18)","#e65100",
+             "90 SOFA-vocabulary whitelist terms: creatinine, bilirubin, vasopressor, intubated, sepsis … directly mapped to 6 SOFA organ components"),
+        ]
+
+        for _flabel, _fcount, _ftotal, _ftc, _fbg, _fbrd, _fex in _feat_rows:
+            _fw = _fcount / _ftotal * 100
+            st.markdown(f"""
+            <div style="background:{_fbg};border-left:5px solid {_fbrd};border-radius:0 10px 10px 0;
+                        padding:12px 16px;margin:6px 0;box-shadow:0 2px 8px rgba(0,0,0,0.3);">
+                <div style="display:flex;justify-content:space-between;align-items:center;
+                            margin-bottom:6px;">
+                    <div style="font-size:13px;font-weight:700;color:{_ftc};">{_flabel}</div>
+                    <div style="font-size:14px;font-weight:900;color:{_ftc};">
+                        {_fcount} <span style="font-size:10px;color:#8ab8cc;">/ 108 features ({_fw:.1f}%)</span>
+                    </div>
+                </div>
+                <div style="background:rgba(255,255,255,0.1);border-radius:6px;height:10px;margin-bottom:6px;overflow:hidden;">
+                    <div style="width:{_fw:.0f}%;background:{_fbrd};height:100%;border-radius:6px;"></div>
+                </div>
+                <div style="font-size:10px;color:#8ab8cc;">{_fex}</div>
             </div>
-            <div style="font-size:10px;color:#8ab8cc;">{_fex}</div>
-        </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
 
 # =============================================================
 # CONTINUOUS MONITORING — 30-SECOND COUNTDOWN (writes to TOP slots)
@@ -3057,12 +2866,6 @@ for _rem in range(30, 0, -1):
     _top_cd.markdown(f"""
     <div class="cdbar" style="margin-top:4px; margin-bottom:2px;">
         <span class="live-dot"></span>
-        <span style="font-weight:700; letter-spacing:0.5px;">CONTINUOUS MONITORING</span>
-        <span style="color:#4a7a8a;">|</span>
-        <span>{patient_cfg['icon']} {patient_cfg['name']}</span>
-        <span style="color:#4a7a8a;">|</span>
-        <span>Reading <b style="color:#00d2ff;">{cur_idx + 1}/{total_rows}</b></span>
-        <span style="color:#4a7a8a;">|</span>
         <span>Next reading in <b style="color:#00d2ff; font-family:monospace;">{_rem:02d}s</b></span>
     </div>
     """, unsafe_allow_html=True)
@@ -3073,8 +2876,6 @@ _top_cd.markdown(f"""
 <div class="cdbar" style="margin-top:4px; margin-bottom:2px; border-color:#28a745;">
     <span style="font-size:15px;">✅</span>
     <span style="font-weight:700;">Fetching next reading…</span>
-    <span style="color:#4a7a8a;">|</span>
-    <span>{patient_cfg['icon']} {patient_cfg['name']}</span>
 </div>
 """, unsafe_allow_html=True)
 _top_bar.progress(1.0)
