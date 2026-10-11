@@ -152,7 +152,8 @@ def migrate():
         print(f"  client {client_id}: {len(df):,} rows imported ✓")
     conn.commit()
     # Rebuild index after replace/append
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_ft_client ON fl_training(client_id)")
+    if has_full_schema:   # table only exists if at least one client CSV was imported
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ft_client ON fl_training(client_id)")
     conn.close()
 
     # ── Summary ────────────────────────────────────────────────────────────
@@ -163,7 +164,10 @@ def migrate():
     print("  Migration complete — row counts")
     print("=" * 56)
     for tbl in ["patient_vitals", "prediction_history", "sample_patients", "fl_training"]:
-        n = cur.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+        try:
+            n = cur.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+        except Exception:
+            n = 0   # fl_training absent when the FL client CSVs are not available
         print(f"  {tbl:<25} {n:>8,} rows")
     db_size = os.path.getsize(DB_PATH) / (1024 * 1024)
     print(f"\n  Database size: {db_size:.1f} MB")

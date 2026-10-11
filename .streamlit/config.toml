@@ -5,3 +5,7 @@ backgroundColor     = "#0a1628"     # Deep navy — main page background
 secondaryBackgroundColor = "#0e1f36" # Slightly lighter navy — sidebar, expanders
 textColor           = "#d0e0ec"     # Light blue-gray — all default text
 font                = "sans serif"
+
+[client]
+# Hide Streamlit's "Deploy" button and developer menu in demos
+toolbarMode = "viewer"
