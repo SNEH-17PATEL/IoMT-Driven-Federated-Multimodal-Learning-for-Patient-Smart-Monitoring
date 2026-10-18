@@ -1,4 +1,8 @@
-# ── Core app (Streamlit CDSS) ─────────────────────────────────────────────────
+# ── Web app (CareWatch: FastAPI backend + static front end in web/) ───────────
+fastapi>=0.110.0
+uvicorn>=0.29.0
+
+# ── Legacy Streamlit app (app.py, kept for reference) ─────────────────────────
 streamlit>=1.35.0
 torch>=2.0.0
 numpy>=1.24.0

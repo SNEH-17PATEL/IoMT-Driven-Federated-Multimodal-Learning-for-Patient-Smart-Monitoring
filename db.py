@@ -359,3 +359,13 @@ def fl_training_exists() -> bool:
         n = 0   # table not created yet (FL client CSVs never imported)
     conn.close()
     return n > 0
+
+
+def reset_patient(patient: int) -> None:
+    """Clear one patient's sliding window and prediction log (start of a new session)."""
+    conn = get_conn()
+    cur  = conn.cursor()
+    cur.execute("DELETE FROM patient_vitals WHERE patient = ?", (patient,))
+    cur.execute("DELETE FROM prediction_history WHERE patient = ?", (patient,))
+    conn.commit()
+    conn.close()

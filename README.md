@@ -308,7 +308,35 @@ icu_monitor/
 
 ## Running the Application
 
-### Launch the Streamlit app
+### Launch the web app (recommended)
+
+```bash
+python run.py
+```
+
+Opens at **http://localhost:8000** (the first start takes ~30 s while the model loads).
+Pick a patient, then use the tabs: **Live · Trends · Why this score · AI report · Model**.
+
+- **ICU / Home care** (top right) re-frames the same monitor for patients at home, with a
+  stay / watch / escalate plan.
+- **Live camera** takes Stress and GCS-eye from your webcam. Start the camera first in a second
+  terminal: `python cv_monitor.py`.
+- **Add note** lets you type a nursing/caregiver observation that is added to every following
+  reading, so you can watch the score react.
+- Patient 4 is a scripted deterioration (stable → watch → escalate) across vitals, notes and camera.
+- Demo data lives in `data/sample_patients/`; regenerate with `python backend/make_demo_data.py`
+  then `python migrate_to_db.py`.
+
+- **Federated learning** (top bar) is a single explanatory animation of how organisations train one shared model
+  without sharing patient records. Play / Next / Back (or Space and the arrow keys) let a presenter pace it.
+  It is an illustration and needs no data.
+
+The code is in `backend/` (`engine.py` = all prediction/validation/LLM logic, `server.py` = API)
+and `web/` (static HTML/CSS/JS, no build step).
+
+### Launch the legacy Streamlit app
+
+
 
 ```bash
 cd icu_monitor

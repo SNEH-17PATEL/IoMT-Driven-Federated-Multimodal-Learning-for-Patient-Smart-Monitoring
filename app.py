@@ -391,11 +391,44 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 # =============================================================
 # HEADER
 # =============================================================
-st.title("🏥 ICU Clinical Decision Support System")
-st.caption(
-    "Multimodal Intelligence System — Continuous Monitoring | "
-    "Federated Learning | SHAP Explainability | LLM Clinical Report"
-)
+# Read before the toggles are drawn: a keyed widget's value is already in
+# session_state at the start of the rerun that its click triggered.
+HOME_MODE = st.session_state.get("home_mode", False)
+
+if HOME_MODE:
+    st.title("🏠 Home-Care Remote Monitoring")
+    st.caption(
+        "Same multimodal model, deployed for patients at home — wearable vitals + camera + "
+        "caregiver notes | Continuous monitoring with automatic escalation"
+    )
+else:
+    st.title("🏥 ICU Clinical Decision Support System")
+    st.caption(
+        "Multimodal Intelligence System — Continuous Monitoring | "
+        "Federated Learning | SHAP Explainability | LLM Clinical Report"
+    )
+
+_tg1, _tg2, _tg3 = st.columns([2, 2, 3])
+with _tg1:
+    st.toggle(
+        "🏠 Home-care mode", key="home_mode",
+        help="Re-frames the monitor for patients at home: wearable/camera/caregiver inputs "
+             "and a tiered escalation plan (caregiver → telehealth → hospital).",
+    )
+with _tg2:
+    st.toggle(
+        "📷 Use live camera", key="use_cam",
+        help="Takes Stress Score and GCS Eye from your webcam. Start the camera first: "
+             "python cv_monitor.py",
+    )
+HOME_PATIENTS = {
+    1: ("Post-discharge recovery",
+        "Recovering at home after surgery. Caregiver visits daily."),
+    2: ("Pneumonia recovery on home oxygen",
+        "On home O₂ 4 L/min. Remote check-ins."),
+    3: ("Acute deterioration at home",
+        "Replays an ICU-grade deterioration record to demonstrate automatic escalation."),
+}
 
 # =============================================================
 # PATIENT SELECTOR  (shown when no patient is being monitored)
@@ -407,10 +440,10 @@ _sel_slot = st.empty()
 
 if st.session_state.selected_patient is None:
     with _sel_slot.container():
-        st.markdown("""
+        st.markdown(f"""
         <div style="text-align:center; padding:10px 0 28px 0;">
             <div style="font-size:36px; font-weight:900; color:#e8f4ff; letter-spacing:-0.5px;">
-                🏥 Select Patient to Monitor
+                {"🏠 Select Home-Care Patient" if HOME_MODE else "🏥 Select Patient to Monitor"}
             </div>
             <div style="font-size:15px; color:#b8d0e0; margin-top:10px; max-width:640px; margin-left:auto; margin-right:auto;">
                 AI reads vitals every <strong style="color:#007BB5;">30 seconds</strong> — generating SOFA predictions,
@@ -433,10 +466,14 @@ if st.session_state.selected_patient is None:
         for pid, desc in _CARD_CFG:
             with _cols[pid - 1]:
                 pcfg = PATIENTS[pid]
+                _ctitle = (HOME_PATIENTS[pid][0] if HOME_MODE
+                           else pcfg['description'].split(' — ')[0])
+                if HOME_MODE:
+                    desc = HOME_PATIENTS[pid][1]
                 st.markdown(f"""
                 <div class="pcard">
                     <h3 style="margin:0 0 4px 0;">Patient {pid}</h3>
-                    <p style="font-size:14px;font-weight:600;color:#c8dced;">{pcfg['description'].split(' — ')[0]}</p>
+                    <p style="font-size:14px;font-weight:600;color:#c8dced;">{_ctitle}</p>
                     <p style="font-size:12px;color:#8ab8cc;margin-top:4px;">{desc}</p>
                     <div style="margin-top:14px;padding:9px 12px;background:rgba(0,0,0,0.35);
                                 border:1px solid rgba(200,220,237,0.15);
@@ -490,6 +527,28 @@ GCS_eye       = int(current_row["GCS_eye_opening"])
 stress        = int(current_row["stress_score"])
 clinical_note = str(current_row["clinical_note"])
 
+# Camera modality: replayed from the dataset by default; the live webcam
+# (cv_monitor.py -> models/cv_live.json) replaces it when the toggle is on.
+def read_cv_live(max_age_s=15):
+    try:
+        with open(os.path.join(MODEL_PATH, "cv_live.json")) as f:
+            d = json.load(f)
+        if time.time() - float(d["ts"]) > max_age_s:
+            return None
+        return {"stress": float(d["stress"]), "gcs": int(d["gcs"])}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+cv_source = "replayed"
+if st.session_state.get("use_cam", False):
+    _cv = read_cv_live()
+    if _cv is not None:
+        stress  = int(round(min(max(_cv["stress"], 0.0), 10.0)))
+        GCS_eye = int(min(max(_cv["gcs"], 1), 4))
+        cv_source = "live"
+    else:
+        cv_source = "no_feed"
+
 # Seed patient vitals in DB if empty (first run for this patient)
 if len(get_patient_vitals(patient_id, limit=1)) == 0:
     for _si in range(min(20, total_rows)):
@@ -517,7 +576,7 @@ st.markdown(f"""
             </span>
             <span style="font-size:12px; color:#99b8cc; padding:2px 10px;
                          background:rgba(255,255,255,0.08); border-radius:20px;">
-                {patient_cfg['description']}
+                {HOME_PATIENTS[patient_id][0] if HOME_MODE else patient_cfg['description']}
             </span>
         </div>
         <div style="display:flex; gap:24px; font-size:12px; color:#ccc;">
@@ -596,6 +655,32 @@ _cards_html = "".join([
 st.markdown(
     f'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px;">{_cards_html}</div>',
     unsafe_allow_html=True
+)
+
+# ── Multimodal inputs: where each modality comes from ──
+_cv_txt = {"live": ("● LIVE webcam", "#28a745"),
+           "no_feed": ("no camera feed — using replay", "#f0a500"),
+           "replayed": ("replayed from dataset", "#7fb3c8")}[cv_source]
+_mods = [
+    ("📟", "Wearable sensors" if HOME_MODE else "Bedside monitor",
+     "HR · RR · SpO₂ · Temp · BP", ("replayed from dataset", "#7fb3c8")),
+    ("📷", "Home camera" if HOME_MODE else "Bedside camera",
+     "Stress score · GCS eye", _cv_txt),
+    ("📝", "Caregiver notes" if HOME_MODE else "Nursing notes",
+     "Free-text observations", ("replayed from dataset", "#7fb3c8")),
+]
+_chips = "".join(
+    f'<div style="flex:1;min-width:190px;background:rgba(14,31,54,0.95);border:1px solid #1e3a50;'
+    f'border-radius:10px;padding:8px 12px;"><div style="font-size:13px;font-weight:700;color:#e8f4ff;">'
+    f'{ic} {nm}</div><div style="font-size:11px;color:#8ab8cc;">{what}</div>'
+    f'<div style="font-size:11px;font-weight:700;color:{col};margin-top:2px;">{src}</div></div>'
+    for ic, nm, what, (src, col) in _mods
+)
+st.markdown(
+    f'<div style="display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 2px 0;">{_chips}</div>'
+    f'<div style="font-size:11px;color:#7fb3c8;margin-bottom:4px;">'
+    f'↳ three modalities fused into one 108-feature input to the federated model</div>',
+    unsafe_allow_html=True,
 )
 
 with st.expander("📋 Clinical Notes", expanded=False):
@@ -1490,6 +1575,36 @@ if sofa_score >= ALERT_THRESHOLD:
 elif sofa_score >= 5:
     st.warning(
         "⚠️ **MODERATE RISK** — Patient requires close monitoring. Review assessment below."
+    )
+
+# -- 8a. HOME-CARE ESCALATION PLAN (home-care mode only) --
+if HOME_MODE:
+    if sofa_score >= ALERT_THRESHOLD:
+        _etier, _eicon, _ecol, _ebg = "ESCALATE NOW", "🚨", "#dc3545", "rgba(220,53,69,0.15)"
+        _eacts = ["Alert the supervising clinician immediately",
+                  "Prepare transfer to hospital; call emergency services if the patient "
+                  "is unresponsive or oxygen stays low",
+                  "Caregiver stays with the patient and keeps the camera on"]
+    elif sofa_score >= 5:
+        _etier, _eicon, _ecol, _ebg = "WATCH", "⚠️", "#f0a500", "rgba(240,165,0,0.13)"
+        _eacts = ["Notify the caregiver and increase check-in frequency",
+                  "Request a tele-consult with the supervising clinician",
+                  "Escalates automatically if predicted SOFA reaches "
+                  f"{ALERT_THRESHOLD:g}"]
+    else:
+        _etier, _eicon, _ecol, _ebg = "STABLE", "✅", "#28a745", "rgba(40,167,69,0.13)"
+        _eacts = ["Continue routine home monitoring",
+                  "Caregiver check-in as scheduled",
+                  "No escalation needed"]
+    _eli = "".join(f"<li>{a}</li>" for a in _eacts)
+    st.markdown(
+        f'<div style="background:{_ebg};border-left:5px solid {_ecol};border-radius:0 10px 10px 0;'
+        f'padding:12px 16px;margin:6px 0;"><div style="font-size:14px;font-weight:800;color:{_ecol};">'
+        f'{_eicon} HOME-CARE ACTION — {_etier}</div>'
+        f'<ul style="margin:6px 0 4px 18px;padding:0;font-size:13px;color:#d0e0ec;">{_eli}</ul>'
+        f'<div style="font-size:10px;color:#7fb3c8;">Demo escalation plan — real thresholds and '
+        f'actions must be set by the supervising clinician.</div></div>',
+        unsafe_allow_html=True,
     )
 
 # -- 8b. SAVE PREDICTION HISTORY (database) --

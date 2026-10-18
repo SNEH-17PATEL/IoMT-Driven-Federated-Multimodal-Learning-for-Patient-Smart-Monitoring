@@ -93,19 +93,17 @@ def migrate():
     sp_dir = "data/sample_patients"
     for patient_id, fname in [(1, "sample_patient01_data.csv"),
                                (2, "sample_patient02_data.csv"),
-                               (3, "sample_patient03_data.csv")]:
+                               (3, "sample_patient03_data.csv"),
+                               (4, "sample_patient04_data.csv")]:
         path = os.path.join(sp_dir, fname)
         if not os.path.exists(path):
             print(f"  ⚠ {fname} not found — skipping")
             continue
         df = pd.read_csv(path)
         cur = conn.cursor()
-        existing = cur.execute(
-            "SELECT COUNT(*) FROM sample_patients WHERE patient = ?", (patient_id,)
-        ).fetchone()[0]
-        if existing > 0:
-            print(f"  patient {patient_id}: already has {existing} rows — skipping")
-            continue
+        # The CSVs are the source of truth for the replayed demo stream, so refresh
+        # (replace) the rows instead of skipping — otherwise edited notes never load.
+        cur.execute("DELETE FROM sample_patients WHERE patient = ?", (patient_id,))
         df.insert(0, "row_idx", range(len(df)))
         df.insert(0, "patient", patient_id)
         df.to_sql("sample_patients", conn, if_exists="append", index=False)
