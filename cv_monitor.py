@@ -34,6 +34,7 @@ os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL","3")
 
 import sys
 import time
+import json
 import argparse
 import pathlib
 import urllib.request
@@ -55,12 +56,33 @@ _MODEL_URL  = (
     "https://storage.googleapis.com/mediapipe-models/"
     "face_landmarker/face_landmarker/float16/latest/face_landmarker.task"
 )
-_MODEL_PATH = pathlib.Path(__file__).parent / "face_landmarker.task"
+_MODEL_PATH = pathlib.Path(__file__).parent / "models" / "face_landmarker.task"   # already shipped in models/
+
+
+# ── Hand-off to app.py ────────────────────────────────────────────────────────
+# The Streamlit app reads this file when "Use live camera" is switched on, so the
+# stress score and GCS eye score it shows come from the webcam instead of the
+# replayed CSV. Written atomically so the app never reads a half-written file.
+_LIVE_PATH = pathlib.Path(__file__).resolve().parent / "models" / "cv_live.json"
+_LIVE_EVERY_S = 0.5
+
+
+def _publish_live(stress: float, gcs: int, face: bool = True) -> None:
+    """face=False is a heartbeat: camera is running but no face is in view."""
+    try:
+        _LIVE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _LIVE_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"stress": round(float(stress), 2), "gcs": int(gcs),
+                                   "face": bool(face), "ts": time.time()}))
+        os.replace(tmp, _LIVE_PATH)
+    except OSError:
+        pass   # never let a file error stop the camera loop
 
 
 def _ensure_model() -> None:
     """Download the FaceLandmarker model on first run (~12 MB, once only)."""
     if not _MODEL_PATH.exists():
+        _MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
         print("[cv_monitor] Downloading face landmark model (~12 MB) — first run only…")
         urllib.request.urlretrieve(_MODEL_URL, _MODEL_PATH)
         print("[cv_monitor] Model ready.")
@@ -410,12 +432,18 @@ def run(cam_index: int = 0) -> None:
     )
     landmarker = _mp_vision.FaceLandmarker.create_from_options(_lm_opts)
 
-    cap = cv2.VideoCapture(cam_index)
+    # On Windows the default backend (MSMF) can take 10-15 s to open a webcam; DirectShow
+    # opens in ~1 s. Fall back to the default backend if DirectShow cannot open it.
+    cap = cv2.VideoCapture(cam_index, cv2.CAP_DSHOW) if sys.platform == "win32" else cv2.VideoCapture(cam_index)
+    if sys.platform == "win32" and not cap.isOpened():
+        cap.release()
+        cap = cv2.VideoCapture(cam_index)
     if not cap.isOpened():
         print(f"[cv_monitor] ERROR: Cannot open camera (index {cam_index}).")
         return
     cap.set(cv2.CAP_PROP_FRAME_WIDTH,  1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    _last_pub = 0.0
 
     _WIN, _DISP_W, _DISP_H = "ICU CDSS - CV Monitor", 1280, 800
     cv2.namedWindow(_WIN, cv2.WINDOW_NORMAL)
@@ -554,6 +582,10 @@ def run(cam_index: int = 0) -> None:
             cal_pct         = cal_pct,
             detected        = detected,
         )
+
+        if time.time() - _last_pub >= _LIVE_EVERY_S:
+            _publish_live(stress_v, gcs_v, face=detected)
+            _last_pub = time.time()
 
         cv2.imshow(_WIN, frame)
         if cv2.waitKey(1) & 0xFF in (ord('q'), ord('Q'), 27):

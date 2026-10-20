@@ -93,19 +93,17 @@ def migrate():
     sp_dir = "data/sample_patients"
     for patient_id, fname in [(1, "sample_patient01_data.csv"),
                                (2, "sample_patient02_data.csv"),
-                               (3, "sample_patient03_data.csv")]:
+                               (3, "sample_patient03_data.csv"),
+                               (4, "sample_patient04_data.csv")]:
         path = os.path.join(sp_dir, fname)
         if not os.path.exists(path):
             print(f"  ⚠ {fname} not found — skipping")
             continue
         df = pd.read_csv(path)
         cur = conn.cursor()
-        existing = cur.execute(
-            "SELECT COUNT(*) FROM sample_patients WHERE patient = ?", (patient_id,)
-        ).fetchone()[0]
-        if existing > 0:
-            print(f"  patient {patient_id}: already has {existing} rows — skipping")
-            continue
+        # The CSVs are the source of truth for the replayed demo stream, so refresh
+        # (replace) the rows instead of skipping — otherwise edited notes never load.
+        cur.execute("DELETE FROM sample_patients WHERE patient = ?", (patient_id,))
         df.insert(0, "row_idx", range(len(df)))
         df.insert(0, "patient", patient_id)
         df.to_sql("sample_patients", conn, if_exists="append", index=False)
@@ -152,7 +150,8 @@ def migrate():
         print(f"  client {client_id}: {len(df):,} rows imported ✓")
     conn.commit()
     # Rebuild index after replace/append
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_ft_client ON fl_training(client_id)")
+    if has_full_schema:   # table only exists if at least one client CSV was imported
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ft_client ON fl_training(client_id)")
     conn.close()
 
     # ── Summary ────────────────────────────────────────────────────────────
@@ -163,7 +162,10 @@ def migrate():
     print("  Migration complete — row counts")
     print("=" * 56)
     for tbl in ["patient_vitals", "prediction_history", "sample_patients", "fl_training"]:
-        n = cur.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+        try:
+            n = cur.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+        except Exception:
+            n = 0   # fl_training absent when the FL client CSVs are not available
         print(f"  {tbl:<25} {n:>8,} rows")
     db_size = os.path.getsize(DB_PATH) / (1024 * 1024)
     print(f"\n  Database size: {db_size:.1f} MB")

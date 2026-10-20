@@ -82,3 +82,7 @@ ENV/
 # JUPYTER
 # =============================================================
 .ipynb_checkpoints/
+
+# live webcam hand-off written by cv_monitor.py
+models/cv_live.json
+models/cv_monitor.log
