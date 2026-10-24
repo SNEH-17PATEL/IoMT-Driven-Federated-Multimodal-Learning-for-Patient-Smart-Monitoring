@@ -27,7 +27,7 @@
 15. [LLM Integration — Groq](#15-llm-integration--groq)
 16. [LLM Self-Consistency Check](#16-llm-self-consistency-check)
 17. [Alert System](#17-alert-system)
-18. [Streamlit Application — Complete Pipeline](#18-streamlit-application--complete-pipeline)
+18. [ClinIQ React+FastAPI Dashboard — Complete Pipeline](#18-cliniq-reactfastapi-dashboard--complete-pipeline)
 19. [Complete Folder Structure](#19-complete-folder-structure)
 20. [File-by-File Description](#20-file-by-file-description)
 21. [All Finalized Technical Parameters](#21-all-finalized-technical-parameters)
@@ -612,9 +612,9 @@ Shows original clinical values (not z-scores). For TF-IDF features, shows
 ## 15. LLM INTEGRATION — GROQ
 
 ### Provider: Groq
-### Model: openai/gpt-oss-120b (accessed via Groq API)
-### Temperature: 0.2
-### Max Tokens: 2500
+### Main Model: openai/gpt-oss-120b — temperature 0.2, max_tokens 3500
+### Judge Model: openai/gpt-oss-20b — temperature 0.2, max_tokens 300, 12s threading timeout
+### Cache: 90s in-process dict keyed by care_mode|sofa|hr|spo2
 
 **Why Groq:** Extremely fast inference compared to other providers. Near-real-time
 response for ICU decision support.
@@ -690,33 +690,33 @@ The model systematically under-predicts severe cases by ~2–3 SOFA points
 - At threshold ≥ 8: High Risk Recall ≈ 52% (doubles recall)
 - False alarm rate on Low Risk patients: only ~1.4%
 
-**Display:**
-- High Risk → red st.error() banner + expanded clinical advisory panel
-- Moderate Risk → yellow st.warning() banner
-- Low Risk → no banner
+**Display (ClinIQ React dashboard):**
+- High Risk → red AlertBanner at top of page + red SOFA gauge
+- Moderate Risk → amber AlertBanner at top of page + amber SOFA gauge
+- Low Risk → no banner, green SOFA gauge
 
 ---
 
-## 18. STREAMLIT APPLICATION — COMPLETE PIPELINE
+## 18. ClinIQ React+FastAPI Dashboard — COMPLETE PIPELINE
 
-### Startup (cached with @st.cache_resource):
+### Backend Startup (lru_cache on first request):
 1. Load `models/scaler.pkl` → StandardScaler (108 features)
 2. Load `models/tfidf_vectorizer.pkl` → TF-IDF vectorizer (90-term SOFA vocab)
 3. Load `ICUModel(108)`, load weights from `models/federated_model.pth`
 4. Set model to eval() mode
 5. Load `models/shap_background.npy` → numpy array (300 × 108)
 6. Create `shap.DeepExplainer(model, background_tensor)`
-7. Initialize patient vitals file if not present
+7. Seed patient vitals in SQLite if first run
 
-### On "Run Prediction" Click:
+### On POST /api/predict (90-second auto-refresh from frontend):
 
-**Step 1: Input Validation** — check each vital against VALID_RANGES.
+**Step 1: Read DB Row** — `get_sample_patient_row(patient_id, row_idx % total_rows)`.
 
-**Step 2: Sliding Window Update** — append + keep tail(20) + save.
+**Step 2: Sliding Window Update** — append vitals to SQLite + keep last 20 rows.
 
 **Step 3: Trend Features** — compute 9 statistics from 20-row window.
 
-**Step 4: Latest Features** — package 7 latest vitals + GCS + stress.
+**Step 4: Latest Features** — package 7 latest vitals + GCS + stress from DB row.
 
 **Step 5: TF-IDF Transform** — `tfidf.transform([note])` → 90 columns.
 
@@ -730,24 +730,44 @@ The model systematically under-predicts severe cases by ~2–3 SOFA points
 
 **Step 10: Risk Classification** — SOFA < 5 / 5-9 / ≥ 10.
 
-**Step 11: Alert Banner** — fire if SOFA ≥ 8.
+**Step 11: Alert Flag** — `is_alert = sofa >= 8`.
 
-**Step 12: Save Prediction History** — append to prediction_history CSV.
+**Step 12: Save Prediction** — append to prediction_history in SQLite.
 
-**Step 13: SHAP Computation** — `explainer.shap_values(X_tensor)` → 108 values → top 7.
+**Step 13: SHAP Computation** — `explainer.shap_values(X_tensor)` → 108 values → top 5.
 
 **Step 14: Trend Analysis** — `get_trend()` + `classify_range()` for 7 vitals.
 
-**Step 15: Build LLM Prompt** — 7-section risk-adaptive prompt.
+**Step 15: Return JSON** — sofa_score, risk_level, vitals, shap_top5, key_risks, etc.
 
-**Step 16: LLM Self-Consistency** — 3 Groq calls (temp=0.2) → 3-component consistency score.
+### On POST /api/report (triggered by frontend when predict data changes):
 
-**Step 17: Display (4 Tabs)**
+**Step 1: Cache Check** — 90s in-process cache keyed by `care_mode|sofa|hr|spo2`. Return cached if hit.
 
-Tab 1 — Risk Assessment: SOFA gauge, vital sign trend chart, prediction history
-Tab 2 — Explainability: SHAP table, clinical interpretations, key risk factors
-Tab 3 — AI Clinical Report: consistency score, reliability label, LLM response
-Tab 4 — Federated Learning: FedYogi config, model architecture (108→128→64→32→1), DP status
+**Step 2: Build Prompt** — 7-section risk-adaptive prompt (IMMEDIATE ACTIONS first for High Risk).
+
+**Step 3: LLM Call** — Groq `openai/gpt-oss-120b`, temp=0.2, max_tokens=3500. Strip `<think>` blocks.
+
+**Step 4: Parse Sections** — split into 4 section dict (CURRENT CONDITION / PROBABLE CAUSE / RISK FORECAST / IMMEDIATE ACTIONS).
+
+**Step 5: Judge Call** — Groq `openai/gpt-oss-20b`, 12s timeout, 300 tokens. Reliability score.
+
+**Step 6: Return JSON** — sections, reliability_score, reliability_label, care_mode.
+
+### Frontend Polling Loop (useMonitor.js):
+
+- 90-second countdown timer; freezes at 1 during in-flight fetch
+- `fetchingRef` guard — no overlapping fetch calls
+- `setCountdown(90)` reset only in `finally` block after data arrives
+- `reportKey()` + `lastKeyRef`/`lastCareModeRef` guard — LLM fires only on genuine clinical value change or care mode switch
+
+### Display (single-page, no tabs):
+
+**Section 1 — Patient Overview:** SOFA score (large, risk-colored) + 6 vital cards (color-coded normal/abnormal)
+
+**Section 2 — Vital Trends:** 6 Recharts line charts (last 20 readings) with normal range bands
+
+**Section 3 — AI Clinical Report:** Hospital / Home Care toggle → 4 LLM section cards → SHAP bars (anime.js springs) → reliability badge → clinical disclaimer
 
 ---
 
@@ -756,54 +776,127 @@ Tab 4 — Federated Learning: FedYogi config, model architecture (108→128→64
 ```
 icu_monitor/
 │
-├── app.py                    ← Main Streamlit CDSS application
-├── fl_dashboard.py           ← Federated Learning simulation dashboard
-├── cv_monitor.py             ← Computer Vision Monitor (Stress + GCS, standalone)
-├── model_utils.py
-├── train_federated.py
-├── server.py
-├── client.py
+├── model_utils.py             ← Shared ML utilities (ICUModel, get_trend, etc.)
+├── train_federated.py         ← FL training simulation (Flower + Ray)
+├── server.py                  ← Real Flower FL server (TCP, 127.0.0.1:8080)
+├── client.py                  ← Real Flower FL client (--client_id 0/1/2)
+├── db.py                      ← SQLite DB layer (all reads/writes)
+├── migrate_to_db.py           ← Migrates CSVs → icu_monitor.db
+├── cv_monitor.py              ← Computer Vision Monitor (Stress + GCS, standalone)
 ├── requirements.txt
-├── .env
+├── .env                       ← NEVER committed (contains GROQ_API_KEY)
 ├── .env.example
 ├── README.md
 │
+├── backend/                   ← FastAPI backend (port 8000)
+│   ├── main.py                ← App entry point, CORS, router registration
+│   ├── api/
+│   │   ├── patients.py        ← GET /api/patients
+│   │   ├── predict.py         ← POST /api/predict
+│   │   ├── report.py          ← POST /api/report
+│   │   └── history.py         ← GET /api/history/{patient_id}
+│   └── services/
+│       ├── ml_service.py      ← Full SOFA inference pipeline
+│       └── llm_service.py     ← Groq LLM calls + 90s cache + judge
+│
+├── frontend/                  ← React 19 + Vite 8 frontend (port 5174)
+│   ├── package.json
+│   ├── vite.config.js         ← Proxy /api → http://localhost:8000
+│   ├── index.html
+│   └── src/
+│       ├── main.jsx
+│       ├── App.jsx
+│       ├── index.css          ← Design tokens (glassmorphism, Figtree font)
+│       ├── api/client.js      ← Axios instance + all API functions
+│       ├── hooks/useMonitor.js← 90s polling loop with fetchingRef guard
+│       ├── components/
+│       │   ├── layout/        ← HeaderBar, AlertBanner
+│       │   ├── overview/      ← SOFAGauge, VitalCard, VitalsGrid
+│       │   ├── trends/        ← TrendChart, TrendsSection
+│       │   └── report/        ← ReportContainer, ReportSection, SHAPPanel,
+│       │                         ReportToggle, ReliabilityBadge
+│       └── pages/
+│           ├── SelectPatient.jsx
+│           └── MonitorDashboard.jsx
+│
 ├── docs/
-│   ├── CV_MONITOR.md         ← Stress Score + GCS Eye Score: methods, pipeline
+│   ├── CV_MONITOR.md
 │   ├── TRAIN_FEDERATED.md
 │   ├── Project_Context.md
+│   ├── REDESIGN_PLAN.md
 │   ├── MODEL_DISCUSSION.md
 │   ├── VALIDATION.md
 │   ├── INPUT_OUTPUT.md
 │   └── SKILL.md
 │
 ├── models/
-│   ├── federated_model.pth     ← DNN weights (~0.3 MB, 108→128→64→32→1)
-│   ├── scaler.pkl              ← StandardScaler (108 features, ~8 KB)
-│   ├── tfidf_vectorizer.pkl    ← TF-IDF (90-term SOFA vocab, ~2 MB)
-│   ├── feature_columns.pkl     ← Ordered list of 108 feature names
-│   ├── shap_background.npy     ← 300 background samples (300 × 108)
-│   ├── patient_vitals/         ← Per-patient sliding window CSVs
-│   ├── prediction_history/     ← Per-patient prediction logs
+│   ├── federated_model.pth    ← DNN weights (~0.3 MB, 108→128→64→32→1)
+│   ├── scaler.pkl             ← StandardScaler (108 features, ~8 KB)
+│   ├── tfidf_vectorizer.pkl   ← TF-IDF (90-term SOFA vocab, ~2 MB)
+│   ├── feature_columns.pkl    ← Ordered list of 108 feature names
+│   ├── shap_background.npy    ← 300 background samples (300 × 108)
+│   ├── icu_monitor.db         ← SQLite DB (~23 MB, gitignored)
+│   ├── patient_vitals/        ← Legacy CSV dir (now in DB, .gitkeep only)
+│   ├── prediction_history/    ← Legacy CSV dir (now in DB, .gitkeep only)
 │   └── training_metadata.json
 │
 └── data/
     └── fl_training/
-        ├── client_0.csv        ← Hospital 0: ~15,889 × 109 cols
-        ├── client_1.csv        ← Hospital 1: ~15,890 × 109 cols
-        └── client_2.csv        ← Hospital 2: ~16,371 × 109 cols
+        ├── client_0.csv       ← Hospital 0: ~15,889 × 109 cols (gitignored)
+        ├── client_1.csv       ← Hospital 1: ~15,890 × 109 cols (gitignored)
+        └── client_2.csv       ← Hospital 2: ~16,371 × 109 cols (gitignored)
 ```
 
 ---
 
 ## 20. FILE-BY-FILE DESCRIPTION
 
-### `app.py`
-Complete Streamlit web application. Entire inference pipeline from input to LLM.
-Imports from: model_utils.py, .env, models/ folder.
+### `backend/main.py`
+FastAPI application entry point. CORS configured for ports 5173/5174/5175.
+Registers routers: patients, predict, report, history.
+
+### `backend/api/predict.py`
+POST /api/predict — reads DB row, runs full SOFA pipeline, saves vitals + prediction, returns JSON.
+
+### `backend/api/report.py`
+POST /api/report — calls Groq LLM, runs judge reliability check, returns 4-section report.
+
+### `backend/api/patients.py`
+GET /api/patients — returns patient config (name, description, risk, color).
+
+### `backend/api/history.py`
+GET /api/history/{patient_id} — returns last N predictions from DB.
+
+### `backend/services/ml_service.py`
+ML inference pipeline. Loads artifacts with lru_cache. Runs: sliding window → trend features
+→ TF-IDF → scale → DNN → SHAP. Wraps everything in run_prediction(patient_id, row_idx).
+
+### `backend/services/llm_service.py`
+Groq LLM calls (openai/gpt-oss-120b, main; openai/gpt-oss-20b, judge).
+90s in-process cache keyed by care_mode|sofa|hr|spo2. Strips <think> blocks.
+Returns 4-section dict + reliability score.
+
+### `frontend/src/hooks/useMonitor.js`
+90-second polling loop with fetchingRef guard (no overlapping fetches).
+countdown freezes at 1 while fetch is in flight; resets to 90 in finally block.
+
+### `frontend/src/components/report/ReportContainer.jsx`
+Calls generateReport only when reportKey() changes or care mode switches.
+reportKey() = "patient_id|sofa|HR|SpO2|SBP|GCS" — prevents redundant LLM calls.
+
+### `frontend/src/components/report/SHAPPanel.jsx`
+anime.js v4.5.0 spring-physics bar animation. displayFactors state preserves
+last non-empty factors across backend SHAP failures.
+
+### `frontend/src/components/layout/HeaderBar.jsx`
+68px main bar + 32px status strip. BrandMark with glass glint, LiveChip with
+ECG animation, PatientPill, ThemeToggle, Exit button.
+
+### `frontend/src/pages/SelectPatient.jsx`
+Landing page with TopNav (72px), SystemStatusBar (34px), and 3 patient cards.
 
 ### `model_utils.py`
-Shared utility module imported by all 4 Python files. Contains:
+Shared utility module imported by backend services, train_federated.py, server.py, client.py. Contains:
 - `ICUModel` class — 108→128→64→32→1 DNN architecture
 - `ICUDataset` class — PyTorch Dataset for DataLoader
 - `weighted_mse_loss` — weight = 1 + SOFA × 0.5
@@ -888,17 +981,21 @@ Features are already StandardScaler-normalised and clipped to ±10.
 | FedYogi τ | 0.001 | train_federated.py |
 | Loss weight multiplier | 0.5 (weight=1+SOFA×0.5) | weighted_mse_loss() |
 | SHAP background size | 300 | shap_background.npy |
-| LLM model | openai/gpt-oss-120b | app.py |
-| LLM temperature | 0.2 | app.py (for self-consistency) |
-| LLM max_tokens | 2500 | app.py |
-| Self-consistency calls | 3 | get_multiple_llm_responses() |
-| High reliability threshold | ≥ 0.80 | compute_consistency() |
-| Moderate reliability threshold | 0.60–0.80 | compute_consistency() |
+| LLM main model | openai/gpt-oss-120b | backend/services/llm_service.py |
+| LLM judge model | openai/gpt-oss-20b | backend/services/llm_service.py |
+| LLM temperature | 0.2 | llm_service.py |
+| LLM main max_tokens | 3500 | llm_service.py |
+| LLM judge max_tokens | 300 | llm_service.py |
+| LLM judge timeout | 12s (threading) | llm_service.py |
+| LLM cache TTL | 90s | llm_service.py (_CACHE_TTL) |
+| High reliability threshold | ≥ 0.80 | llm_service.py |
+| Moderate reliability threshold | 0.60–0.80 | llm_service.py |
+| Frontend refresh interval | 90s | useMonitor.js |
 | GCS Eye range | 1–4 | sidebar input |
 | Stress Score range | 0–10 | sidebar input |
 | Hospital clients | 3 | server.py, train_federated.py |
 | Server address | 127.0.0.1:8080 | server.py, client.py |
-| SHAP top features | 7 | app.py |
+| SHAP top features | 5 | backend/services/ml_service.py |
 
 ---
 
@@ -952,13 +1049,17 @@ values (bilirubin, creatinine, platelets) not present in the feature set.
 | Language | Python 3.12 |
 | ML Framework | PyTorch ≥ 2.0 |
 | Federated Learning | Flower (flwr) ≥ 1.8 — FedYogi + FedProx |
-| Explainability | SHAP ≥ 0.44 |
+| Explainability | SHAP ≥ 0.44 (DeepExplainer) |
 | Data Processing | Pandas, NumPy |
 | NLP | scikit-learn TfidfVectorizer (90-term SOFA vocabulary) |
-| LLM Provider | Groq (openai/gpt-oss-120b) |
-| LLM Consistency | 3-component score (TF-IDF + interventions + conditions) |
-| Web Framework | Streamlit ≥ 1.35 |
-| Visualization | Plotly |
+| LLM Provider | Groq — main: openai/gpt-oss-120b (3500 tokens), judge: openai/gpt-oss-20b (300 tokens) |
+| LLM Cache | 90s in-process Python dict (care_mode|sofa|hr|spo2 key) |
+| Backend Framework | FastAPI ≥ 0.115 + uvicorn (port 8000) |
+| Frontend Framework | React 19 + Vite 8 (port 5174) |
+| Frontend UI | Framer Motion v14.5 + anime.js v4.5 + AOS v2 |
+| Frontend Charts | Recharts (vital trend line charts) |
+| Design System | "Modern Dark Cinema Mobile" glassmorphism, Figtree font, CSS tokens |
+| Database | SQLite via `models/icu_monitor.db` (~23 MB, gitignored) |
 | Dataset | MIMIC-III |
 | Data Access | Google BigQuery (mimic-project-2, Dataset) |
 | CV Monitor — Camera Capture | OpenCV ≥ 5.0 |
@@ -983,10 +1084,27 @@ pip install -r requirements.txt
 GROQ_API_KEY=gsk_...your_key_here...
 ```
 
-### Run the Streamlit App (main demo):
+### Run the ClinIQ Dashboard (main demo — 2 terminals):
+
+**Terminal 1 — FastAPI backend:**
 ```bash
-streamlit run app.py
-# Opens at http://localhost:8501
+cd /Users/sneh.patel/Desktop/capstone/icu_monitor
+uvicorn backend.main:app --reload --port 8000
+# API available at http://localhost:8000
+```
+
+**Terminal 2 — React frontend:**
+```bash
+cd /Users/sneh.patel/Desktop/capstone/icu_monitor/frontend
+npm run dev
+# Opens at http://localhost:5174
+```
+
+### Seed the database (first run only):
+```bash
+cd /Users/sneh.patel/Desktop/capstone/icu_monitor
+python migrate_to_db.py
+# Creates models/icu_monitor.db from fl_training CSVs
 ```
 
 ### Run the CV Monitor (standalone — stress score + GCS eye score from webcam):
@@ -995,12 +1113,6 @@ python cv_monitor.py         # built-in webcam
 python cv_monitor.py --cam 1 # USB webcam
 # First run downloads face_landmarker.task (~12 MB automatically)
 # Press Q or ESC to quit
-```
-
-### Run the FL Dashboard (standalone — federated learning simulation):
-```bash
-streamlit run fl_dashboard.py
-# Opens at http://localhost:8502
 ```
 
 ### Retrain the Federated Model (requires BigQuery access):
@@ -1173,4 +1285,4 @@ patient-identifiable information.
 ---
 
 *End of SKILL.md — Complete Project Context Document*
-*Last updated: September 2026*
+*Last updated: October 2026 — updated to reflect ClinIQ React+FastAPI system*

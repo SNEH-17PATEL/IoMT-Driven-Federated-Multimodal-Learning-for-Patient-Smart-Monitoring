@@ -19,6 +19,7 @@ Each FL round has 6 phases:
 """
 
 import os
+import json
 import time
 import threading
 import numpy as np
@@ -905,6 +906,31 @@ body {{ background: #0a1628; font-family: 'Segoe UI', Arial, sans-serif;
 </html>"""
 
 
+# ── Training metadata (saved by train_federated.py) ──────────────────────────
+
+def load_training_metadata() -> dict:
+    path = MODEL_PATH + "training_metadata.json"
+    if os.path.exists(path):
+        with open(path) as f:
+            return json.load(f)
+    return {
+        "num_rounds": 100, "epochs_per_round": 3, "batch_size": 64,
+        "hospitals": 3,
+        "hospital_names": ["General ICU", "Mixed ICU", "Cardiac/Trauma ICU"],
+        "aggregation": "FedYogi (η=0.01, β1=0.9, β2=0.99) + FedProx (μ=0.5)",
+        "split_type": "IID",
+        "train_samples": 12795, "test_samples": 2559,
+        "input_features": 108,
+        "model_architecture": "108 → 128 → 64 → 32 → 1  (ReLU, no Dropout, FedProx)",
+        "best_round": 18,
+        "final_mae": 1.8968, "final_r2": 0.5995,
+        "pred_range_min": -0.22, "pred_range_max": 14.38,
+        "differential_privacy": False,
+        "dp_sensitivity": None, "dp_sigma": None,
+        "dp_epsilon": None, "dp_delta": None,
+    }
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # MAIN UI
 # ═════════════════════════════════════════════════════════════════════════════
@@ -948,84 +974,88 @@ if _missing:
     st.stop()
 
 clients, input_dim = load_client_data()
+m = load_training_metadata()
 
-# ── Read shared state ─────────────────────────────────────────────────────────
-S          = _read_state()
-is_running = (S["status"] == "running")
+# ── Two-tab layout ────────────────────────────────────────────────────────────
+tab_sim, tab_info = st.tabs(["🔬 Simulation", "🔒 Model Info"])
 
-# ── Control panel ─────────────────────────────────────────────────────────────
-st.markdown(
-    '<div style="font-size:15px;font-weight:700;color:#7fb3c8;'
-    'border-left:4px solid #00d2ff;padding-left:12px;margin-bottom:10px;">'
-    '⚙️&nbsp; Simulation Controls</div>',
-    unsafe_allow_html=True,
-)
+with tab_sim:
+    # ── Read shared state ─────────────────────────────────────────────────────
+    S          = _read_state()
+    is_running = (S["status"] == "running")
 
-c1, c2, c3, c4 = st.columns([2, 2, 3, 3])
-with c1:
-    num_rounds_ui = st.slider(
-        "Rounds", 5, 15, 10, 1,
-        disabled=is_running, help="Number of FL rounds (5–15)",
+    # ── Control panel ─────────────────────────────────────────────────────────
+    st.markdown(
+        '<div style="font-size:15px;font-weight:700;color:#7fb3c8;'
+        'border-left:4px solid #00d2ff;padding-left:12px;margin-bottom:10px;">'
+        '⚙️&nbsp; Simulation Controls</div>',
+        unsafe_allow_html=True,
     )
-with c2:
-    speed_ui = st.slider(
-        "Speed (s / phase)", 0.5, 5.0, 1.5, 0.5,
-        disabled=is_running, help="Pause between phases — lower = faster",
-    )
-with c3:
-    algorithm_ui = st.selectbox(
-        "Aggregation Algorithm",
-        ["FedAvg", "FedYogi", "FedAvg + FedProx", "FedYogi + FedProx"],
-        index=3,
-        disabled=is_running,
-        help="FedYogi + FedProx = your actual train_federated.py setup",
-    )
-with c4:
-    st.markdown("<div style='height:4px;'></div>", unsafe_allow_html=True)
-    b1, b2, b3 = st.columns(3)
-    with b1:
-        start = st.button("▶ Start", type="primary",
-                          use_container_width=True, disabled=is_running)
-    with b2:
-        stop  = st.button("⏹ Stop", use_container_width=True, disabled=not is_running)
-    with b3:
-        reset = st.button("↺ Reset", use_container_width=True, disabled=is_running)
 
-# Algorithm indicator
-if algorithm_ui == "FedYogi + FedProx" and not is_running:
-    st.markdown("""
-    <div class="algo-banner">
-      ★ <b style="color:#00d2ff;">FedYogi + FedProx</b> — this is the exact algorithm
-      used in your <code>train_federated.py</code> run that achieved
-      <b style="color:#00d2ff;">R² = 0.3357</b>
-    </div>
-    """, unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns([2, 2, 3, 3])
+    with c1:
+        num_rounds_ui = st.slider(
+            "Rounds", 5, 15, 10, 1,
+            disabled=is_running, help="Number of FL rounds (5–15)",
+        )
+    with c2:
+        speed_ui = st.slider(
+            "Speed (s / phase)", 0.5, 5.0, 1.5, 0.5,
+            disabled=is_running, help="Pause between phases — lower = faster",
+        )
+    with c3:
+        algorithm_ui = st.selectbox(
+            "Aggregation Algorithm",
+            ["FedAvg", "FedYogi", "FedAvg + FedProx", "FedYogi + FedProx"],
+            index=3,
+            disabled=is_running,
+            help="FedYogi + FedProx = your actual train_federated.py setup",
+        )
+    with c4:
+        st.markdown("<div style='height:4px;'></div>", unsafe_allow_html=True)
+        b1, b2, b3 = st.columns(3)
+        with b1:
+            start = st.button("▶ Start", type="primary",
+                              use_container_width=True, disabled=is_running)
+        with b2:
+            stop  = st.button("⏹ Stop", use_container_width=True, disabled=not is_running)
+        with b3:
+            reset = st.button("↺ Reset", use_container_width=True, disabled=is_running)
 
-# ── Button handlers ────────────────────────────────────────────────────────────
-if start and not is_running:
-    _STOP.clear()
-    _reset_state(num_rounds_ui, algorithm_ui)
-    with _LOCK:
-        _STATE["status"] = "running"
-    threading.Thread(
-        target=fl_thread,
-        args=(num_rounds_ui, speed_ui, algorithm_ui, clients, input_dim),
-        daemon=True,
-    ).start()
-    st.rerun()
+    # Algorithm indicator
+    if algorithm_ui == "FedYogi + FedProx" and not is_running:
+        st.markdown(f"""
+        <div class="algo-banner">
+          ★ <b style="color:#00d2ff;">FedYogi + FedProx</b> — this is the exact algorithm
+          used in your <code>train_federated.py</code> run that achieved
+          <b style="color:#00d2ff;">R² = {m['final_r2']:.4f}</b>
+        </div>
+        """, unsafe_allow_html=True)
 
-if stop and is_running:
-    _STOP.set()
-    st.rerun()
+    # ── Button handlers ──────────────────────────────────────────────────────
+    if start and not is_running:
+        _STOP.clear()
+        _reset_state(num_rounds_ui, algorithm_ui)
+        with _LOCK:
+            _STATE["status"] = "running"
+        threading.Thread(
+            target=fl_thread,
+            args=(num_rounds_ui, speed_ui, algorithm_ui, clients, input_dim),
+            daemon=True,
+        ).start()
+        st.rerun()
 
-if reset and not is_running:
-    _reset_state(10, "FedYogi + FedProx")
-    st.rerun()
+    if stop and is_running:
+        _STOP.set()
+        st.rerun()
 
-# ── Idle state: show the "How it works" guide FIRST, above everything ─────────
-# (must appear before the hospital summary so it's visible without scrolling)
-if S["status"] == "idle":
-    st.markdown("""
+    if reset and not is_running:
+        _reset_state(10, "FedYogi + FedProx")
+        st.rerun()
+
+    # ── Idle state: "How it works" guide ────────────────────────────────────
+    if S["status"] == "idle":
+        st.markdown("""
 <div style="padding:16px 0 20px 0;">
   <div style="font-size:15px;font-weight:700;color:#e8f4ff;
               margin-bottom:14px;border-left:4px solid #00d2ff;padding-left:12px;">
@@ -1069,50 +1099,50 @@ if S["status"] == "idle":
     <span style="color:#7fb3c8;">— no BigQuery or internet connection required</span>
   </div>
 </div>
-    """, unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
 
-# ── Hospital dataset summary (always shown, always starts collapsed) ───────────
-with st.expander(
-    "🏥 Hospital Dataset Summary — click to expand",
-    expanded=False,
-):
-    st.markdown(
-        '<div style="font-size:12px;color:#a8c8d8;padding:4px 0 10px 0;">'
-        'Each hospital\'s private dataset used for local training. '
-        'Patient data <b style="color:#e8f4ff;">never</b> leaves the hospital '
-        '— only model weights are shared.</div>',
-        unsafe_allow_html=True,
-    )
-    dc0, dc1, dc2 = st.columns(3)
-    for col, cid in zip([dc0, dc1, dc2], range(3)):
-        c = clients[cid]
-        with col:
-            st.markdown(f"""
-            <div style="background:rgba({HOSP_RGBA[cid]},0.08);
-                        border:1.5px solid {HOSP_COLORS[cid]};
-                        border-radius:12px;padding:16px;">
-              <div style="font-size:13px;font-weight:800;color:{HOSP_COLORS[cid]};
-                          margin-bottom:10px;">
-                🏥 Hospital {cid} &nbsp;—&nbsp; {HOSP_NAMES[cid]}
-              </div>
-              <div style="display:grid;grid-template-columns:1fr auto;gap:5px 14px;
-                          font-size:12px;">
-                <span style="color:#a8c8d8;">Training samples</span>
-                <span style="color:#e8f4ff;font-weight:700;text-align:right;">{c['n_train']:,}</span>
-                <span style="color:#a8c8d8;">Total samples</span>
-                <span style="color:#e8f4ff;font-weight:700;text-align:right;">{c['n_total']:,}</span>
-                <span style="color:#a8c8d8;">SOFA range</span>
-                <span style="color:#e8f4ff;font-weight:700;text-align:right;">{c['sofa_min']:.1f} – {c['sofa_max']:.1f}</span>
-                <span style="color:#a8c8d8;">SOFA mean</span>
-                <span style="color:#e8f4ff;font-weight:700;text-align:right;">{c['sofa_mean']:.2f}</span>
-                <span style="color:#a8c8d8;">Features / sample</span>
-                <span style="color:#e8f4ff;font-weight:700;text-align:right;">{input_dim}</span>
-              </div>
-            </div>
-            """, unsafe_allow_html=True)
+    # ── Hospital dataset summary (always shown, always starts collapsed) ─────
+    with st.expander(
+        "🏥 Hospital Dataset Summary — click to expand",
+        expanded=False,
+    ):
+        st.markdown(
+            '<div style="font-size:12px;color:#a8c8d8;padding:4px 0 10px 0;">'
+            'Each hospital\'s private dataset used for local training. '
+            'Patient data <b style="color:#e8f4ff;">never</b> leaves the hospital '
+            '— only model weights are shared.</div>',
+            unsafe_allow_html=True,
+        )
+        dc0, dc1, dc2 = st.columns(3)
+        for col, cid in zip([dc0, dc1, dc2], range(3)):
+            cl = clients[cid]
+            with col:
+                st.markdown(f"""
+                <div style="background:rgba({HOSP_RGBA[cid]},0.08);
+                            border:1.5px solid {HOSP_COLORS[cid]};
+                            border-radius:12px;padding:16px;">
+                  <div style="font-size:13px;font-weight:800;color:{HOSP_COLORS[cid]};
+                              margin-bottom:10px;">
+                    🏥 Hospital {cid} &nbsp;—&nbsp; {HOSP_NAMES[cid]}
+                  </div>
+                  <div style="display:grid;grid-template-columns:1fr auto;gap:5px 14px;
+                              font-size:12px;">
+                    <span style="color:#a8c8d8;">Training samples</span>
+                    <span style="color:#e8f4ff;font-weight:700;text-align:right;">{cl['n_train']:,}</span>
+                    <span style="color:#a8c8d8;">Total samples</span>
+                    <span style="color:#e8f4ff;font-weight:700;text-align:right;">{cl['n_total']:,}</span>
+                    <span style="color:#a8c8d8;">SOFA range</span>
+                    <span style="color:#e8f4ff;font-weight:700;text-align:right;">{cl['sofa_min']:.1f} – {cl['sofa_max']:.1f}</span>
+                    <span style="color:#a8c8d8;">SOFA mean</span>
+                    <span style="color:#e8f4ff;font-weight:700;text-align:right;">{cl['sofa_mean']:.2f}</span>
+                    <span style="color:#a8c8d8;">Features / sample</span>
+                    <span style="color:#e8f4ff;font-weight:700;text-align:right;">{input_dim}</span>
+                  </div>
+                </div>
+                """, unsafe_allow_html=True)
 
-    with st.expander("ℹ️ Why do hospital weights differ after local training?"):
-        st.markdown("""
+        with st.expander("ℹ️ Why do hospital weights differ after local training?"):
+            st.markdown("""
 Each hospital trains on its own patient population — different case mixes, SOFA
 distributions, and clinical note vocabularies. These differences cause each
 hospital's model to **drift** from the global model, known as **client drift**.
@@ -1122,46 +1152,44 @@ hospital's model to **drift** from the global model, known as **client drift**.
 
 After aggregation, the global model blends all three hospitals' knowledge —
 without any patient records leaving their respective institutions.
-        """)
+            """)
 
-st.divider()
+    st.divider()
 
-# ═════════════════════════════════════════════════════════════════════════════
-# SIMULATION VIEW  (only shown when simulation is running / done / stopped)
-# ═════════════════════════════════════════════════════════════════════════════
+    # ═════════════════════════════════════════════════════════════════════════
+    # SIMULATION VIEW  (only shown when simulation is running / done / stopped)
+    # ═════════════════════════════════════════════════════════════════════════
 
-if S["status"] != "idle":
-    # ── Running badge ──────────────────────────────────────────────────────────
-    if is_running:
-        st.markdown(
-            '<div style="text-align:center;margin-bottom:12px;">'
-            '<span class="running-pill">● &nbsp;SIMULATION RUNNING</span>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+    if S["status"] != "idle":
+        # ── Running badge ──────────────────────────────────────────────────
+        if is_running:
+            st.markdown(
+                '<div style="text-align:center;margin-bottom:12px;">'
+                '<span class="running-pill">● &nbsp;SIMULATION RUNNING</span>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
 
-    # ── Row 1: Network diagram (left) + Live metrics (right) ───────────────
-    net_col, metric_col = st.columns([3, 2])
+        # ── Row 1: Network diagram (left) + Live metrics (right) ───────────
+        net_col, metric_col = st.columns([3, 2])
 
-    with net_col:
-        bl = S["best_loss"]
-        # Use components.html — renders in an iframe, bypassing Streamlit's
-        # Markdown processor that turns multi-line indented HTML into code blocks.
-        components.html(
-            _network_diagram(
-                S["current_phase"],
-                S["current_round"],
-                S["total_rounds"],
-                S["algorithm"],
-                S["client_metrics"],
-                S["best_round"],
-                bl if bl < 1e9 else 0.0,
-            ),
-            height=350,
-            scrolling=False,
-        )
-        with st.expander("ℹ️ How to read this diagram"):
-            st.markdown("""
+        with net_col:
+            bl = S["best_loss"]
+            components.html(
+                _network_diagram(
+                    S["current_phase"],
+                    S["current_round"],
+                    S["total_rounds"],
+                    S["algorithm"],
+                    S["client_metrics"],
+                    S["best_round"],
+                    bl if bl < 1e9 else 0.0,
+                ),
+                height=350,
+                scrolling=False,
+            )
+            with st.expander("ℹ️ How to read this diagram"):
+                st.markdown("""
 **Phase ① Distribute:** Animated dots flow **downward** — server sends the global
 model weights to every hospital.
 
@@ -1172,108 +1200,108 @@ locally on its private patient data for 3 epochs. No data leaves the hospital.
 updated weights back to the server, which blends them using the selected algorithm.
 
 **Phase ⑥ Complete:** The best round is tracked. A new round then begins.
-            """)
+                """)
 
-    with metric_col:
-        rnd   = S["current_round"]
-        total = S["total_rounds"]
-        pct   = rnd / total if total > 0 else 0.0
-        sc    = {"running":"#00d2ff","done":"#ffd700",
-                 "stopped":"#ff9800","error":"#f44336"}.get(S["status"],"#7fb3c8")
-        bl    = S["best_loss"]
-        bl_d  = f"{bl:.3f}" if bl < 1e9 else "—"
-        br    = S["best_round"]
+        with metric_col:
+            rnd   = S["current_round"]
+            total = S["total_rounds"]
+            pct   = rnd / total if total > 0 else 0.0
+            sc    = {"running":"#00d2ff","done":"#ffd700",
+                     "stopped":"#ff9800","error":"#f44336"}.get(S["status"],"#7fb3c8")
+            bl    = S["best_loss"]
+            bl_d  = f"{bl:.3f}" if bl < 1e9 else "—"
+            br    = S["best_round"]
 
-        st.markdown(f"""
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
-          <div class="metric-tile">
-            <div style="font-size:9px;color:#7fb3c8;text-transform:uppercase;letter-spacing:0.8px;">Round</div>
-            <div style="font-size:34px;font-weight:900;color:#00d2ff;line-height:1.1;margin-top:4px;">
-              {rnd}<span style="font-size:15px;color:#3a5a70;">/{total}</span>
+            st.markdown(f"""
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px;">
+              <div class="metric-tile">
+                <div style="font-size:9px;color:#7fb3c8;text-transform:uppercase;letter-spacing:0.8px;">Round</div>
+                <div style="font-size:34px;font-weight:900;color:#00d2ff;line-height:1.1;margin-top:4px;">
+                  {rnd}<span style="font-size:15px;color:#3a5a70;">/{total}</span>
+                </div>
+              </div>
+              <div class="metric-tile">
+                <div style="font-size:9px;color:#7fb3c8;text-transform:uppercase;letter-spacing:0.8px;">Status</div>
+                <div style="font-size:14px;font-weight:800;color:{sc};margin-top:8px;">{S['status'].upper()}</div>
+              </div>
+              <div class="metric-tile">
+                <div style="font-size:9px;color:#7fb3c8;text-transform:uppercase;letter-spacing:0.8px;">Best Round</div>
+                <div style="font-size:34px;font-weight:900;color:#00c853;line-height:1.1;margin-top:4px;">
+                  {br if br > 0 else "—"}
+                </div>
+              </div>
+              <div class="metric-tile">
+                <div style="font-size:9px;color:#7fb3c8;text-transform:uppercase;letter-spacing:0.8px;">Best Loss</div>
+                <div style="font-size:26px;font-weight:900;color:#ffd700;line-height:1.1;margin-top:6px;">
+                  {bl_d}
+                </div>
+              </div>
             </div>
-          </div>
-          <div class="metric-tile">
-            <div style="font-size:9px;color:#7fb3c8;text-transform:uppercase;letter-spacing:0.8px;">Status</div>
-            <div style="font-size:14px;font-weight:800;color:{sc};margin-top:8px;">{S['status'].upper()}</div>
-          </div>
-          <div class="metric-tile">
-            <div style="font-size:9px;color:#7fb3c8;text-transform:uppercase;letter-spacing:0.8px;">Best Round</div>
-            <div style="font-size:34px;font-weight:900;color:#00c853;line-height:1.1;margin-top:4px;">
-              {br if br > 0 else "—"}
-            </div>
-          </div>
-          <div class="metric-tile">
-            <div style="font-size:9px;color:#7fb3c8;text-transform:uppercase;letter-spacing:0.8px;">Best Loss</div>
-            <div style="font-size:26px;font-weight:900;color:#ffd700;line-height:1.1;margin-top:6px;">
-              {bl_d}
-            </div>
-          </div>
-        </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
 
-        st.progress(pct, text=f"Round {rnd} / {total}  —  {int(pct*100)}% complete")
+            st.progress(pct, text=f"Round {rnd} / {total}  —  {int(pct*100)}% complete")
 
-        fig_train = _training_chart(
-            S["client_mae_history"],
-            S["global_mae_history"],
-            S["global_r2_history"],
-        )
-        if fig_train:
-            st.plotly_chart(fig_train, use_container_width=True)
-        else:
+            fig_train = _training_chart(
+                S["client_mae_history"],
+                S["global_mae_history"],
+                S["global_r2_history"],
+            )
+            if fig_train:
+                st.plotly_chart(fig_train, use_container_width=True)
+            else:
+                st.markdown(
+                    '<div style="height:220px;display:flex;align-items:center;'
+                    'justify-content:center;color:#2a4a5a;font-size:12px;'
+                    'background:rgba(10,22,40,0.6);border-radius:10px;'
+                    'border:1px solid #1e3a50;">MAE &amp; R² curves appear after Round 1</div>',
+                    unsafe_allow_html=True,
+                )
+
+        st.divider()
+
+        # ── Row 2: Weight statistics ───────────────────────────────────────
+        if S["weight_stats"]:
+            latest = S["weight_stats"][-1]
             st.markdown(
-                '<div style="height:220px;display:flex;align-items:center;'
-                'justify-content:center;color:#2a4a5a;font-size:12px;'
-                'background:rgba(10,22,40,0.6);border-radius:10px;'
-                'border:1px solid #1e3a50;">MAE &amp; R² curves appear after Round 1</div>',
+                f'<div style="font-size:16px;font-weight:800;color:#e8f4ff;margin:0 0 12px 0;'
+                f'border-left:3px solid #7fb3c8;padding-left:10px;">'
+                f'🔢 Weight Statistics — Round {S["current_round"]}</div>',
                 unsafe_allow_html=True,
             )
+            wc0, wc1, wc2 = st.columns(3)
+            for col, cid, stats in zip([wc0, wc1, wc2], range(3), latest):
+                cm  = S["client_metrics"][cid]
+                mae = cm.get("mae", "—")
+                r2  = cm.get("r2",  "—")
+                with col:
+                    st.markdown(f"""
+                    <div style="background:rgba({HOSP_RGBA[cid]},0.07);
+                                border:1.5px solid {HOSP_COLORS[cid]};
+                                border-radius:12px;padding:16px;">
+                      <div style="font-size:12px;font-weight:800;color:{HOSP_COLORS[cid]};
+                                  margin-bottom:10px;">
+                        🏥 Hospital {cid} — {HOSP_NAMES[cid]}
+                      </div>
+                      <div style="display:grid;grid-template-columns:1fr auto;
+                                  gap:6px 14px;font-size:12px;">
+                        <span style="color:#a8c8d8;">Parameters</span>
+                        <span style="color:#e8f4ff;font-weight:700;text-align:right;">{stats['n_params']:,}</span>
+                        <span style="color:#a8c8d8;">Weight mean</span>
+                        <span style="color:#e8f4ff;font-weight:700;text-align:right;">{stats['mean']:.5f}</span>
+                        <span style="color:#a8c8d8;">Weight std</span>
+                        <span style="color:#e8f4ff;font-weight:700;text-align:right;">{stats['std']:.5f}</span>
+                        <span style="color:#a8c8d8;">Δ from global</span>
+                        <span style="color:{HOSP_COLORS[cid]};font-weight:800;text-align:right;">{stats['delta_mean']:.5f}</span>
+                        <span style="color:#a8c8d8;">Local MAE</span>
+                        <span style="color:#e8f4ff;font-weight:700;text-align:right;">{mae}</span>
+                        <span style="color:#a8c8d8;">Local R²</span>
+                        <span style="color:#e8f4ff;font-weight:700;text-align:right;">{r2}</span>
+                      </div>
+                    </div>
+                    """, unsafe_allow_html=True)
 
-    st.divider()
-
-    # ── Row 2: Weight statistics ───────────────────────────────────────────
-    if S["weight_stats"]:
-        latest = S["weight_stats"][-1]
-        st.markdown(
-            f'<div style="font-size:16px;font-weight:800;color:#e8f4ff;margin:0 0 12px 0;'
-            f'border-left:3px solid #7fb3c8;padding-left:10px;">'
-            f'🔢 Weight Statistics — Round {S["current_round"]}</div>',
-            unsafe_allow_html=True,
-        )
-        wc0, wc1, wc2 = st.columns(3)
-        for col, cid, stats in zip([wc0, wc1, wc2], range(3), latest):
-            m   = S["client_metrics"][cid]
-            mae = m.get("mae", "—")
-            r2  = m.get("r2",  "—")
-            with col:
-                st.markdown(f"""
-                <div style="background:rgba({HOSP_RGBA[cid]},0.07);
-                            border:1.5px solid {HOSP_COLORS[cid]};
-                            border-radius:12px;padding:16px;">
-                  <div style="font-size:12px;font-weight:800;color:{HOSP_COLORS[cid]};
-                              margin-bottom:10px;">
-                    🏥 Hospital {cid} — {HOSP_NAMES[cid]}
-                  </div>
-                  <div style="display:grid;grid-template-columns:1fr auto;
-                              gap:6px 14px;font-size:12px;">
-                    <span style="color:#a8c8d8;">Parameters</span>
-                    <span style="color:#e8f4ff;font-weight:700;text-align:right;">{stats['n_params']:,}</span>
-                    <span style="color:#a8c8d8;">Weight mean</span>
-                    <span style="color:#e8f4ff;font-weight:700;text-align:right;">{stats['mean']:.5f}</span>
-                    <span style="color:#a8c8d8;">Weight std</span>
-                    <span style="color:#e8f4ff;font-weight:700;text-align:right;">{stats['std']:.5f}</span>
-                    <span style="color:#a8c8d8;">Δ from global</span>
-                    <span style="color:{HOSP_COLORS[cid]};font-weight:800;text-align:right;">{stats['delta_mean']:.5f}</span>
-                    <span style="color:#a8c8d8;">Local MAE</span>
-                    <span style="color:#e8f4ff;font-weight:700;text-align:right;">{mae}</span>
-                    <span style="color:#a8c8d8;">Local R²</span>
-                    <span style="color:#e8f4ff;font-weight:700;text-align:right;">{r2}</span>
-                  </div>
-                </div>
-                """, unsafe_allow_html=True)
-
-        with st.expander("ℹ️ What does Δ from global mean?"):
-            st.markdown("""
+            with st.expander("ℹ️ What does Δ from global mean?"):
+                st.markdown("""
 **Δ from global** = mean absolute difference between this hospital's local weight
 values and the current global model's weight values.
 
@@ -1283,34 +1311,34 @@ drift, keeping Δ values smaller across all clients.
 
 After aggregation the global model is broadcast back to all hospitals,
 resetting Δ toward zero before the next round of local training.
-            """)
+                """)
 
-        st.divider()
+            st.divider()
 
-    # ── Row 3: Histogram + Heatmap ─────────────────────────────────────────
-    hc, vc = st.columns(2)
+        # ── Row 3: Histogram + Heatmap ─────────────────────────────────────
+        hc, vc = st.columns(2)
 
-    with hc:
-        st.markdown(
-            '<div style="font-size:16px;font-weight:800;color:#e8f4ff;margin:0 0 10px 0;'
-            'border-left:3px solid #7fb3c8;padding-left:10px;">'
-            '📊 Weight Distribution — Before vs After Aggregation</div>',
-            unsafe_allow_html=True,
-        )
-        fig_hist = _hist_chart(S["pre_agg_flat"], S["post_agg_flat"], S["current_round"])
-        if fig_hist:
-            st.plotly_chart(fig_hist, use_container_width=True)
-        else:
+        with hc:
             st.markdown(
-                '<div style="height:220px;display:flex;align-items:center;'
-                'justify-content:center;color:#2a4a5a;font-size:12px;'
-                'background:rgba(10,22,40,0.6);border-radius:10px;'
-                'border:1px solid #1e3a50;">'
-                'Histogram appears after Round 1 aggregation</div>',
+                '<div style="font-size:16px;font-weight:800;color:#e8f4ff;margin:0 0 10px 0;'
+                'border-left:3px solid #7fb3c8;padding-left:10px;">'
+                '📊 Weight Distribution — Before vs After Aggregation</div>',
                 unsafe_allow_html=True,
             )
-        with st.expander("ℹ️ What does this histogram show?"):
-            st.markdown("""
+            fig_hist = _hist_chart(S["pre_agg_flat"], S["post_agg_flat"], S["current_round"])
+            if fig_hist:
+                st.plotly_chart(fig_hist, use_container_width=True)
+            else:
+                st.markdown(
+                    '<div style="height:220px;display:flex;align-items:center;'
+                    'justify-content:center;color:#2a4a5a;font-size:12px;'
+                    'background:rgba(10,22,40,0.6);border-radius:10px;'
+                    'border:1px solid #1e3a50;">'
+                    'Histogram appears after Round 1 aggregation</div>',
+                    unsafe_allow_html=True,
+                )
+            with st.expander("ℹ️ What does this histogram show?"):
+                st.markdown("""
 **🟦 Cyan (blue outline bars)** = global weight distribution **BEFORE** this round's aggregation
 
 **🟧 Orange/gold bars** = global weight distribution **AFTER** aggregation
@@ -1318,29 +1346,29 @@ resetting Δ toward zero before the next round of local training.
 Aggregation blends all three hospitals' weight distributions into a consensus.
 Over many rounds the distribution **narrows and stabilises** — the model is converging.
 A wide or shifting distribution may indicate client drift or an overly high learning rate.
-            """)
+                """)
 
-    with vc:
-        st.markdown(
-            '<div style="font-size:16px;font-weight:800;color:#e8f4ff;margin:0 0 10px 0;'
-            'border-left:3px solid #7fb3c8;padding-left:10px;">'
-            '🔥 Layer 1 Weight Heatmap (108 → 128)</div>',
-            unsafe_allow_html=True,
-        )
-        fig_heat = _heatmap_chart(S["layer1_weights"])
-        if fig_heat:
-            st.plotly_chart(fig_heat, use_container_width=True)
-        else:
+        with vc:
             st.markdown(
-                '<div style="height:220px;display:flex;align-items:center;'
-                'justify-content:center;color:#2a4a5a;font-size:12px;'
-                'background:rgba(10,22,40,0.6);border-radius:10px;'
-                'border:1px solid #1e3a50;">'
-                'Heatmap appears after Round 1 completes</div>',
+                '<div style="font-size:16px;font-weight:800;color:#e8f4ff;margin:0 0 10px 0;'
+                'border-left:3px solid #7fb3c8;padding-left:10px;">'
+                '🔥 Layer 1 Weight Heatmap (108 → 128)</div>',
                 unsafe_allow_html=True,
             )
-        with st.expander("ℹ️ What does this heatmap show?"):
-            st.markdown("""
+            fig_heat = _heatmap_chart(S["layer1_weights"])
+            if fig_heat:
+                st.plotly_chart(fig_heat, use_container_width=True)
+            else:
+                st.markdown(
+                    '<div style="height:220px;display:flex;align-items:center;'
+                    'justify-content:center;color:#2a4a5a;font-size:12px;'
+                    'background:rgba(10,22,40,0.6);border-radius:10px;'
+                    'border:1px solid #1e3a50;">'
+                    'Heatmap appears after Round 1 completes</div>',
+                    unsafe_allow_html=True,
+                )
+            with st.expander("ℹ️ What does this heatmap show?"):
+                st.markdown("""
 Each cell = one weight connecting an **input feature** (row) to a **hidden neuron**
 (column) in Layer 1 (108 inputs → 128 neurons).
 
@@ -1350,48 +1378,47 @@ Each cell = one weight connecting an **input feature** (row) to a **hidden neuro
 
 As FL progresses, **clusters of red/blue emerge** — neurons specialise to respond
 to specific clinical features (low SpO₂, high RR, certain TF-IDF terms).
-            """)
+                """)
 
-    st.divider()
+        st.divider()
 
-    # ── Round history table — custom dark HTML (replaces white st.dataframe) ──
-    if S["round_log"]:
-        n_done = len(S["round_log"])
-        st.markdown(
-            f'<div style="font-size:16px;font-weight:800;color:#e8f4ff;margin:0 0 10px 0;'
-            f'border-left:3px solid #7fb3c8;padding-left:10px;">'
-            f'📋 Round History — {n_done} round(s) completed</div>',
-            unsafe_allow_html=True,
-        )
-
-        # Build rows HTML
-        rows_html = ""
-        for entry in S["round_log"]:
-            is_best   = entry.get("Best") == "✓ Best"
-            row_bg    = "rgba(0,200,83,0.10)" if is_best else "rgba(10,22,40,0.7)"
-            best_cell = (
-                '<td style="text-align:center;color:#00e676;font-weight:800;'
-                'letter-spacing:0.3px;">✓ Best</td>'
-                if is_best else
-                '<td style="text-align:center;color:#2a4a5a;">—</td>'
-            )
-            rows_html += (
-                f'<tr style="background:{row_bg};border-bottom:1px solid #1a3050;">'
-                f'<td style="color:#00c853;font-weight:800;padding:10px 16px;">'
-                f'{int(entry["Round"])}</td>'
-                f'<td style="color:#4caf50;padding:10px 16px;text-align:right;">'
-                f'{entry["H0 Loss"]:.4f}</td>'
-                f'<td style="color:#f0a500;padding:10px 16px;text-align:right;">'
-                f'{entry["H1 Loss"]:.4f}</td>'
-                f'<td style="color:#ef5350;padding:10px 16px;text-align:right;">'
-                f'{entry["H2 Loss"]:.4f}</td>'
-                f'<td style="color:#00d2ff;font-weight:700;padding:10px 16px;text-align:right;">'
-                f'{entry["Global"]:.4f}</td>'
-                f'{best_cell}'
-                f'</tr>'
+        # ── Round history table ────────────────────────────────────────────
+        if S["round_log"]:
+            n_done = len(S["round_log"])
+            st.markdown(
+                f'<div style="font-size:16px;font-weight:800;color:#e8f4ff;margin:0 0 10px 0;'
+                f'border-left:3px solid #7fb3c8;padding-left:10px;">'
+                f'📋 Round History — {n_done} round(s) completed</div>',
+                unsafe_allow_html=True,
             )
 
-        st.markdown(f"""
+            rows_html = ""
+            for entry in S["round_log"]:
+                is_best   = entry.get("Best") == "✓ Best"
+                row_bg    = "rgba(0,200,83,0.10)" if is_best else "rgba(10,22,40,0.7)"
+                best_cell = (
+                    '<td style="text-align:center;color:#00e676;font-weight:800;'
+                    'letter-spacing:0.3px;">✓ Best</td>'
+                    if is_best else
+                    '<td style="text-align:center;color:#2a4a5a;">—</td>'
+                )
+                rows_html += (
+                    f'<tr style="background:{row_bg};border-bottom:1px solid #1a3050;">'
+                    f'<td style="color:#00c853;font-weight:800;padding:10px 16px;">'
+                    f'{int(entry["Round"])}</td>'
+                    f'<td style="color:#4caf50;padding:10px 16px;text-align:right;">'
+                    f'{entry["H0 Loss"]:.4f}</td>'
+                    f'<td style="color:#f0a500;padding:10px 16px;text-align:right;">'
+                    f'{entry["H1 Loss"]:.4f}</td>'
+                    f'<td style="color:#ef5350;padding:10px 16px;text-align:right;">'
+                    f'{entry["H2 Loss"]:.4f}</td>'
+                    f'<td style="color:#00d2ff;font-weight:700;padding:10px 16px;text-align:right;">'
+                    f'{entry["Global"]:.4f}</td>'
+                    f'{best_cell}'
+                    f'</tr>'
+                )
+
+            st.markdown(f"""
 <div style="border:1.5px solid #1e3a50;border-radius:12px;overflow:hidden;
             background:rgba(8,16,32,0.9);">
   <table style="width:100%;border-collapse:collapse;font-size:13px;font-family:'Segoe UI',sans-serif;">
@@ -1409,28 +1436,25 @@ to specific clinical features (low SpO₂, high RR, certain TF-IDF terms).
     <tbody>{rows_html}</tbody>
   </table>
 </div>
-        """, unsafe_allow_html=True)
+            """, unsafe_allow_html=True)
 
-        st.markdown(
-            '<div style="font-size:11px;color:#4a7a8a;padding:8px 2px 0 2px;">'
-            '✓ Best = lowest global loss achieved so far &nbsp;·&nbsp; '
-            'H0/H1/H2 = per-hospital validation loss &nbsp;·&nbsp; '
-            'Global = weighted average &nbsp;·&nbsp; Updates live during simulation.</div>',
-            unsafe_allow_html=True,
-        )
+            st.markdown(
+                '<div style="font-size:11px;color:#4a7a8a;padding:8px 2px 0 2px;">'
+                '✓ Best = lowest global loss achieved so far &nbsp;·&nbsp; '
+                'H0/H1/H2 = per-hospital validation loss &nbsp;·&nbsp; '
+                'Global = weighted average &nbsp;·&nbsp; Updates live during simulation.</div>',
+                unsafe_allow_html=True,
+            )
 
-# ── Completion summary card ────────────────────────────────────────────────────
-if S["status"] == "done":
-    br  = S["best_round"]
-    bl  = S["best_loss"]
-    gm  = S["global_mae_history"]
-    gr  = S["global_r2_history"]
-    final_mae = f"{gm[-1]:.4f}" if gm else "—"
-    final_r2  = f"{gr[-1]:.4f}" if gr else "—"
-    best_mae  = f"{min(gm):.4f}" if gm else "—"
-    best_r2   = f"{max(gr):.4f}" if gr else "—"
-    # Use components.html — multi-line indented HTML in st.markdown renders as code blocks
-    _summary_html = f"""<!DOCTYPE html>
+    # ── Completion summary card ──────────────────────────────────────────────
+    if S["status"] == "done":
+        br  = S["best_round"]
+        bl  = S["best_loss"]
+        gm  = S["global_mae_history"]
+        gr  = S["global_r2_history"]
+        best_mae = f"{min(gm):.4f}" if gm else "—"
+        best_r2  = f"{max(gr):.4f}" if gr else "—"
+        _summary_html = f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <style>
 * {{ box-sizing:border-box; margin:0; padding:0; }}
@@ -1471,9 +1495,242 @@ html,body {{ background:#0a1628; padding:8px; font-family:'Segoe UI',Arial,sans-
   </div>
 </div>
 </body></html>"""
-    components.html(_summary_html, height=255, scrolling=False)
+        components.html(_summary_html, height=255, scrolling=False)
 
-# ── Auto-refresh while simulation is running ──────────────────────────────────
-if is_running:
-    time.sleep(1)
-    st.rerun()
+    # ── Auto-refresh while simulation is running ─────────────────────────────
+    if is_running:
+        time.sleep(1)
+        st.rerun()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# MODEL INFO TAB
+# ═════════════════════════════════════════════════════════════════════════════
+
+with tab_info:
+
+    # ── Training Configuration (8 static stat tiles) ─────────────────────────
+    st.markdown(
+        "<div style='font-size:18px;font-weight:800;color:#e8f4ff;margin-bottom:12px;"
+        "border-left:3px solid #00d2ff;padding-left:10px;'>⚙️ Training Configuration</div>",
+        unsafe_allow_html=True,
+    )
+
+    _cfg_tiles = [
+        ("FL Rounds",        str(m["num_rounds"]),        "#00d2ff","#1565c0","rounds of federation"),
+        ("Hospitals",        str(m["hospitals"]),          "#b39ddb","#4527a0","ICU sites"),
+        ("Epochs / Round",   str(m["epochs_per_round"]),  "#4caf50","#1b5e20","local training epochs"),
+        ("Aggregation",      m["aggregation"],             "#f0a500","#7a4f00","weight averaging method"),
+        ("Training Samples", f"{m['train_samples']:,}",   "#26c6da","#00607a","real ICU patients"),
+        ("Test Samples",     f"{m['test_samples']:,}",    "#81c784","#2e6b30","held-out patients"),
+        ("Best Round",       str(m["best_round"]),         "#ffd700","#7a6000","lowest eval loss"),
+        ("Split Type",       m["split_type"],              "#9575cd","#3d1a8a","data distribution"),
+    ]
+
+    _t1, _t2, _t3, _t4 = st.columns(4)
+    _t5, _t6, _t7, _t8 = st.columns(4)
+    for _cols, _tiles in [([_t1,_t2,_t3,_t4], _cfg_tiles[:4]),
+                           ([_t5,_t6,_t7,_t8], _cfg_tiles[4:])]:
+        for _col, (_lbl, _val, _tc, _brd, _sub) in zip(_cols, _tiles):
+            with _col:
+                st.markdown(f"""
+                <div style="background:rgba(8,20,42,0.85);border:1px solid {_brd};
+                            border-top:3px solid {_tc};border-radius:10px;
+                            padding:14px 12px;text-align:center;margin-bottom:8px;">
+                    <div style="font-size:9px;font-weight:700;color:#7fb3c8;text-transform:uppercase;
+                                letter-spacing:0.6px;">{_lbl}</div>
+                    <div style="font-size:26px;font-weight:900;color:{_tc};line-height:1.1;
+                                margin:4px 0;">{_val}</div>
+                    <div style="font-size:9px;color:#4a7a8a;">{_sub}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+    st.divider()
+
+    # ── Global Model Performance (4 static stat tiles) ────────────────────────
+    st.markdown(
+        "<div style='font-size:18px;font-weight:800;color:#e8f4ff;margin-bottom:12px;"
+        "border-left:3px solid #00d2ff;padding-left:10px;'>📊 Global Model Performance</div>",
+        unsafe_allow_html=True,
+    )
+
+    _perf_tiles = [
+        ("Mean Abs. Error",  f"{m['final_mae']:.3f}", "SOFA points", "#00d2ff","#1565c0",
+         "Average prediction error on held-out ICU patients"),
+        ("R² Score",         f"{m['final_r2']:.3f}",  "variance",    "#4caf50","#1b5e20",
+         "Proportion of variance explained by the model"),
+        ("Pred Range Min",   f"{m['pred_range_min']:.1f}", "SOFA",   "#26c6da","#00607a",
+         "Lowest predicted SOFA across test set"),
+        ("Pred Range Max",   f"{m['pred_range_max']:.1f}", "SOFA",   "#f0a500","#7a4f00",
+         "Highest predicted SOFA across test set"),
+    ]
+
+    _p1, _p2, _p3, _p4 = st.columns(4)
+    for _col, (_lbl, _val, _unit, _tc, _brd, _desc) in zip([_p1,_p2,_p3,_p4], _perf_tiles):
+        with _col:
+            st.markdown(f"""
+            <div style="background:rgba(8,20,42,0.85);border:1px solid {_brd};
+                        border-top:3px solid {_tc};border-radius:12px;
+                        padding:18px 12px;text-align:center;">
+                <div style="font-size:9px;font-weight:700;color:#7fb3c8;text-transform:uppercase;
+                            letter-spacing:0.7px;margin-bottom:4px;">{_lbl}</div>
+                <div style="font-size:34px;font-weight:900;color:{_tc};line-height:1;">{_val}</div>
+                <div style="font-size:10px;color:#7fb3c8;">{_unit}</div>
+                <div style="font-size:9px;color:#4a7a8a;margin-top:6px;line-height:1.4;">{_desc}</div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    st.divider()
+
+    # ── Model Architecture (PyTorch DNN) ──────────────────────────────────────
+    st.markdown(
+        "<div style='font-size:18px;font-weight:800;color:#e8f4ff;margin-bottom:12px;"
+        "border-left:3px solid #00d2ff;padding-left:10px;'>🧠 Model Architecture (PyTorch DNN)</div>",
+        unsafe_allow_html=True,
+    )
+
+    _layers = [
+        ("INPUT",  "108 features", "18 vitals (trends + latest + GCS) + 90 SOFA-vocab TF-IDF", "#64b5f6","rgba(21,101,192,0.2)"),
+        ("Linear", "108 → 128",   "Fully connected · ReLU activation",                         "#5fda80","rgba(46,125,50,0.2)"),
+        ("Linear", "128 →  64",   "Fully connected · ReLU activation",                         "#5fda80","rgba(46,125,50,0.2)"),
+        ("Linear", " 64 →  32",   "Fully connected · ReLU activation",                         "#5fda80","rgba(46,125,50,0.2)"),
+        ("Linear", " 32 →   1",   "Output layer · No activation (regression)",                 "#ce93d8","rgba(106,27,154,0.2)"),
+        ("OUTPUT", "SOFA (0–24)", "Predicted SOFA score · clip(0, 24)",                        "#ff8a65","rgba(230,81,0,0.2)"),
+    ]
+
+    _arch_html = ""
+    for _i, (_ltype, _ldim, _ldesc, _tc, _bg) in enumerate(_layers):
+        _arrow = "<div style='text-align:center;font-size:18px;color:#4a6a8a;margin:2px 0;'>↓</div>" if _i < len(_layers)-1 else ""
+        _arch_html += f"""
+        <div style="background:{_bg};border:1.5px solid {_tc};border-radius:8px;
+                    padding:10px 16px;display:flex;align-items:center;gap:12px;">
+            <div style="background:{_tc};color:#0a1628;border-radius:5px;padding:3px 8px;
+                        font-size:10px;font-weight:800;letter-spacing:0.5px;
+                        white-space:nowrap;">{_ltype}</div>
+            <div style="font-size:14px;font-weight:700;color:{_tc};min-width:80px;">{_ldim}</div>
+            <div style="font-size:11px;color:#9ab8cc;">{_ldesc}</div>
+        </div>{_arrow}"""
+
+    _la, _lb = st.columns([3, 2])
+    with _la:
+        st.markdown(_arch_html, unsafe_allow_html=True)
+    with _lb:
+        st.markdown(f"""
+        <div style="background:rgba(14,28,48,0.95);border:1.5px solid #1e3a50;border-radius:12px;
+                    padding:16px;font-size:12px;color:#c8dced;line-height:1.8;height:100%;">
+            <div style="font-size:13px;font-weight:700;color:#b8d0e0;margin-bottom:8px;">
+                🔧 Training Details
+            </div>
+            <b style="color:#7fb3c8;">Optimizer:</b> AdamW (weight_decay=1e-4)<br>
+            <b style="color:#7fb3c8;">Loss:</b> Weighted MSE — high-SOFA patients get up to 4.7× gradient weight<br>
+            <b style="color:#7fb3c8;">No Dropout</b> — causes FL divergence; regularised by AdamW instead<br>
+            <b style="color:#7fb3c8;">Parameters:</b> ~23,000 total trainable weights<br>
+            <b style="color:#7fb3c8;">FL Framework:</b> Flower (flwr) · FedYogi + FedProx<br>
+            <b style="color:#7fb3c8;">Best round:</b> {m['best_round']} of {m['num_rounds']}
+        </div>
+        """, unsafe_allow_html=True)
+
+    st.divider()
+
+    # ── Differential Privacy ──────────────────────────────────────────────────
+    st.markdown(
+        "<div style='font-size:18px;font-weight:800;color:#e8f4ff;margin-bottom:12px;"
+        "border-left:3px solid #00d2ff;padding-left:10px;'>🔐 Differential Privacy</div>",
+        unsafe_allow_html=True,
+    )
+
+    if m.get("differential_privacy"):
+        st.markdown(f"""
+        <div style="background:rgba(46,125,50,0.15);border:2px solid #4caf50;
+                    border-left:6px solid #2e7d32;border-radius:0 12px 12px 0;padding:16px 20px;">
+            <div style="font-size:14px;font-weight:800;color:#5fda80;margin-bottom:8px;">
+                ✅ Differential Privacy ENABLED
+            </div>
+            <div style="display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:#c8dced;">
+                <span><b style="color:#7fb3c8;">σ (noise multiplier):</b> {m['dp_sigma']}</span>
+                <span><b style="color:#7fb3c8;">S (sensitivity):</b> {m['dp_sensitivity']}</span>
+                <span><b style="color:#7fb3c8;">ε (privacy budget):</b> ≈{m['dp_epsilon']}</span>
+                <span><b style="color:#7fb3c8;">δ:</b> {m['dp_delta']}</span>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    else:
+        _dp_steps = [
+            ("①", "Compute update", "local_weights − global_weights", "#64b5f6"),
+            ("②", "Clip L2 norm",   "Bounds any patient's max influence (sensitivity S)", "#ff8a65"),
+            ("③", "Add noise",      "Gaussian N(0, (σ·S)²) to every weight parameter", "#ce93d8"),
+            ("④", "Transmit",       "Server receives noisy update — cannot trace individuals", "#5fda80"),
+        ]
+        st.markdown("""
+        <div style="background:rgba(240,165,0,0.12);border:1.5px solid #f0a500;
+                    border-left:5px solid #f0a500;border-radius:0 12px 12px 0;
+                    padding:14px 18px;margin-bottom:12px;">
+            <div style="font-size:13px;font-weight:700;color:#ffc93c;">
+                ⚙️ Differential Privacy: Disabled in current build
+            </div>
+            <div style="font-size:11px;color:#b8d0e0;margin-top:4px;">
+                Model trained with plain FedAvg (no noise). Enable: set
+                <code style="background:rgba(0,0,0,0.4);padding:1px 5px;border-radius:3px;">USE_DP = True</code>
+                in train_federated.py and retrain.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        _dp_html = '<div style="display:flex;flex-direction:column;gap:8px;">'
+        for _step, _title, _desc, _tc in _dp_steps:
+            _dp_html += (
+                f"<div style='display:flex;align-items:flex-start;gap:12px;"
+                f"background:rgba(8,16,32,0.95);border:1px solid #1e3a50;"
+                f"border-radius:8px;padding:10px 14px;'>"
+                f"<div style='background:{_tc};color:#0a1628;border-radius:50%;width:24px;height:24px;"
+                f"display:flex;align-items:center;justify-content:center;font-size:11px;"
+                f"font-weight:800;flex-shrink:0;'>{_step}</div>"
+                f"<div><div style='font-size:12px;font-weight:700;color:{_tc};'>{_title}</div>"
+                f"<div style='font-size:11px;color:#8ab8cc;margin-top:2px;'>{_desc}</div></div>"
+                f"</div>"
+            )
+        _dp_html += "</div>"
+        st.markdown(
+            "<div style='font-size:12px;font-weight:700;color:#b8d0e0;margin-bottom:8px;'>What DP would add:</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(_dp_html, unsafe_allow_html=True)
+
+    st.divider()
+
+    # ── Feature Vector Breakdown ──────────────────────────────────────────────
+    st.markdown(
+        "<div style='font-size:18px;font-weight:800;color:#e8f4ff;margin-bottom:12px;"
+        "border-left:3px solid #00d2ff;padding-left:10px;'>🔢 Feature Vector Breakdown — 108 total</div>",
+        unsafe_allow_html=True,
+    )
+
+    _feat_rows = [
+        ("📈 Trend Vitals",         9,  108, "#64b5f6","rgba(21,101,192,0.18)","#1565c0",
+         "HR_mean, HR_std, RR_mean, SpO₂_mean, SpO₂_min, Temp_mean, SBP_mean, DBP_mean, MAP_mean"),
+        ("📊 Latest Vitals",         7,  108, "#5fda80","rgba(46,125,50,0.18)","#2e7d32",
+         "latest_HR, latest_RR, latest_SpO₂, latest_Temp, latest_SBP, latest_DBP, latest_MAP"),
+        ("👁️ Computer Vision",       2,  108, "#ce93d8","rgba(106,27,154,0.18)","#6a1b9a",
+         "GCS Eye Opening (1–4 scale), Stress Score (0–10)"),
+        ("📝 Clinical NLP (TF-IDF)", 90, 108, "#ff8a65","rgba(230,81,0,0.18)","#e65100",
+         "90 SOFA-vocabulary whitelist terms: creatinine, bilirubin, vasopressor, intubated, sepsis … directly mapped to 6 SOFA organ components"),
+    ]
+
+    for _flabel, _fcount, _ftotal, _ftc, _fbg, _fbrd, _fex in _feat_rows:
+        _fw = _fcount / _ftotal * 100
+        st.markdown(f"""
+        <div style="background:{_fbg};border-left:5px solid {_fbrd};border-radius:0 10px 10px 0;
+                    padding:12px 16px;margin:6px 0;box-shadow:0 2px 8px rgba(0,0,0,0.3);">
+            <div style="display:flex;justify-content:space-between;align-items:center;
+                        margin-bottom:6px;">
+                <div style="font-size:13px;font-weight:700;color:{_ftc};">{_flabel}</div>
+                <div style="font-size:14px;font-weight:900;color:{_ftc};">
+                    {_fcount} <span style="font-size:10px;color:#8ab8cc;">/ 108 features ({_fw:.1f}%)</span>
+                </div>
+            </div>
+            <div style="background:rgba(255,255,255,0.1);border-radius:6px;height:10px;margin-bottom:6px;overflow:hidden;">
+                <div style="width:{_fw:.0f}%;background:{_fbrd};height:100%;border-radius:6px;"></div>
+            </div>
+            <div style="font-size:10px;color:#8ab8cc;">{_fex}</div>
+        </div>
+        """, unsafe_allow_html=True)

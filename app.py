@@ -395,6 +395,8 @@ if "selected_patient" not in st.session_state:
     st.session_state.selected_patient = None
 if "row_indices" not in st.session_state:
     st.session_state.row_indices = {1: 0, 2: 0, 3: 0}
+if "report_mode" not in st.session_state:
+    st.session_state.report_mode = "🏥 Hospital"
 
 # =============================================================
 # GROQ API KEY
@@ -811,24 +813,53 @@ _FALLBACK_MSG = (
 )
 
 
-def get_multiple_llm_responses(api_key, prompt, n=3):
+_HOSPITAL_SYSTEM_MSG = (
+    "You are a senior ICU attending physician generating a structured clinical decision "
+    "support note for a critically ill patient. You follow SCCM/Surviving Sepsis Campaign "
+    "guidelines.\n\n"
+    "Non-negotiable rules:\n"
+    "- Every vital sign cited includes the patient's measured value and the normal range.\n"
+    "- Every drug recommendation includes: name, dose, route, and monitoring target.\n"
+    "- Every risk forecast item includes a specific timeframe (e.g., 'within 6–12 h').\n"
+    "- Write every section completely — never truncate, never end mid-sentence.\n"
+    "- Base all reasoning strictly on the provided patient data — never invent values."
+)
+
+_HOMECARE_SYSTEM_MSG = (
+    "You are a clinical decision support assistant generating a home care guidance report "
+    "for a patient being monitored at home by a home care nurse and non-medical family members.\n\n"
+    "Your audience: ONE home care nurse (clinical training, no prescribing authority, limited "
+    "equipment) AND 2–3 family members with no medical background who may be anxious.\n\n"
+    "Non-negotiable rules:\n"
+    "- Write in clear, plain English. When a medical term is unavoidable, immediately explain "
+    "it in simple words in brackets — e.g., 'tachycardia [fast heart rate]'.\n"
+    "- Recommend ONLY actions doable at home: positioning, oral medications already at home, "
+    "first-aid measures, comfort techniques, and safe home remedies.\n"
+    "- Include safe home remedies where clinically appropriate: warm fluids, turmeric, ginger, "
+    "steam inhalation, honey, cool compress, leg elevation, deep breathing exercises, etc.\n"
+    "- Never mention IV lines, hospital equipment, or procedures requiring a physician.\n"
+    "- Always include specific, observable warning signs that mean the patient must go to hospital.\n"
+    "- Clearly state when home care alone is sufficient — not every case needs hospital.\n"
+    "- Write every section completely — never truncate, never end mid-sentence.\n"
+    "- Be compassionate and calm in tone — family members may be frightened.\n"
+    "- Base all reasoning strictly on the provided patient data — never invent values."
+)
+
+
+def get_multiple_llm_responses(api_key, prompt, n=3, system_msg=None):
     client = Groq(api_key=api_key)
+    if system_msg is None:
+        system_msg = _HOSPITAL_SYSTEM_MSG
     responses = []
     for _ in range(n):
         resp = client.chat.completions.create(
             model="openai/gpt-oss-120b",
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an expert ICU clinical decision support assistant. "
-                        "Provide concise, structured, and clinically accurate reasoning."
-                    )
-                },
+                {"role": "system", "content": system_msg},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.2,
-            max_tokens=2000,
+            temperature=0.15,
+            max_tokens=3500,
         )
         text = _strip_thinking(resp.choices[0].message.content)
         responses.append(text if text else _FALLBACK_MSG)
@@ -1672,58 +1703,71 @@ explanation_block = (
     if clinical_explanations else "- SHAP analysis not available"
 )
 
-if sofa_score >= ALERT_THRESHOLD:
-    _urgency_prefix = (
-        f"⚠️ CLINICAL ALERT — Predicted SOFA {sofa_score:.1f} "
-        f"(alert threshold ≥ {ALERT_THRESHOLD:.0f})\n\n"
-        "This patient is deteriorating. Prioritise immediate action.\n"
-    )
-    _section_instructions = (
-        "1. IMMEDIATE ACTIONS — Organize by clinical domain "
-        "(e.g., Hemodynamics, Respiratory, Renal, Infection, Monitoring). "
-        "Mark the 2 most critical actions with ⚡. "
-        "Write 2–4 bullet points (•) per domain. Be specific: drug names, doses, targets.\n"
-        "2. CURRENT CONDITION — Write each problem as a bullet (•): "
-        "• [Problem name]: [specific measured value] → [severity and trend]. "
-        "Include 5–6 problems covering all abnormal findings.\n"
-        "3. PROBABLE CAUSE — Write one clear explanatory paragraph (2–3 sentences) "
-        "describing the primary mechanism. Then 3–4 bullet points (•) for contributing factors.\n"
-        "4. RISK FORECAST — Write 3–4 bullet points (•). Each bullet: specific clinical "
-        "trajectory with a realistic timeframe (e.g., 'within 2–4 h', 'within 12 h')."
-    )
-else:
-    _urgency_prefix = ""
-    _section_instructions = (
-        "1. CURRENT CONDITION — Write each problem as a bullet (•): "
-        "• [Problem name]: [specific measured value] → [severity and trend]. "
-        "Include 5–6 items covering all relevant findings.\n"
-        "2. PROBABLE CAUSE — Write one clear explanatory paragraph (2–3 sentences) "
-        "describing the primary mechanism. Then 3–4 bullet points (•) for contributing factors.\n"
-        "3. RISK FORECAST — Write 3–4 bullet points (•). Each bullet: specific clinical "
-        "trajectory with a realistic timeframe (e.g., 'within 12–24 h', 'within 48 h').\n"
-        "4. IMMEDIATE ACTIONS — Organize by clinical domain. "
-        "Mark the most critical action with ⚡. "
-        "Write 2–3 bullet points (•) per domain. Be specific."
-    )
+_care_mode = (
+    "homecare" if "Home Care" in st.session_state.get("report_mode", "🏥 Hospital")
+    else "hospital"
+)
 
-final_prompt = f"""{_urgency_prefix}You are an ICU clinical decision support assistant.
+# ── HOSPITAL prompt ────────────────────────────────────────────────────────────
+if _care_mode == "hospital":
+    if sofa_score >= ALERT_THRESHOLD:
+        _urgency_prefix = (
+            f"⚠️ CLINICAL ALERT — Predicted SOFA {sofa_score:.1f} "
+            f"(alert threshold ≥ {ALERT_THRESHOLD:.0f}). "
+            "This patient is actively deteriorating. Lead with immediate actions.\n\n"
+        )
+        _section_instructions = """\
+1. IMMEDIATE ACTIONS — Organize under clinical domain subheadings (e.g., Respiratory:, Hemodynamics:, Infection:, Renal:, Monitoring:).
+   Mark the 2 most time-critical actions with ⚡ at the START of the bullet.
+   Write 2–4 bullets (•) per domain. Each bullet must include: drug name + dose + route + specific target OR procedure + indication + monitoring parameter.
+   GOOD example: • ⚡ **Norepinephrine** 0.05–0.3 mcg/kg/min IV — titrate to **MAP ≥65 mmHg**; escalate every 15 min if no response.
+   BAD example: • Start vasopressors if blood pressure low.
 
-Analyze the patient data below and write exactly 4 sections with these exact headings:
+2. CURRENT CONDITION — 6–8 bullets (•), one per organ system or abnormal finding.
+   Format each bullet: • **[System/Problem]:** [measured value] ([normal range]) → [clinical interpretation] — [trajectory/trend].
+   GOOD example: • **Respiratory:** SpO₂ 91% on 4 L/min O₂ (normal ≥95%) → mild-to-moderate hypoxemia — oxygen demand increasing, high-flow therapy likely needed.
+   BAD example: • Low oxygen levels.
+
+3. PROBABLE CAUSE — One explanatory paragraph (3–4 sentences) naming the primary mechanism and its physiological chain. Then 4–5 bullets (•) for specific contributing factors, each citing a measured value.
+   GOOD contributing factor: • Persistent tachycardia (HR 108 bpm) and fever (Temp 38.4 °C) indicate ongoing systemic inflammatory response — consistent with early sepsis physiology.
+
+4. RISK FORECAST — 4–5 bullets (•). Each bullet must state: specific deterioration event + specific threshold + specific timeframe.
+   GOOD example: • Progression to septic shock (MAP <65 mmHg) within **12–24 h** if IV fluid resuscitation and vasopressor support are not initiated.
+   BAD example: • Patient may get worse."""
+    else:
+        _urgency_prefix = ""
+        _section_instructions = """\
+1. CURRENT CONDITION — 6–8 bullets (•), one per organ system or abnormal finding.
+   Format each bullet: • **[System/Problem]:** [measured value] ([normal range]) → [clinical interpretation] — [trajectory/trend].
+   GOOD example: • **Cardiovascular:** HR 95 bpm (normal 60–100) at upper limit — tachycardia likely compensatory; monitor for escalation.
+
+2. PROBABLE CAUSE — One explanatory paragraph (3–4 sentences) naming the primary mechanism and its physiological chain. Then 4–5 bullets (•) for specific contributing factors, each citing a measured value.
+
+3. RISK FORECAST — 4–5 bullets (•). Each bullet must state: specific deterioration event + specific threshold + specific timeframe.
+   GOOD example: • Renal function decline (creatinine >2.0 mg/dL) within **48 h** if hemodynamic instability and reduced perfusion pressure persist.
+
+4. IMMEDIATE ACTIONS — Organize under clinical domain subheadings (e.g., Respiratory:, Hemodynamics:, Infection:, Monitoring:).
+   Mark the most time-critical action with ⚡. Write 2–3 bullets (•) per domain.
+   Each bullet must include: drug name + dose + route + target OR procedure + indication + monitoring parameter."""
+
+    final_prompt = f"""{_urgency_prefix}Generate a structured ICU clinical decision support report with exactly 4 sections using these exact headings (write each heading exactly as shown, on its own line):
 
 {_section_instructions}
 
-Formatting rules (strict):
-• Every item must be a bullet point starting with •  — no plain sentences without bullets inside sections.
-• Do NOT use ** asterisks to create your own section subheadings — use plain text domain labels followed by a colon (e.g., "Hemodynamics:").
-• Use **bold** only for drug names, critical values, and ⚡-marked priority actions.
-• Be thorough and specific — include actual measured values, drug names, and clinical targets.
-• Do NOT write a closing summary paragraph. End after the last bullet point.
+━━━ STRICT FORMATTING RULES ━━━
+• Every item inside a section must be a bullet starting with •
+• Domain subheadings (Respiratory:, Hemodynamics:, etc.) go on their own line without a bullet — they act as sub-section labels
+• Use **bold** ONLY for: drug names, critical numeric values, ⚡-marked actions, and organ system labels in CURRENT CONDITION bullets
+• Do NOT use ** to create your own section headings — use only the 4 headings listed above
+• Do NOT write a closing summary, footnote, or disclaimer — end after the last bullet
+• Write every section completely — do not stop mid-sentence or truncate
 
----
-SOFA Score: {sofa_score:.1f} / 24   (higher = worse organ failure)
+━━━ PATIENT DATA ━━━
+SOFA Score: {sofa_score:.1f} / 24   (0–6 = low risk, 7–9 = moderate, ≥10 = high, ≥15 = critical)
 Risk Level: {risk_text}
+Predicted SOFA uncertainty: ± {conformal_q_hat:.1f} points (90% conformal interval)
 
-Clinical Notes:
+Clinical Notes (from patient chart):
 {clinical_note}
 
 Latest Vital Signs:
@@ -1732,23 +1776,114 @@ Latest Vital Signs:
 Neurological & Stress Indicators:
 {cv_block}
 
-Key Risk Factors (SHAP-identified):
+Key Risk Factors (SHAP-identified — highest model contributors):
 {risk_block}
 
 Feature-Level Explanations (SHAP-derived):
 {explanation_block}
 
-Vital Sign Trends (last 20 readings):
+Vital Sign Trends (last 20 readings — use to identify trajectories):
 {trend_text}
----
+━━━━━━━━━━━━━━━━━━━━
 
-Be specific and clinically precise. Base reasoning strictly on the data above.
-Do NOT add a disclaimer, footnote, or asterisk note at the end — a clinical disclaimer is already displayed by the system."""
+Base all clinical reasoning strictly on the data above. Do not invent values or assume findings not present in the data."""
+    _active_system_msg = _HOSPITAL_SYSTEM_MSG
+
+# ── HOME CARE prompt ───────────────────────────────────────────────────────────
+else:
+    if sofa_score >= ALERT_THRESHOLD:
+        _urgency_prefix = (
+            f"⚠️ PATIENT ALERT — SOFA score {sofa_score:.1f} indicates the patient is "
+            f"deteriorating and needs immediate attention at home.\n\n"
+        )
+        _section_instructions = """\
+1. IMMEDIATE ACTIONS — Organize under these plain sub-headings on separate lines (no bullet before sub-headings):
+   "For the Nurse:", "For the Family:", "Home Remedies:", "⚠️ Go to Hospital NOW if:"
+   Mark the single most urgent action with ⚡.
+   Every bullet is a simple, specific, step-by-step action doable at home without hospital equipment.
+   Include relevant safe home remedies: positioning, warm fluids with honey/ginger/turmeric, steam inhalation, cool compress, leg elevation, gentle breathing exercises, etc.
+   The "⚠️ Go to Hospital NOW if:" sub-section must list 4–5 specific, observable danger signs a family member can recognise.
+   GOOD nurse example: • ⚡ Sit the patient upright at 45 degrees — place 2–3 firm pillows behind their back and shoulders. This opens the airway and reduces the work of breathing.
+   GOOD family example: • Count the patient's breaths for 1 full minute. Write it down. Normal is 12–20 breaths per minute. If it is above 25, tell the nurse immediately.
+   GOOD home remedy: • Prepare warm water with half a teaspoon of turmeric and a teaspoon of honey — give small sips every 15 minutes. Turmeric has natural anti-inflammatory properties that may help reduce fever and discomfort.
+   GOOD hospital sign: • Lips, fingernails, or fingertips turning blue or grey — this means not enough oxygen is reaching the body. Go to hospital immediately.
+
+2. CURRENT CONDITION — 5–7 bullets in plain English, one per finding.
+   Format: • [What it means in simple words]: [value] (healthy range: [normal]) — [one plain sentence explaining what this means for this patient right now].
+   GOOD example: • Breathing rate: 24 breaths per minute (healthy: 12–20 breaths per minute) — breathing much faster than normal, which means the body is working hard to get enough oxygen into the blood.
+   BAD example: • Tachypnea: RR 24 breaths/min → moderate respiratory distress, stable high.
+
+3. PROBABLE CAUSE — One paragraph (3–4 sentences) in plain, compassionate English explaining what is likely happening in the patient's body. Avoid medical jargon — use simple analogies where helpful. Then 3–4 bullets listing specific signs from the patient data that support this, written in plain language.
+   GOOD paragraph: The body appears to be fighting an infection, most likely in the lungs or blood. When this happens, the body raises its temperature to fight off germs, the heart beats faster to pump blood around the body more quickly, and breathing speeds up to bring in more oxygen. This is the body's defence system working hard, but it needs support.
+
+4. RISK FORECAST — 4–5 bullets covering BOTH possible outcomes: worsening (needs hospital) AND improvement (stays at home).
+   Each bullet: specific observable change + what it means + realistic timeframe.
+   GOOD worsening: • If breathing rate stays above 25 per minute and the patient's lips look pale or bluish in the next 2–3 hours despite sitting upright and rest — take them to hospital immediately.
+   GOOD improvement: • If fever drops below 38°C, breathing slows to under 20 per minute, and the patient feels less distressed within 4–6 hours of rest and home remedies — they may be safely monitored at home; reassess every 30 minutes."""
+    else:
+        _urgency_prefix = ""
+        _section_instructions = """\
+1. CURRENT CONDITION — 5–7 bullets in plain English, one per finding.
+   Format: • [What it means in simple words]: [value] (healthy range: [normal]) — [one plain sentence explaining what this means for this patient right now].
+   GOOD example: • Heart rate: 95 beats per minute (healthy: 60–100) — at the upper end of normal, likely because the body is slightly stressed; worth watching but not alarming right now.
+   BAD example: • HR 95 bpm (normal 60–100) — compensatory tachycardia.
+
+2. PROBABLE CAUSE — One paragraph (3–4 sentences) in plain, compassionate English explaining what is likely happening. Use simple analogies. Then 3–4 bullets listing specific patient signs supporting this explanation, in plain language.
+
+3. RISK FORECAST — 4–5 bullets covering BOTH possible outcomes: worsening AND improvement.
+   Each bullet: specific observable change + what it means + realistic timeframe.
+   GOOD improvement: • If the patient rests, stays hydrated with warm fluids, and fever reduces to below 38°C within 4–6 hours — they are likely stable at home; continue monitoring every hour.
+   GOOD worsening: • If the patient becomes confused, cannot be woken normally, or breathing becomes very fast (above 25 per minute) at any point — call emergency services immediately.
+
+4. IMMEDIATE ACTIONS — Organize under plain sub-headings: "For the Nurse:", "For the Family:", "Home Remedies:".
+   Mark the most important action with ⚡.
+   Every bullet is a specific, simple action doable at home.
+   Include relevant home remedies (warm fluids, turmeric, ginger, steam, cool compress, elevation, etc.).
+   GOOD example: • ⚡ Check and record vital signs (breathing rate, heart rate, temperature) every 30 minutes and note any changes.
+   GOOD home remedy: • Give warm ginger tea with honey — ginger helps reduce nausea and has mild anti-inflammatory effects; honey soothes the throat and provides energy."""
+
+    final_prompt = f"""{_urgency_prefix}Generate a structured home care guidance report for a patient being monitored at home. Write exactly 4 sections using these exact headings (write each heading exactly as shown, on its own line):
+
+{_section_instructions}
+
+━━━ STRICT FORMATTING RULES ━━━
+• Every item inside a section must be a bullet starting with •
+• Sub-headings like "For the Nurse:", "For the Family:", "Home Remedies:", "⚠️ Go to Hospital NOW if:" go on their own line WITHOUT a bullet
+• Use **bold** ONLY for: the most critical actions, key numbers the family must watch, and ⚡-marked urgent actions
+• Do NOT use ** to create your own section headings — use only the 4 headings listed above
+• Write in plain, calm English throughout — avoid clinical abbreviations and unexplained jargon
+• Do NOT write a closing summary, footnote, or disclaimer — end after the last bullet
+• Write every section completely — do not stop mid-sentence or truncate
+
+━━━ PATIENT DATA ━━━
+SOFA Score: {sofa_score:.1f} / 24   (higher = worse; above 6 = concerning, above 10 = serious)
+Current Risk Level: {risk_text}
+Monitoring Uncertainty: predictions accurate to within ± {conformal_q_hat:.1f} SOFA points
+
+Clinical Notes (from patient records):
+{clinical_note}
+
+Current Vital Signs:
+{vitals_block}
+
+Neurological & Stress Indicators:
+{cv_block}
+
+Key Risk Factors identified by the monitoring system:
+{risk_block}
+
+Vital Sign Trends (last 20 readings — use to identify whether things are getting better or worse):
+{trend_text}
+━━━━━━━━━━━━━━━━━━━━
+
+Base all guidance strictly on the data above. Do not invent values or assume findings not in the data. Remember: your audience is a home care nurse and non-medical family members."""
+    _active_system_msg = _HOMECARE_SYSTEM_MSG
 
 # -- 12. LLM ASSESSMENT (1 main call) --
 with st.spinner("Generating AI clinical assessment..."):
     try:
-        responses     = get_multiple_llm_responses(GROQ_API_KEY, final_prompt, n=1)
+        responses     = get_multiple_llm_responses(GROQ_API_KEY, final_prompt, n=1,
+                                                   system_msg=_active_system_msg)
         main_response = responses[0]
         llm_ok        = True
     except Exception as e:
@@ -1781,11 +1916,10 @@ else:
 # =============================================================
 # DISPLAY — FOUR TABS
 # =============================================================
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3 = st.tabs([
     "📊 Risk Assessment",
     "🔍 Explainability",
     "🧠 AI Clinical Report",
-    "🔒 Federated Learning"
 ])
 
 # ---- TAB 1: RISK ASSESSMENT ----
@@ -2389,6 +2523,91 @@ MIMIC-III training data contains correlations that can differ from clinical intu
 # ---- TAB 3: AI CLINICAL REPORT ----
 with tab3:
 
+    # ── Care mode toggle — pill style, top-right ─────────────────────────────
+    st.markdown("""
+<style>
+/* Outer pill container */
+[data-testid="stRadio"] [role="radiogroup"] {
+    background: rgba(6,16,36,0.92) !important;
+    border: 1.5px solid rgba(100,181,246,0.32) !important;
+    border-radius: 50px !important;
+    padding: 5px 6px !important;
+    gap: 4px !important;
+    display: inline-flex !important;
+    width: fit-content !important;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.40);
+}
+/* Each pill label */
+[data-testid="stRadio"] [role="radiogroup"] label {
+    border-radius: 40px !important;
+    padding: 12px 30px !important;
+    font-size: 18px !important;
+    font-weight: 800 !important;
+    color: #7fb3c8 !important;
+    transition: background 0.18s, color 0.18s !important;
+    white-space: nowrap !important;
+    cursor: pointer !important;
+    margin: 0 !important;
+    line-height: 1.2 !important;
+    display: flex !important;
+    align-items: center !important;
+}
+/* Selected pill */
+[data-testid="stRadio"] [role="radiogroup"] label:has(input[type="radio"]:checked) {
+    background: linear-gradient(135deg, #1a5fcc 0%, #0d3d85 100%) !important;
+    color: #ffffff !important;
+    box-shadow: 0 2px 14px rgba(26,95,204,0.60) !important;
+}
+/* Force text white inside selected pill */
+[data-testid="stRadio"] [role="radiogroup"] label:has(input[type="radio"]:checked) p,
+[data-testid="stRadio"] [role="radiogroup"] label:has(input[type="radio"]:checked) span {
+    color: #ffffff !important;
+}
+/* Hide radio circle dot and input */
+[data-testid="stRadio"] [role="radiogroup"] label > *:not([data-testid="stMarkdownContainer"]) {
+    display: none !important;
+}
+/* Hide the widget label */
+[data-testid="stRadio"] > label { display: none !important; }
+/* Remove default Streamlit label padding */
+[data-testid="stRadio"] { padding: 0 !important; }
+</style>
+""", unsafe_allow_html=True)
+
+    _tog_left, _tog_right = st.columns([5, 2])
+    with _tog_right:
+        st.radio(
+            "report_mode_toggle",
+            options=["🏥 Hospital", "🏠 Home Care"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="report_mode",
+        )
+
+    # Mode indicator banner
+    if st.session_state.report_mode == "🏠 Home Care":
+        st.markdown(
+            '<div style="background:rgba(46,125,50,0.20);border:1px solid #388e3c;'
+            'border-left:4px solid #66bb6a;border-radius:8px;padding:10px 18px;'
+            'margin-bottom:14px;display:flex;align-items:center;gap:12px;">'
+            '<span style="font-size:22px;">🏠</span>'
+            '<div><span style="color:#a5d6a7;font-size:13px;font-weight:800;letter-spacing:0.05em;">HOME CARE MODE</span>'
+            '<br><span style="color:#81c784;font-size:12px;">Plain-language guidance for home care nurse &amp; family</span></div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            '<div style="background:rgba(21,101,192,0.20);border:1px solid #1565c0;'
+            'border-left:4px solid #42a5f5;border-radius:8px;padding:10px 18px;'
+            'margin-bottom:14px;display:flex;align-items:center;gap:12px;">'
+            '<span style="font-size:22px;">🏥</span>'
+            '<div><span style="color:#90caf9;font-size:13px;font-weight:800;letter-spacing:0.05em;">HOSPITAL MODE</span>'
+            '<br><span style="color:#64b5f6;font-size:12px;">Clinical decision support for ICU attending physician</span></div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
     # ── Section colours for parsed LLM output ──
     # icon, text_color (light, on dark bg), bg (dark semi-transparent), border (vivid), subtitle
     _SEC_CFG = {
@@ -2572,8 +2791,8 @@ with tab3:
             """HTML-escape raw text, then apply safe inline styling."""
             t = _html_mod.escape(t)
             t = re.sub(r'\*\*(.*?)\*\*',
-                       r'<strong style="color:#e8f4ff;">\1</strong>', t)
-            t = t.replace('→', '<span style="color:#5a8aaa;font-weight:600;"> → </span>')
+                       r'<strong style="color:#ffffff;font-weight:700;">\1</strong>', t)
+            t = t.replace('→', '<span style="color:#6aaac8;font-weight:700;"> → </span>')
             t = t.replace('↑', '<span style="color:#ff9090;font-weight:700;">↑</span>')
             t = t.replace('↓', '<span style="color:#7ec8e3;font-weight:700;">↓</span>')
             t = re.sub(r'\s+—\s+→', ' → ', t)  # clean up "— →" artifact
@@ -2593,11 +2812,11 @@ with tab3:
             if is_domain:
                 label = _html_mod.escape(line.rstrip(':'))
                 parts.append(
-                    f'<div style="margin:18px 0 10px 0;padding:7px 16px;'
-                    f'background:rgba(0,210,255,0.07);border-left:3px solid #00d2ff;'
-                    f'border-radius:0 6px 6px 0;">'
-                    f'<span style="font-size:12px;font-weight:800;color:#00d2ff;'
-                    f'letter-spacing:1.8px;text-transform:uppercase;">{label}</span>'
+                    f'<div style="margin:22px 0 12px 0;padding:9px 18px;'
+                    f'background:rgba(0,210,255,0.08);border-left:4px solid #00d2ff;'
+                    f'border-radius:0 8px 8px 0;">'
+                    f'<span style="font-size:14px;font-weight:800;color:#00d2ff;'
+                    f'letter-spacing:1.6px;text-transform:uppercase;">{label}</span>'
                     f'</div>'
                 )
 
@@ -2606,10 +2825,10 @@ with tab3:
                 text = re.sub(r'^[•·\-\s]*⚡\s*', '', line)
                 parts.append(
                     f'<div style="background:rgba(255,200,30,0.10);border-left:4px solid #ffc93c;'
-                    f'border-radius:7px;padding:13px 18px;margin:10px 0;">'
-                    f'<div style="font-size:11px;font-weight:800;color:#ffc93c;'
-                    f'letter-spacing:1.2px;text-transform:uppercase;margin-bottom:6px;">⚡ Priority Action</div>'
-                    f'<div style="font-size:15px;color:#ffe5a0;font-weight:600;line-height:1.6;">{_safe(text)}</div>'
+                    f'border-radius:8px;padding:16px 20px;margin:12px 0;">'
+                    f'<div style="font-size:12px;font-weight:800;color:#ffc93c;'
+                    f'letter-spacing:1.2px;text-transform:uppercase;margin-bottom:8px;">⚡ Priority Action</div>'
+                    f'<div style="font-size:17px;color:#ffe5a0;font-weight:600;line-height:1.75;">{_safe(text)}</div>'
                     f'</div>'
                 )
 
@@ -2618,25 +2837,23 @@ with tab3:
                 text = re.sub(r'^[•·\-]\s*', '', line)
                 dot_col = '#f0a500' if 'RISK' in sn else '#5fda80' if 'CURRENT' in sn else '#00d2ff'
                 parts.append(
-                    f'<div style="display:flex;align-items:flex-start;gap:14px;'
-                    f'padding:11px 6px;border-bottom:1px solid rgba(30,58,80,0.25);">'
-                    f'<span style="color:{dot_col};font-size:20px;flex-shrink:0;'
-                    f'line-height:1.0;margin-top:2px;">•</span>'
-                    f'<span style="font-size:15px;color:#d0e8f8;line-height:1.65;">{_safe(text)}</span>'
+                    f'<div style="display:flex;align-items:flex-start;gap:16px;'
+                    f'padding:15px 8px;border-bottom:1px solid rgba(30,58,80,0.3);">'
+                    f'<span style="color:{dot_col};font-size:22px;flex-shrink:0;'
+                    f'line-height:1.0;margin-top:3px;">•</span>'
+                    f'<span style="font-size:17px;color:#d8eeff;line-height:1.8;">{_safe(text)}</span>'
                     f'</div>'
                 )
 
             # ── Plain line — treat as a bullet to ensure consistent formatting ──
             else:
-                # Non-bullet lines are rendered as bullet rows (the LLM sometimes
-                # omits the leading • even when instructed to use it)
                 dot_col = '#f0a500' if 'RISK' in sn else '#5fda80' if 'CURRENT' in sn else '#00d2ff'
                 parts.append(
-                    f'<div style="display:flex;align-items:flex-start;gap:14px;'
-                    f'padding:11px 6px;border-bottom:1px solid rgba(30,58,80,0.25);">'
-                    f'<span style="color:{dot_col};font-size:20px;flex-shrink:0;'
-                    f'line-height:1.0;margin-top:2px;">•</span>'
-                    f'<span style="font-size:15px;color:#d0e8f8;line-height:1.65;">{_safe(line)}</span>'
+                    f'<div style="display:flex;align-items:flex-start;gap:16px;'
+                    f'padding:15px 8px;border-bottom:1px solid rgba(30,58,80,0.3);">'
+                    f'<span style="color:{dot_col};font-size:22px;flex-shrink:0;'
+                    f'line-height:1.0;margin-top:3px;">•</span>'
+                    f'<span style="font-size:17px;color:#d8eeff;line-height:1.8;">{_safe(line)}</span>'
                     f'</div>'
                 )
 
@@ -2653,14 +2870,14 @@ with tab3:
             # Section header
             st.markdown(f"""
             <div style="background:{_ssbg};border-left:6px solid {_ssbrd};
-                        border-radius:0 10px 10px 0;padding:12px 16px;margin-top:18px;
-                        box-shadow:0 2px 10px rgba(0,0,0,0.3);">
-                <div style="display:flex;align-items:center;gap:10px;">
-                    <span style="font-size:22px;">{_sico}</span>
+                        border-radius:0 12px 12px 0;padding:14px 20px;margin-top:24px;
+                        box-shadow:0 2px 12px rgba(0,0,0,0.35);">
+                <div style="display:flex;align-items:center;gap:12px;">
+                    <span style="font-size:26px;">{_sico}</span>
                     <div>
-                        <div style="font-size:13px;font-weight:800;color:{_stcol};
-                                    letter-spacing:1px;text-transform:uppercase;">{_sname}</div>
-                        <div style="font-size:10px;color:{_stcol};opacity:0.75;margin-top:2px;">{_ssub}</div>
+                        <div style="font-size:15px;font-weight:800;color:{_stcol};
+                                    letter-spacing:1.2px;text-transform:uppercase;">{_sname}</div>
+                        <div style="font-size:12px;color:{_stcol};opacity:0.75;margin-top:3px;">{_ssub}</div>
                     </div>
                 </div>
             </div>
@@ -2678,13 +2895,13 @@ with tab3:
             _rendered = _render_section_html(_clean, _sname)
             st.markdown(
                 f"""<div style="background:rgba(10,22,42,0.85);border:1.5px solid #1a3050;
-                    border-radius:0 0 12px 12px;padding:18px 20px 14px 20px;
-                    margin-bottom:6px;">
+                    border-radius:0 0 14px 14px;padding:22px 24px 18px 24px;
+                    margin-bottom:8px;">
                     {_rendered}
                 </div>""",
                 unsafe_allow_html=True,
             )
-            st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
+            st.markdown("<div style='height:14px;'></div>", unsafe_allow_html=True)
     else:
         _fb = re.sub(r'<br\s*/?>', '\n', main_response)
         st.markdown(_fb)
@@ -2743,308 +2960,6 @@ with tab3:
         </div>
     </div>
     """, unsafe_allow_html=True)
-
-# ---- TAB 4: FEDERATED LEARNING INFO ----
-with tab4:
-    m = training_meta
-
-    # ── Tab header banner ──
-    st.markdown("""
-    <div style="background:linear-gradient(135deg,#0f2027,#203a43,#2c5364);
-                border-radius:14px;padding:20px 24px;margin-bottom:20px;">
-        <div style="font-size:22px;font-weight:900;color:white;margin-bottom:4px;">
-            🔒 Federated Learning — How This Model Was Trained
-        </div>
-        <div style="font-size:13px;color:#7fb3c8;line-height:1.5;">
-            Privacy-preserving collaborative AI across 3 hospital ICUs.
-            Patient data <strong style="color:#00d2ff;">never leaves</strong> each hospital —
-            only model weights are shared.
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── FL Protocol Diagram (HTML, replacing ASCII art) ──
-    st.markdown(
-        '<div style="background:linear-gradient(135deg,#0f2027,#1a2f3a,#1e3a4a);'
-        'border-radius:16px;padding:28px 24px;color:white;border:1.5px solid #2a4a5a;">'
-
-        '<div style="display:flex;justify-content:center;margin-bottom:12px;">'
-        '<div style="background:rgba(0,210,255,0.12);border:2px solid #00d2ff;'
-        'border-radius:12px;padding:14px 32px;text-align:center;'
-        'box-shadow:0 0 20px rgba(0,210,255,0.15);">'
-        '<div style="font-size:20px;margin-bottom:4px;">🖥</div>'
-        '<div style="font-size:13px;font-weight:800;color:#00d2ff;letter-spacing:0.5px;">Global FL Server</div>'
-        '<div style="font-size:11px;color:#7fb3c8;margin-top:2px;">Flower Framework · FedAvg Aggregation</div>'
-        '</div></div>'
-
-        '<div style="text-align:center;color:#00d2ff;font-size:12px;margin:8px 0;font-weight:600;">'
-        '① Share global weights ↓↓↓</div>'
-
-        '<div style="display:flex;justify-content:center;gap:14px;margin:8px 0;">'
-
-        '<div style="background:rgba(40,167,69,0.12);border:1.5px solid #4caf50;'
-        'border-radius:10px;padding:12px 16px;text-align:center;flex:1;max-width:200px;">'
-        '<div style="font-size:16px;margin-bottom:4px;">🏥</div>'
-        '<div style="font-size:12px;font-weight:700;color:#81c784;">Hospital 0</div>'
-        '<div style="font-size:10px;color:#aaa;">General ICU</div>'
-        '<div style="font-size:11px;color:#4caf50;font-weight:600;margin-top:4px;">~15,889 patients</div>'
-        '<div style="font-size:10px;color:#666;margin-top:6px;background:rgba(0,0,0,0.3);'
-        'border-radius:4px;padding:4px;">🔒 PRIVATE data</div></div>'
-
-        '<div style="background:rgba(240,165,0,0.12);border:1.5px solid #f0a500;'
-        'border-radius:10px;padding:12px 16px;text-align:center;flex:1;max-width:200px;">'
-        '<div style="font-size:16px;margin-bottom:4px;">🏥</div>'
-        '<div style="font-size:12px;font-weight:700;color:#ffd54f;">Hospital 1</div>'
-        '<div style="font-size:10px;color:#aaa;">Mixed ICU</div>'
-        '<div style="font-size:11px;color:#f0a500;font-weight:600;margin-top:4px;">~15,890 patients</div>'
-        '<div style="font-size:10px;color:#666;margin-top:6px;background:rgba(0,0,0,0.3);'
-        'border-radius:4px;padding:4px;">🔒 PRIVATE data</div></div>'
-
-        '<div style="background:rgba(220,53,69,0.12);border:1.5px solid #dc3545;'
-        'border-radius:10px;padding:12px 16px;text-align:center;flex:1;max-width:200px;">'
-        '<div style="font-size:16px;margin-bottom:4px;">🏥</div>'
-        '<div style="font-size:12px;font-weight:700;color:#ef9a9a;">Hospital 2</div>'
-        '<div style="font-size:10px;color:#aaa;">Cardiac/Trauma ICU</div>'
-        '<div style="font-size:11px;color:#dc3545;font-weight:600;margin-top:4px;">~16,372 patients</div>'
-        '<div style="font-size:10px;color:#666;margin-top:6px;background:rgba(0,0,0,0.3);'
-        'border-radius:4px;padding:4px;">🔒 PRIVATE data</div></div>'
-
-        '</div>'
-
-        '<div style="text-align:center;color:#7fb3c8;font-size:11px;margin:10px 0;line-height:1.7;">'
-        '② Train locally on private data (no external access)<br>'
-        '<span style="color:#00d2ff;font-weight:600;">'
-        '③ Send ONLY model weights — zero patient records shared ↑↑↑</span></div>'
-
-        '<div style="display:flex;justify-content:center;margin:8px 0;">'
-        '<div style="background:rgba(106,27,154,0.2);border:2px solid #9c27b0;'
-        'border-radius:12px;padding:12px 36px;text-align:center;">'
-        '<div style="font-size:13px;font-weight:800;color:#ce93d8;">④ FedAvg: Average all hospital weights</div>'
-        '<div style="font-size:11px;color:#7fb3c8;margin-top:4px;">→ Improved global model · Repeat for 100 rounds</div>'
-        '</div></div>'
-
-        '</div>',
-        unsafe_allow_html=True
-    )
-
-    st.divider()
-
-    # ── Training Configuration (coloured stat tiles) ──
-    st.markdown("<div style='font-size:18px;font-weight:800;color:#e8f4ff;margin-bottom:12px;"
-                "border-left:3px solid #007BB5;padding-left:10px;'>⚙️ Training Configuration</div>",
-                unsafe_allow_html=True)
-
-    # (label, value, text_color, bg, border, subtitle)
-    _cfg_tiles = [
-        ("FL Rounds",       str(m["num_rounds"]),       "#64b5f6","rgba(21,101,192,0.2)","#1565c0","rounds of federation"),
-        ("Hospitals",        str(m["hospitals"]),         "#ce93d8","rgba(106,27,154,0.2)","#6a1b9a","ICU sites"),
-        ("Epochs / Round",   str(m["epochs_per_round"]), "#5fda80","rgba(46,125,50,0.2)", "#2e7d32","local training epochs"),
-        ("Aggregation",      m["aggregation"],            "#ff8a65","rgba(230,81,0,0.2)",  "#e65100","weight averaging method"),
-        ("Training Samples", f"{m['train_samples']:,}",  "#4db6ac","rgba(0,105,92,0.2)",  "#00695c","real ICU patients"),
-        ("Test Samples",     f"{m['test_samples']:,}",    "#aed581","rgba(85,139,47,0.2)", "#558b2f","held-out patients"),
-        ("Best Round",       str(m["best_round"]),        "#ffb74d","rgba(245,127,23,0.2)","#f57f17","lowest eval loss"),
-        ("Split Type",       m["split_type"],             "#b39ddb","rgba(69,39,160,0.2)", "#4527a0","data distribution"),
-    ]
-
-    _t1, _t2, _t3, _t4 = st.columns(4)
-    _t5, _t6, _t7, _t8 = st.columns(4)
-    for _cols, _tiles in [([_t1,_t2,_t3,_t4], _cfg_tiles[:4]),
-                           ([_t5,_t6,_t7,_t8], _cfg_tiles[4:])]:
-        for _col, (_lbl, _val, _tc, _bg, _brd, _sub) in zip(_cols, _tiles):
-            with _col:
-                st.markdown(f"""
-                <div style="background:{_bg};border:1.5px solid {_brd};
-                            border-radius:10px;padding:14px 12px;text-align:center;
-                            box-shadow:0 2px 10px rgba(0,0,0,0.3);margin-bottom:8px;">
-                    <div style="font-size:9px;font-weight:700;color:{_tc};text-transform:uppercase;
-                                letter-spacing:0.6px;">{_lbl}</div>
-                    <div style="font-size:26px;font-weight:900;color:{_tc};line-height:1.1;
-                                margin:4px 0;">{_val}</div>
-                    <div style="font-size:9px;color:#8ab8cc;">{_sub}</div>
-                </div>
-                """, unsafe_allow_html=True)
-
-    st.divider()
-
-    # ── Global Model Performance ──
-    st.markdown("<div style='font-size:18px;font-weight:800;color:#e8f4ff;margin-bottom:12px;"
-                "border-left:3px solid #007BB5;padding-left:10px;'>📊 Global Model Performance</div>",
-                unsafe_allow_html=True)
-
-    _perf_tiles = [
-        ("Mean Abs. Error",  f"{m['final_mae']:.3f}", "SOFA points", "#64b5f6","rgba(21,101,192,0.2)","#1565c0",
-         "Average prediction error on held-out ICU patients"),
-        ("R² Score",         f"{m['final_r2']:.3f}",  "variance",    "#5fda80","rgba(46,125,50,0.2)","#2e7d32",
-         "Proportion of variance explained by the model"),
-        ("Pred Range Min",   f"{m['pred_range_min']:.1f}", "SOFA",   "#4db6ac","rgba(0,105,92,0.2)","#00695c",
-         "Lowest predicted SOFA across test set"),
-        ("Pred Range Max",   f"{m['pred_range_max']:.1f}", "SOFA",   "#ff8a65","rgba(230,81,0,0.2)","#e65100",
-         "Highest predicted SOFA across test set"),
-    ]
-
-    _p1, _p2, _p3, _p4 = st.columns(4)
-    for _col, (_lbl, _val, _unit, _tc, _bg, _brd, _desc) in zip([_p1,_p2,_p3,_p4], _perf_tiles):
-        with _col:
-            st.markdown(f"""
-            <div style="background:{_bg};border:2px solid {_brd};
-                        border-radius:12px;padding:18px 12px;text-align:center;
-                        box-shadow:0 3px 12px rgba(0,0,0,0.3);">
-                <div style="font-size:9px;font-weight:700;color:{_tc};text-transform:uppercase;
-                            letter-spacing:0.7px;margin-bottom:4px;">{_lbl}</div>
-                <div style="font-size:34px;font-weight:900;color:{_tc};line-height:1;">{_val}</div>
-                <div style="font-size:10px;color:#8ab8cc;">{_unit}</div>
-                <div style="font-size:9px;color:#6a8aaa;margin-top:6px;line-height:1.4;">{_desc}</div>
-            </div>
-            """, unsafe_allow_html=True)
-
-    st.divider()
-
-    # ── Model Architecture ──
-    st.markdown("<div style='font-size:18px;font-weight:800;color:#e8f4ff;margin-bottom:12px;"
-                "border-left:3px solid #007BB5;padding-left:10px;'>🧠 Model Architecture (PyTorch DNN)</div>",
-                unsafe_allow_html=True)
-
-    _layers = [
-        ("INPUT",  "108 features", "18 vitals (trends + latest + GCS) + 90 SOFA-vocab TF-IDF", "#64b5f6","rgba(21,101,192,0.2)"),
-        ("Linear", "108 → 128",   "Fully connected · ReLU activation",                         "#5fda80","rgba(46,125,50,0.2)"),
-        ("Linear", "128 →  64",   "Fully connected · ReLU activation",                         "#5fda80","rgba(46,125,50,0.2)"),
-        ("Linear", " 64 →  32",   "Fully connected · ReLU activation",                         "#5fda80","rgba(46,125,50,0.2)"),
-        ("Linear", " 32 →   1",   "Output layer · No activation (regression)",                 "#ce93d8","rgba(106,27,154,0.2)"),
-        ("OUTPUT", "SOFA (0–24)", "Predicted SOFA score · clip(0, 24)",                        "#ff8a65","rgba(230,81,0,0.2)"),
-    ]
-
-    _arch_html = ""
-    for _i, (_ltype, _ldim, _ldesc, _tc, _bg) in enumerate(_layers):
-        _arrow = "<div style='text-align:center;font-size:18px;color:#4a6a8a;margin:2px 0;'>↓</div>" if _i < len(_layers)-1 else ""
-        _arch_html += f"""
-        <div style="background:{_bg};border:1.5px solid {_tc};border-radius:8px;
-                    padding:10px 16px;display:flex;align-items:center;gap:12px;">
-            <div style="background:{_tc};color:#0a1628;border-radius:5px;padding:3px 8px;
-                        font-size:10px;font-weight:800;letter-spacing:0.5px;
-                        white-space:nowrap;">{_ltype}</div>
-            <div style="font-size:14px;font-weight:700;color:{_tc};min-width:80px;">{_ldim}</div>
-            <div style="font-size:11px;color:#9ab8cc;">{_ldesc}</div>
-        </div>{_arrow}"""
-
-    _la, _lb = st.columns([3, 2])
-    with _la:
-        st.markdown(_arch_html, unsafe_allow_html=True)
-    with _lb:
-        st.markdown(f"""
-        <div style="background:rgba(14,28,48,0.95);border:1.5px solid #1e3a50;border-radius:12px;
-                    padding:16px;font-size:12px;color:#c8dced;line-height:1.8;height:100%;">
-            <div style="font-size:13px;font-weight:700;color:#b8d0e0;margin-bottom:8px;">
-                🔧 Training Details
-            </div>
-            <b style="color:#7fb3c8;">Optimizer:</b> AdamW (weight_decay=1e-4)<br>
-            <b style="color:#7fb3c8;">Loss:</b> Weighted MSE — high-SOFA patients get up to 4.7× gradient weight<br>
-            <b style="color:#7fb3c8;">No Dropout</b> — causes FL divergence; regularised by AdamW instead<br>
-            <b style="color:#7fb3c8;">Parameters:</b> ~23,000 total trainable weights<br>
-            <b style="color:#7fb3c8;">FL Framework:</b> Flower (flwr) · FedYogi + FedProx<br>
-            <b style="color:#7fb3c8;">Best round:</b> {m['best_round']} of {m['num_rounds']}
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.divider()
-
-    # ── Differential Privacy ──
-    st.markdown("<div style='font-size:18px;font-weight:800;color:#e8f4ff;margin-bottom:12px;"
-                "border-left:3px solid #007BB5;padding-left:10px;'>🔐 Differential Privacy</div>",
-                unsafe_allow_html=True)
-
-    if m.get("differential_privacy"):
-        st.markdown(f"""
-        <div style="background:rgba(46,125,50,0.15);border:2px solid #4caf50;
-                    border-left:6px solid #2e7d32;border-radius:0 12px 12px 0;padding:16px 20px;">
-            <div style="font-size:14px;font-weight:800;color:#5fda80;margin-bottom:8px;">
-                ✅ Differential Privacy ENABLED
-            </div>
-            <div style="display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:#c8dced;">
-                <span><b style="color:#7fb3c8;">σ (noise multiplier):</b> {m['dp_sigma']}</span>
-                <span><b style="color:#7fb3c8;">S (sensitivity):</b> {m['dp_sensitivity']}</span>
-                <span><b style="color:#7fb3c8;">ε (privacy budget):</b> ≈{m['dp_epsilon']}</span>
-                <span><b style="color:#7fb3c8;">δ:</b> {m['dp_delta']}</span>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    else:
-        _dp_steps = [
-            ("①", "Compute update", "local_weights − global_weights", "#64b5f6"),
-            ("②", "Clip L2 norm",   "Bounds any patient's max influence (sensitivity S)", "#ff8a65"),
-            ("③", "Add noise",      "Gaussian N(0, (σ·S)²) to every weight parameter", "#ce93d8"),
-            ("④", "Transmit",       "Server receives noisy update — cannot trace individuals", "#5fda80"),
-        ]
-        st.markdown("""
-        <div style="background:rgba(240,165,0,0.12);border:1.5px solid #f0a500;
-                    border-left:5px solid #f0a500;border-radius:0 12px 12px 0;
-                    padding:14px 18px;margin-bottom:12px;">
-            <div style="font-size:13px;font-weight:700;color:#ffc93c;">
-                ⚙️ Differential Privacy: Disabled in current build
-            </div>
-            <div style="font-size:11px;color:#b8d0e0;margin-top:4px;">
-                Model trained with plain FedAvg (no noise). Enable: set
-                <code style="background:rgba(0,0,0,0.4);padding:1px 5px;border-radius:3px;">USE_DP = True</code>
-                in train_federated.py and retrain.
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-        _dp_html = '<div style="display:flex;flex-direction:column;gap:8px;">'
-        for _step, _title, _desc, _tc in _dp_steps:
-            _dp_html += (
-                f"<div style='display:flex;align-items:flex-start;gap:12px;"
-                f"background:rgba(8,16,32,0.95);border:1px solid #1e3a50;"
-                f"border-radius:8px;padding:10px 14px;'>"
-                f"<div style='background:{_tc};color:#0a1628;border-radius:50%;width:24px;height:24px;"
-                f"display:flex;align-items:center;justify-content:center;font-size:11px;"
-                f"font-weight:800;flex-shrink:0;'>{_step}</div>"
-                f"<div><div style='font-size:12px;font-weight:700;color:{_tc};'>{_title}</div>"
-                f"<div style='font-size:11px;color:#8ab8cc;margin-top:2px;'>{_desc}</div></div>"
-                f"</div>"
-            )
-        _dp_html += "</div>"
-        st.markdown(
-            "<div style='font-size:12px;font-weight:700;color:#b8d0e0;margin-bottom:8px;'>What DP would add:</div>",
-            unsafe_allow_html=True
-        )
-        st.markdown(_dp_html, unsafe_allow_html=True)
-
-    st.divider()
-
-    # ── Feature Vector Breakdown (visual bars) ──
-    st.markdown("<div style='font-size:18px;font-weight:800;color:#e8f4ff;margin-bottom:12px;"
-                "border-left:3px solid #007BB5;padding-left:10px;'>🔢 Feature Vector Breakdown — 108 total</div>",
-                unsafe_allow_html=True)
-
-    _feat_rows = [
-        ("📈 Trend Vitals",         9,  108, "#64b5f6","rgba(21,101,192,0.18)","#1565c0",
-         "HR_mean, HR_std, RR_mean, SpO₂_mean, SpO₂_min, Temp_mean, SBP_mean, DBP_mean, MAP_mean"),
-        ("📊 Latest Vitals",         7,  108, "#5fda80","rgba(46,125,50,0.18)","#2e7d32",
-         "latest_HR, latest_RR, latest_SpO₂, latest_Temp, latest_SBP, latest_DBP, latest_MAP"),
-        ("👁️ Computer Vision",       2,  108, "#ce93d8","rgba(106,27,154,0.18)","#6a1b9a",
-         "GCS Eye Opening (1–4 scale), Stress Score (0–10)"),
-        ("📝 Clinical NLP (TF-IDF)", 90, 108, "#ff8a65","rgba(230,81,0,0.18)","#e65100",
-         "90 SOFA-vocabulary whitelist terms: creatinine, bilirubin, vasopressor, intubated, sepsis … directly mapped to 6 SOFA organ components"),
-    ]
-
-    for _flabel, _fcount, _ftotal, _ftc, _fbg, _fbrd, _fex in _feat_rows:
-        _fw = _fcount / _ftotal * 100
-        st.markdown(f"""
-        <div style="background:{_fbg};border-left:5px solid {_fbrd};border-radius:0 10px 10px 0;
-                    padding:12px 16px;margin:6px 0;box-shadow:0 2px 8px rgba(0,0,0,0.3);">
-            <div style="display:flex;justify-content:space-between;align-items:center;
-                        margin-bottom:6px;">
-                <div style="font-size:13px;font-weight:700;color:{_ftc};">{_flabel}</div>
-                <div style="font-size:14px;font-weight:900;color:{_ftc};">
-                    {_fcount} <span style="font-size:10px;color:#8ab8cc;">/ 108 features ({_fw:.1f}%)</span>
-                </div>
-            </div>
-            <div style="background:rgba(255,255,255,0.1);border-radius:6px;height:10px;margin-bottom:6px;overflow:hidden;">
-                <div style="width:{_fw:.0f}%;background:{_fbrd};height:100%;border-radius:6px;"></div>
-            </div>
-            <div style="font-size:10px;color:#8ab8cc;">{_fex}</div>
-        </div>
-        """, unsafe_allow_html=True)
 
 # =============================================================
 # CONTINUOUS MONITORING — 30-SECOND COUNTDOWN (writes to TOP slots)

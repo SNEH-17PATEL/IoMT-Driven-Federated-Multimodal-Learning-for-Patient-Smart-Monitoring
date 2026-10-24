@@ -1,0 +1,540 @@
+@tailwind base;
+@tailwind utilities;
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Design Tokens — Light mode default / [data-theme="dark"] override
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* Surfaces — clinical white with faint azure undertone */
+  --base:   #f0f5fb;
+  --s0:     #f8fafd;
+  --s1:     #ffffff;
+  --s2:     #f3f7fc;
+  --s3:     #e8f0f8;
+  --s4:     #dce8f4;
+
+  /* Borders — clean, not muddy */
+  --b1:     #c8daea;
+  --b2:     #a8c0d8;
+  --b3:     #7ea4c4;
+
+  /* Text — deep ink, not flat black */
+  --t1:     #0a1628;
+  --t2:     #1e3a5f;
+  --t3:     #4a6885;
+  --t4:     #88a8c8;
+
+  /* Shadows — crisp blue-tinted */
+  --sh-sm:  0 1px 3px rgba(10,22,40,.07), 0 1px 2px rgba(10,22,40,.04);
+  --sh-md:  0 4px 18px rgba(10,22,40,.09), 0 2px 6px rgba(10,22,40,.04);
+  --sh-lg:  0 8px 36px rgba(10,22,40,.11), 0 4px 12px rgba(10,22,40,.05);
+  --sh-xl:  0 16px 56px rgba(10,22,40,.13), 0 8px 22px rgba(10,22,40,.07);
+}
+
+[data-theme="dark"] {
+  /* Surfaces — true deep navy, not flat black */
+  --base:   #060d1a;
+  --s0:     #091120;
+  --s1:     #0d1826;
+  --s2:     #111e2e;
+  --s3:     #162538;
+  --s4:     #1c2e44;
+
+  /* Borders */
+  --b1:     #1c3050;
+  --b2:     #264460;
+  --b3:     #305880;
+
+  /* Text */
+  --t1:     #d4e6f8;
+  --t2:     #8ab4d4;
+  --t3:     #5888a8;
+  --t4:     #3a6080;
+
+  /* Shadows */
+  --sh-sm:  0 1px 4px rgba(0,0,0,.60);
+  --sh-md:  0 4px 20px rgba(0,0,0,.50);
+  --sh-lg:  0 8px 40px rgba(0,0,0,.55);
+  --sh-xl:  0 16px 60px rgba(0,0,0,.60);
+}
+
+/* ── Brand & status tokens (shared across themes) ─────────────────────── */
+:root,
+[data-theme="dark"] {
+  /* Clinical blue — primary brand */
+  --blue:    #1558b0;
+  --blue-l:  #2070cc;
+  --blue-ll: #5599e8;
+
+  /* Medical teal */
+  --teal:    #006d5f;
+  --teal-l:  #008a78;
+  --teal-ll: #00b8a0;
+
+  /* Cyan accent */
+  --cyan:    #0782a8;
+  --cyan-l:  #0a9ec8;
+  --cyan-ll: #32c4e8;
+
+  /* Status */
+  --ok:      #0a6e40;
+  --ok-l:    #0d8a52;
+  --ok-bg:   rgba(10,110,64,.08);
+  --warn:    #9a5c00;
+  --warn-l:  #b87000;
+  --warn-bg: rgba(154,92,0,.08);
+  --danger:  #a01828;
+  --danger-l:#c42038;
+  --danger-bg:rgba(160,24,40,.08);
+
+  /* Typography — Figtree for personality, Lexend for data labels, JetBrains Mono for numbers */
+  --font:         'Figtree', 'Inter', system-ui, -apple-system, sans-serif;
+  --font-display: 'Lexend', 'Figtree', system-ui, sans-serif;
+  --mono:         'JetBrains Mono', 'SF Mono', ui-monospace, 'Fira Code', monospace;
+
+  /* Radius */
+  --r-xs:  3px;
+  --r-sm:  7px;
+  --r-md:  11px;
+  --r-lg:  15px;
+  --r-xl:  19px;
+  --r-2xl: 24px;
+
+  /* Transitions */
+  --ease:              cubic-bezier(.4,0,.2,1);
+  --ease-spring:       cubic-bezier(.34,1.56,.64,1);
+  --ease-spring-soft:  cubic-bezier(.34,1.12,.64,1);
+  --ease-out-smooth:   cubic-bezier(.22,1,.36,1);
+}
+
+/* Dark-mode status/accent overrides */
+[data-theme="dark"] {
+  --ok-l:      #18c872;
+  --ok-bg:     rgba(16,140,84,.10);
+  --warn-l:    #e89818;
+  --warn-bg:   rgba(185,112,8,.10);
+  --danger-l:  #e03858;
+  --danger-bg: rgba(175,36,60,.10);
+  --teal:      #009888;
+  --teal-l:    #00b8a0;
+  --teal-ll:   #40e0cc;
+  --blue-l:    #3888e8;
+  --blue-ll:   #6aaaf8;
+  --cyan-l:    #1ab8d8;
+  --cyan-ll:   #58d8f8;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Base styles
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  font-optical-sizing: auto;
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--base);
+  color: var(--t1);
+  font-family: var(--font);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: 15px;
+  line-height: 1.6;
+  letter-spacing: -0.005em;
+  transition: background 0.25s var(--ease), color 0.25s var(--ease);
+}
+
+#root { min-height: 100vh; }
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+/* ── Scrollbar ─────────────────────────────────────────────────────────── */
+::-webkit-scrollbar        { width: 4px; height: 4px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: var(--b2); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--b3); }
+
+/* ── Selection ─────────────────────────────────────────────────────────── */
+::selection { background: rgba(32,112,204,.18); color: var(--t1); }
+
+/* ── Focus ring ────────────────────────────────────────────────────────── */
+:focus-visible {
+  outline: 2px solid var(--blue-l);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Keyframes
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@keyframes fadeUp {
+  from { opacity:0; transform:translateY(16px); }
+  to   { opacity:1; transform:translateY(0); }
+}
+@keyframes fadeIn {
+  from { opacity:0; }
+  to   { opacity:1; }
+}
+@keyframes slideDown {
+  from { opacity:0; transform:translateY(-10px); }
+  to   { opacity:1; transform:translateY(0); }
+}
+@keyframes slideRight {
+  from { opacity:0; transform:translateX(-12px); }
+  to   { opacity:1; transform:translateX(0); }
+}
+@keyframes shimmer {
+  from { background-position: -200% 0; }
+  to   { background-position:  200% 0; }
+}
+@keyframes themeFade {
+  from { opacity:0.5; }
+  to   { opacity:1; }
+}
+@keyframes iconPulse {
+  0%,100% { transform: scale(1);    opacity: 1;   }
+  50%      { transform: scale(1.12); opacity: 0.72; }
+}
+@keyframes heartbeat {
+  0%   { transform: scale(1);    }
+  12%  { transform: scale(1.20); }
+  24%  { transform: scale(1);    }
+  36%  { transform: scale(1.12); }
+  50%  { transform: scale(1);    }
+  100% { transform: scale(1);    }
+}
+@keyframes ecgDraw {
+  from { stroke-dashoffset: 600; opacity: 0; }
+  8%   { opacity: 1; }
+  to   { stroke-dashoffset: 0;   opacity: 1; }
+}
+@keyframes ecgScroll {
+  from { stroke-dashoffset: 0;    }
+  to   { stroke-dashoffset: -220; }
+}
+@keyframes floatY {
+  0%,100% { transform: translateY(0); }
+  50%      { transform: translateY(-7px); }
+}
+@keyframes glowPulse {
+  0%,100% { box-shadow: 0 0 0 0 var(--glow-color, rgba(32,112,204,0)); }
+  50%      { box-shadow: 0 0 0 8px var(--glow-color, rgba(32,112,204,0.10)); }
+}
+@keyframes cardReveal {
+  from { opacity:0; transform: translateY(22px) scale(0.97); }
+  to   { opacity:1; transform: translateY(0) scale(1); }
+}
+@keyframes popIn {
+  from { opacity:0; transform: scale(0.90); }
+  to   { opacity:1; transform: scale(1); }
+}
+@keyframes valueTick {
+  0%,100% { opacity:1; }
+  35%     { opacity:0.50; }
+}
+@keyframes scanLine {
+  from { top: 0; opacity: 0.4; }
+  to   { top: 100%; opacity: 0; }
+}
+@keyframes breathe {
+  0%,100% { opacity: 0.6; transform: scale(1); }
+  50%      { opacity: 1;   transform: scale(1.06); }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Utility classes
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.animate-fade-up    { animation: fadeUp    0.40s var(--ease) both; }
+.animate-fade-in    { animation: fadeIn    0.28s var(--ease) both; }
+.animate-slide-down { animation: slideDown 0.28s var(--ease) both; }
+.animate-slide-right{ animation: slideRight 0.30s var(--ease) both; }
+.animate-theme      { animation: themeFade 0.22s var(--ease); }
+.animate-float      { animation: floatY 4.5s ease-in-out infinite; }
+.animate-card-reveal{ animation: cardReveal 0.48s var(--ease-spring) both; }
+.animate-breathe    { animation: breathe 2.8s ease-in-out infinite; }
+
+/* Staggered children — up to 9 items */
+.stagger > *:nth-child(1) { animation-delay: .04s; }
+.stagger > *:nth-child(2) { animation-delay: .09s; }
+.stagger > *:nth-child(3) { animation-delay: .14s; }
+.stagger > *:nth-child(4) { animation-delay: .19s; }
+.stagger > *:nth-child(5) { animation-delay: .24s; }
+.stagger > *:nth-child(6) { animation-delay: .29s; }
+.stagger > *:nth-child(7) { animation-delay: .34s; }
+.stagger > *:nth-child(8) { animation-delay: .39s; }
+.stagger > *:nth-child(9) { animation-delay: .44s; }
+
+/* ── Shimmer skeleton ──────────────────────────────────────────────────── */
+.skeleton {
+  background: linear-gradient(90deg, var(--s2) 25%, var(--s3) 50%, var(--s2) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.8s infinite;
+  border-radius: var(--r-md);
+}
+
+/* ── Glassmorphism ─────────────────────────────────────────────────────── */
+.glass {
+  background: rgba(255,255,255,0.68);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid rgba(255,255,255,0.60);
+}
+[data-theme="dark"] .glass {
+  background: rgba(13,24,38,0.80);
+  border: 1px solid rgba(255,255,255,0.07);
+}
+
+/* ── Surface cards ─────────────────────────────────────────────────────── */
+.card {
+  background: var(--s1);
+  border: 1px solid var(--b1);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-sm);
+  transition: border-color 0.22s var(--ease-out-smooth),
+              box-shadow   0.28s var(--ease-out-smooth),
+              transform    0.32s var(--ease-spring-soft);
+}
+.card:hover {
+  box-shadow: var(--sh-md);
+  transform: translateY(-2px);
+  border-color: var(--b2);
+}
+.card:active {
+  transform: scale(0.985) translateY(0);
+  transition-duration: 80ms;
+}
+.card-elevated {
+  background: linear-gradient(150deg, var(--s2) 0%, var(--s1) 100%);
+  border: 1px solid var(--b1);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-md);
+}
+
+/* ── Pill labels ───────────────────────────────────────────────────────── */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 99px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  font-family: var(--font-display);
+}
+
+/* ── Monospace numbers ─────────────────────────────────────────────────── */
+.num {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* ── Section label ─────────────────────────────────────────────────────── */
+.section-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--t3);
+  font-family: var(--font-display);
+}
+.section-label::before {
+  content: '';
+  display: block;
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--blue-l);
+  flex-shrink: 0;
+}
+
+/* ── Ambient page background ───────────────────────────────────────────── */
+/* Refined clinical graph-paper dot grid — tighter, more clinical */
+.ambient-page {
+  position: relative;
+  isolation: isolate;
+}
+.ambient-page::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  /* Dual-grid: fine 18px grid + medium 54px accent dots */
+  background-image:
+    url("data:image/svg+xml,%3Csvg width='18' height='18' viewBox='0 0 18 18' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='9' cy='9' r='0.7' fill='rgba(32%2C90%2C180%2C0.07)'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg width='54' height='54' viewBox='0 0 54 54' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='27' cy='27' r='1.4' fill='rgba(32%2C90%2C180%2C0.13)'/%3E%3C/svg%3E");
+  background-size: 18px 18px, 54px 54px;
+  background-attachment: local;
+}
+[data-theme="dark"] .ambient-page::before {
+  background-image:
+    url("data:image/svg+xml,%3Csvg width='18' height='18' viewBox='0 0 18 18' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='9' cy='9' r='0.7' fill='rgba(60%2C130%2C255%2C0.07)'/%3E%3C/svg%3E"),
+    url("data:image/svg+xml,%3Csvg width='54' height='54' viewBox='0 0 54 54' xmlns='http://www.w3.org/2000/svg'%3E%3Ccircle cx='27' cy='27' r='1.4' fill='rgba(60%2C130%2C255%2C0.14)'/%3E%3C/svg%3E");
+}
+.ambient-page > * { position: relative; z-index: 1; }
+
+/* ── Live ECG ──────────────────────────────────────────────────────────── */
+.ecg-line svg path {
+  animation: ecgScroll 2.2s linear infinite;
+}
+
+/* ── Data chip ─────────────────────────────────────────────────────────── */
+.data-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: var(--r-sm);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .03em;
+  background: var(--s2);
+  border: 1px solid var(--b1);
+  color: var(--t2);
+}
+
+/* ── Status dot — pulse animation ──────────────────────────────────────── */
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  position: relative;
+  display: inline-block;
+}
+.status-dot::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  opacity: 0;
+  animation: breathe 2s ease-in-out infinite;
+}
+
+/* ── Clinical divider ──────────────────────────────────────────────────── */
+.clinical-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2.5rem 0;
+}
+.clinical-divider::before,
+.clinical-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(to right, transparent, var(--b1));
+}
+.clinical-divider::after {
+  background: linear-gradient(to left, transparent, var(--b1));
+}
+
+/* ── Glow card — elevated interactive surface ──────────────────────────── */
+.glow-card {
+  background: var(--s1);
+  border: 1px solid var(--b1);
+  border-radius: var(--r-xl);
+  box-shadow: var(--sh-sm);
+  transition:
+    box-shadow 0.28s var(--ease-out-smooth),
+    border-color 0.22s var(--ease-out-smooth),
+    transform 0.32s var(--ease-spring-soft);
+}
+.glow-card:hover {
+  box-shadow: var(--sh-lg);
+  border-color: var(--b2);
+  transform: translateY(-3px);
+}
+
+/* ══ AOS overrides — match clinical easing ═════════════════════════════════ */
+[data-aos] { pointer-events: none; }
+[data-aos].aos-animate { pointer-events: auto; }
+
+/* Custom cubic easing for AOS */
+[data-aos][data-aos][data-aos-easing="ease-out-cubic"],
+body[data-aos-easing="ease-out-cubic"] [data-aos] {
+  transition-timing-function: cubic-bezier(.22,1,.36,1);
+}
+
+/* ══ Live animations ════════════════════════════════════════════════════════ */
+
+/* Continuous orbit ring — used on SOFA/risk pulse indicators */
+@keyframes orbitRing {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* Radar sweep — used on live monitoring indicators */
+@keyframes radarSweep {
+  0%   { transform: rotate(0deg);   opacity: 0.90; }
+  90%  { transform: rotate(320deg); opacity: 0.90; }
+  100% { transform: rotate(360deg); opacity: 0; }
+}
+
+/* Number value tick — subtle flash when value updates */
+@keyframes valuePop {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(1.08); filter: brightness(1.35); }
+  100% { transform: scale(1); }
+}
+
+/* Slide-in from below for AOS elements that need more travel */
+@keyframes riseIn {
+  from { opacity: 0; transform: translateY(32px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Horizontal swipe-in */
+@keyframes swipeInLeft {
+  from { opacity: 0; transform: translateX(-28px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes swipeInRight {
+  from { opacity: 0; transform: translateX(28px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* Glow pulse ring — for risk-color indicators */
+@keyframes riskGlow {
+  0%, 100% { box-shadow: 0 0 0 0 var(--glow-color, rgba(32,112,204,0)); }
+  50%       { box-shadow: 0 0 0 10px var(--glow-color, rgba(32,112,204,0)); }
+}
+
+/* Signal bar — for the "LIVE" badge */
+@keyframes signalPulse {
+  0%, 100% { height: 4px; opacity: 0.5; }
+  50%       { height: 12px; opacity: 1; }
+}
+
+/* ══ Utility animation classes ══════════════════════════════════════════════ */
+.animate-value-pop { animation: valuePop 0.28s var(--ease-spring) both; }
+.animate-rise-in   { animation: riseIn 0.55s var(--ease-out-smooth) both; }
+.animate-swipe-left  { animation: swipeInLeft  0.45s var(--ease-out-smooth) both; }
+.animate-swipe-right { animation: swipeInRight 0.45s var(--ease-out-smooth) both; }
+
+/* ── Reduced motion ────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.12ms !important;
+  }
+  .ambient-page::before { animation: none; }
+}

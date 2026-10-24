@@ -68,42 +68,40 @@ Traditional machine learning requires centralising all hospital data in one plac
 ## 3. What the System Does — End to End
 
 ```
-INPUTS (entered by nurse/doctor in Streamlit sidebar)
-  ├─ Clinical Notes (free text: history, medications, observations)
+INPUTS (auto-read from SQLite DB every 90 seconds — no manual entry needed)
+  ├─ Clinical Notes (from patient_vitals table in icu_monitor.db)
   ├─ 7 Vital Signs: HR, RR, SpO₂, Temperature, SBP, DBP, MAP
   ├─ GCS Eye Opening (1–4) — neurological indicator
   └─ Stress Score (0–10) — behavioural/physiological distress
 
-PREPROCESSING
-  ├─ Append new vitals to rolling 20-reading sliding window
+PREPROCESSING (FastAPI backend — ml_service.py)
+  ├─ Read next DB row via get_sample_patient_row(patient_id, row_idx)
+  ├─ Append new vitals to rolling 20-reading SQLite sliding window
   ├─ Compute 9 trend features (mean, std, min from last 20 readings)
   ├─ Extract 7 latest vital values (current state)
   ├─ Convert clinical notes to 90 TF-IDF features (SOFA vocabulary whitelist)
   └─ Combine into 108-feature vector → StandardScaler
 
-PREDICTION
+PREDICTION (FastAPI backend — ml_service.py)
   └─ Federated PyTorch DNN (108→128→64→32→1)
      → Raw SOFA score (0–24)
      → Risk level: Low (<5) / Moderate (5–9) / High (≥10)
      → Alert fires if predicted SOFA ≥ 8
+     → SHAP DeepExplainer → top 5 clinical features
 
-EXPLAINABILITY
-  ├─ SHAP DeepExplainer → top 7 clinical features driving the prediction
-  ├─ Clinical interpretation of each feature
-  └─ Key risk factors mapped from SHAP
-
-LLM CLINICAL REPORT
-  ├─ Groq Llama 3.3 70B called 3 times
+LLM CLINICAL REPORT (FastAPI backend — llm_service.py)
+  ├─ Groq openai/gpt-oss-120b, temp=0.2, max_tokens=3500
   ├─ For High Risk: IMMEDIATE ACTIONS listed first (30-min horizon)
   ├─ For normal: Current condition, cause, forecast, actions
-  ├─ TF-IDF cosine similarity → consistency score (0–1)
-  └─ Reliability label: High (≥0.85) / Moderate / Low
+  ├─ Judge: openai/gpt-oss-20b → reliability score (12s timeout)
+  ├─ 90s in-process cache (care_mode|sofa|hr|spo2 key)
+  └─ Fires only when clinical values change (reportKey guard in frontend)
 
-DISPLAY (4 tabs in Streamlit)
-  ├─ Tab 1: Risk Assessment — SOFA, severity, vital trend charts, prediction history
-  ├─ Tab 2: Explainability — SHAP table, clinical interpretations, key risk factors
-  ├─ Tab 3: AI Clinical Report — LLM output, consistency score, all 3 responses
-  └─ Tab 4: Federated Learning — FL config, model architecture, DP status
+DISPLAY (ClinIQ React dashboard — single scrollable page, no tabs)
+  ├─ Section 1: SOFA score (large, risk-colored) + 6 vital cards (color-coded)
+  ├─ Section 2: 6 Recharts vital trend line charts (last 20 readings)
+  └─ Section 3: Hospital/Home Care toggle → 4 LLM section cards → SHAP bars
+                → reliability badge → clinical disclaimer
 ```
 
 ---
@@ -728,9 +726,9 @@ VITAL_UNITS = {
 ### Provider and Model
 
 - **Provider:** Groq (fast inference API)
-- **Model:** `llama-3.3-70b-versatile`
-- **Why Groq:** Extremely fast inference compared to OpenAI. Near-real-time response for ICU decision support where speed matters.
-- **Why this model:** Llama 3.3 70B offers strong clinical reasoning capability at a scale appropriate for structured medical context analysis.
+- **Model:** `openai/gpt-oss-120b` (main report), `openai/gpt-oss-20b` (judge — reliability, 12s timeout)
+- **Why Groq:** Extremely fast inference compared to other providers. Near-real-time response for ICU decision support where speed matters.
+- **Why this model:** `openai/gpt-oss-120b` delivers high-quality structured clinical reasoning. Quality is always preferred over speed per project requirements.
 
 ### LLM Prompt Structure
 
@@ -849,16 +847,15 @@ When the alert fires, an expanded advisory panel appears automatically in Tab 1 
 
 ## 17. Complete App Pipeline — Step by Step
 
-When the "🚀 Run Prediction" button is clicked, the following sequence executes in `app.py`:
+When the 90-second timer fires in `useMonitor.js`, the following sequence executes:
 
 ### Step 1 — Input Validation
 All 7 vital signs are checked against physiologically possible ranges (HR: 30–220, SpO₂: 50–100, etc.). Invalid inputs stop execution and display an error. The Groq API key is checked.
 
 ### Step 2 — Sliding Window Update
-- Load `models/patient_vitals.csv`
-- Append current vitals as a new row with timestamp
-- Apply `tail(20)` to keep last 20 rows
-- Save updated CSV
+- Read next row from `sample_patients` table in `icu_monitor.db`
+- Append vitals to `patient_vitals` table
+- Query last 20 rows for this patient from `patient_vitals`
 
 ### Step 3 — Trend Feature Computation
 Compute 9 trend features from the 20-row window: HR_mean, HR_std, RR_mean, SpO2_mean, SpO2_min, Temp_mean, SBP_mean, DBP_mean, MAP_mean
@@ -883,37 +880,86 @@ Convert to `torch.FloatTensor`. Run through `ICUModel` in `eval()` mode with `to
 - SOFA 5–9 → Moderate Risk 🟡
 - SOFA ≥ 10 → High Risk 🔴 (clinical definition)
 
-### Step 10 — Alert Banner
-If SOFA ≥ 8 (ALERT_THRESHOLD): display red `st.error()` banner + auto-expanded High Risk Advisory panel.
-If SOFA ≥ 5: yellow `st.warning()` banner.
+### Step 10 — Alert Flag
+`is_alert = predicted_sofa >= 8.0`. Frontend renders red AlertBanner if true.
 
 ### Step 11 — Save Prediction History
-Append current prediction to `models/prediction_history.csv`: timestamp, SOFA, risk level, HR, RR, SpO₂, Temp, SBP, MAP, GCS, Stress. Keep last 50 rows.
+Append to `prediction_history` table in `icu_monitor.db`: timestamp, SOFA, risk level, HR, RR, SpO₂, Temp, SBP, MAP, GCS, Stress.
 
 ### Step 12 — SHAP Computation
-With spinner: `explainer.shap_values(X_tensor)` → 618 SHAP values. Filter to clinically relevant features → top 7 → clinical interpretations + key risk factors. (108 total SHAP values)
+`explainer.shap_values(X_tensor)` → 108 SHAP values. Filter to clinically relevant features → top 5 returned as `shap_top5` in JSON.
 
-### Step 13 — Trend Analysis
-For each of 7 vitals: compute trend direction (increasing/stable/decreasing from polyfit slope) and status (low/normal/high from normal range comparison). Combine: "SpO₂ → low & decreasing".
+### Step 13 — Return JSON to Frontend
+Full predict result returned. Frontend updates SOFA gauge, vital cards, SHAP panel.
 
-### Step 14 — LLM Prompt Construction
-Build the risk-adaptive prompt (urgency header for High Risk, standard for others). Include all 7 sections of patient data.
+### Step 14 — LLM Trigger Check (frontend)
+`reportKey()` computes `"patient_id|sofa|HR|SpO2|SBP|GCS"`. If key changed or care mode switched → call POST /api/report. Otherwise show cached report.
 
-### Step 15 — LLM Self-Consistency (3 Groq calls)
-With spinner: call Groq 3 times (temperature=0.7). Compute TF-IDF cosine similarity → consistency score → reliability label.
+### Step 15 — LLM Prompt + Groq Call (backend)
+Check 90s in-process cache first. If miss: build risk-adaptive prompt, call `openai/gpt-oss-120b` (temp=0.2, 3500 tokens). Strip `<think>` blocks. Parse into 4 sections.
 
-### Step 16 — Display
-Render across 4 tabs with all computed information.
+### Step 16 — Judge Reliability (backend)
+Call `openai/gpt-oss-20b` in a 12s-timeout thread. Reliability score computed. Return report JSON to frontend.
+
+### Step 17 — Display (single-page React, no tabs)
+Section 1: SOFA + vitals. Section 2: Recharts trend charts. Section 3: LLM sections + SHAP bars (anime.js springs) + reliability badge.
 
 ---
 
 ## 18. All Files and Their Roles
 
-### `app.py` — The Main Application
-The complete Streamlit web application. Contains the entire inference pipeline from user input to LLM output. All display logic. Imports `ICUModel`, `get_trend`, `classify_range` from `model_utils.py`.
+### `backend/main.py` — FastAPI Entry Point
+Registers all API routers. CORS configured for ports 5173/5174/5175 (Vite dev servers).
+Loads `.env` with python-dotenv on startup.
 
-### `fl_dashboard.py` — FL Simulation Dashboard ✅ Implemented
-Standalone Streamlit app (1,480 lines) that visually simulates the federated learning process in real time. Shows all 6 FL phases (distribute → train H0 → train H1 → train H2 → aggregate → complete) with animated network diagram, Plotly MAE/R² charts, weight histograms, layer heatmap, and round history table. Run with `streamlit run fl_dashboard.py`.
+### `backend/api/predict.py` — POST /api/predict
+Accepts `{patient_id, row_idx}`. Calls `run_prediction()` from ml_service.
+Returns full prediction JSON (sofa_score, vitals, shap_top5, key_risks, etc.).
+
+### `backend/api/report.py` — POST /api/report
+Accepts `{patient_id, care_mode, predict_result}`. Calls `generate_report()` from llm_service.
+Returns `{sections, reliability_score, reliability_label, care_mode}`.
+
+### `backend/services/ml_service.py` — SOFA Inference Pipeline
+Loads all 5 model artifacts with `@lru_cache`. Full pipeline:
+read DB → sliding window → trend features → TF-IDF → scale → DNN → SHAP.
+Saves vitals + prediction to SQLite after each call.
+
+### `backend/services/llm_service.py` — LLM + Reliability
+Groq calls with `openai/gpt-oss-120b` (main) and `openai/gpt-oss-20b` (judge).
+90s in-process cache (`_CACHE_TTL = 90`). Strips `<think>` blocks.
+Parses response into 4-section dict. Runs judge in separate thread (12s timeout).
+
+### `frontend/src/hooks/useMonitor.js` — 90-Second Polling Hook
+`fetchingRef` guard prevents overlapping fetches.
+`countdown` freezes at 1 during in-flight fetch.
+`setCountdown(90)` only fires in the `finally` block after data arrives.
+Resets `rowIdxRef` to 0 when `patientId` changes.
+
+### `frontend/src/components/report/ReportContainer.jsx` — LLM Call Gating
+`reportKey()` builds string `"patient_id|sofa|HR|SpO2|SBP|GCS"`.
+`lastKeyRef` + `lastCareModeRef` — only calls LLM when key or mode changes.
+`isCurrent` cleanup flag prevents stale async updates.
+
+### `frontend/src/components/report/SHAPPanel.jsx` — SHAP Bar Animations
+anime.js v4.5.0 (`import { animate } from 'animejs'`) with spring physics.
+`displayFactors` state persists last non-empty factors (handles backend SHAP failures).
+`animated.current` reset on each new factor batch.
+
+### `frontend/src/components/layout/HeaderBar.jsx` — Top Navigation
+68px main bar + 32px status strip below.
+BrandMark with glass glint, LiveChip with ECG line animation, PatientPill.
+ThemeToggle (light/dark), Exit button (navigates to patient selection).
+Risk-color 2px shimmer accent at very top.
+
+### `frontend/src/pages/SelectPatient.jsx` — Patient Selection Landing
+Own `TopNav` (72px) with useClock hook and NavEcg animated SVG.
+`SystemStatusBar` (34px) with 3 status items and dividers.
+3 patient cards with risk-color accents and "Begin Monitoring" buttons.
+
+### `fl_dashboard.py` — FL Simulation Dashboard ✅ Archived
+Original Streamlit app (1,480 lines). Archived to `archive/`. Shows FL phases with
+animated network diagram, Plotly charts, weight histograms, and round history table.
 
 ### `cv_monitor.py` — Computer Vision Monitor ✅ Implemented
 Standalone OpenCV application that measures Stress Score (0–10) and GCS Eye Score (E1–E4) in real time from a webcam, using PSPI from MediaPipe blendshapes and a 30-second rolling GCS window. Downloads `face_landmarker.task` (~12 MB) on first run. Run with `python cv_monitor.py`.
@@ -983,13 +1029,33 @@ Generated by Phase 0 of `train_federated.py`.
 
 ## 19. Configuration Reference
 
-### `app.py` Constants
+### `backend/services/ml_service.py` Constants
 
 ```python
-MODEL_PATH    = "models/"
-VITALS_FILE   = MODEL_PATH + "patient_vitals.csv"
-HISTORY_FILE  = MODEL_PATH + "prediction_history.csv"
 ALERT_THRESHOLD = 8.0   # alert fires when predicted SOFA ≥ this value
+MODEL_DIR       = "models/"
+DB_PATH         = "models/icu_monitor.db"
+```
+
+### `backend/services/llm_service.py` Constants
+
+```python
+_CACHE_TTL  = 90              # seconds — skip re-calling LLM if same patient+mode+sofa
+_LLM_MODEL  = "openai/gpt-oss-120b"   # main report model
+_JUDGE_MODEL = "openai/gpt-oss-20b"   # reliability judge model
+_MAX_TOKENS  = 3500           # main model max tokens
+_JUDGE_TOKENS = 300           # judge model max tokens
+_JUDGE_TIMEOUT = 12           # judge thread timeout in seconds
+```
+
+### `frontend/src/hooks/useMonitor.js` Constants
+
+```js
+// All four countdown references use 90 (not 30)
+const [countdown, setCountdown] = useState(90)  // initial
+setCountdown(90)                                  // on patient change
+return 1                                          // freeze floor (not 0)
+setCountdown(90)                                  // finally block reset
 ```
 
 ### `train_federated.py` Constants
@@ -1206,16 +1272,22 @@ To enable: set `USE_DP=True` in `train_federated.py` (and `client.py` for real F
 | Model R² | 0.3357 |
 | High Risk recall (threshold ≥ 8) | 52.5% |
 | SHAP background samples | 300 |
-| LLM calls per prediction | 3 |
-| LLM model | openai/gpt-oss-120b |
+| LLM calls per prediction | 2 (1 main + 1 judge) |
+| LLM main model | openai/gpt-oss-120b |
+| LLM judge model | openai/gpt-oss-20b |
 | LLM temperature | 0.2 |
-| LLM max tokens | 2500 |
+| LLM main max tokens | 3500 |
+| LLM judge max tokens | 300 |
+| LLM judge timeout | 12s |
+| LLM cache TTL | 90s |
+| Frontend refresh interval | 90s |
 | Alert threshold | SOFA ≥ 8 |
-| Prediction history kept | 50 predictions |
+| Prediction history kept | SQLite (all rows, no limit) |
 | FedYogi η | 0.01 |
 | FedProx μ | 0.5 |
 
 ---
 
 *End of Project Context Document.*
-*This document was generated after complete implementation of the ICU CDSS capstone project.*
+*Last updated: October 2026 — updated to reflect ClinIQ React+FastAPI system.*
+*Streamlit (app.py) has been archived. ClinIQ is the production dashboard.*

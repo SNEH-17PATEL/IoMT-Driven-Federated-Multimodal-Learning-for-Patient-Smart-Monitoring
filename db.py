@@ -175,15 +175,24 @@ def init_db() -> None:
             WHERE id = NEW.id;
         END;
 
-        CREATE TRIGGER IF NOT EXISTS trg_ft_created_at
-        AFTER INSERT ON fl_training
-        BEGIN
-            UPDATE fl_training
-            SET created_at = datetime('now','localtime'),
-                updated_at = datetime('now','localtime')
-            WHERE rowid = NEW.rowid;
-        END;
     """)
+
+    # fl_training trigger is created only when the table exists (it is created
+    # dynamically by migrate_to_db.py, not here). Safe to re-run: IF NOT EXISTS.
+    fl_exists = cur.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='fl_training'"
+    ).fetchone()
+    if fl_exists:
+        cur.executescript("""
+            CREATE TRIGGER IF NOT EXISTS trg_ft_created_at
+            AFTER INSERT ON fl_training
+            BEGIN
+                UPDATE fl_training
+                SET created_at = datetime('now','localtime'),
+                    updated_at = datetime('now','localtime')
+                WHERE rowid = NEW.rowid;
+            END;
+        """)
 
     conn.commit()
     conn.close()
