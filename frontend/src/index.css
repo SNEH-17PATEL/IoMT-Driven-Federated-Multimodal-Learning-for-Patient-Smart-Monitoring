@@ -250,6 +250,44 @@ h1, h2, h3, h4, h5, h6 {
   0%,100% { opacity: 0.6; transform: scale(1); }
   50%      { opacity: 1;   transform: scale(1.06); }
 }
+/* Per-icon always-on animations */
+@keyframes bpNudgeUp {
+  0%,100% { transform: translateY(0); }
+  50%      { transform: translateY(-3px); }
+}
+@keyframes bpNudgeDn {
+  0%,100% { transform: translateY(0); }
+  50%      { transform: translateY(3px); }
+}
+@keyframes mapSpin {
+  0%   { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+@keyframes dropSway {
+  0%,100% { transform: rotate(-7deg); }
+  50%      { transform: rotate(7deg); }
+}
+@keyframes eyeBlink {
+  0%,88%,100% { transform: scaleY(1); }
+  93%          { transform: scaleY(0.12); }
+}
+@keyframes stressSway {
+  0%,100% { transform: rotate(-6deg); }
+  50%      { transform: rotate(6deg); }
+}
+@keyframes barRise {
+  0%,100% { transform: scaleY(1) translateY(0); }
+  30%      { transform: scaleY(1.18) translateY(-1px); }
+  60%      { transform: scaleY(0.88) translateY(1px); }
+}
+@keyframes shieldPulse {
+  0%,100% { transform: scale(1);    opacity: 1; }
+  50%      { transform: scale(1.12); opacity: 0.82; }
+}
+@keyframes noteFloat {
+  0%,100% { transform: translateY(0) rotate(-1.5deg); }
+  50%      { transform: translateY(-3px) rotate(1.5deg); }
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    Utility classes
@@ -528,6 +566,12 @@ body[data-aos-easing="ease-out-cubic"] [data-aos] {
 .animate-rise-in   { animation: riseIn 0.55s var(--ease-out-smooth) both; }
 .animate-swipe-left  { animation: swipeInLeft  0.45s var(--ease-out-smooth) both; }
 .animate-swipe-right { animation: swipeInRight 0.45s var(--ease-out-smooth) both; }
+
+/* ── Generic pulse (opacity+scale) — used by live indicator dots ──────── */
+@keyframes pulse {
+  0%, 100% { opacity: 1;   transform: scale(1);    }
+  50%       { opacity: 0.5; transform: scale(1.35); }
+}
 
 /* ── Reduced motion ────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {

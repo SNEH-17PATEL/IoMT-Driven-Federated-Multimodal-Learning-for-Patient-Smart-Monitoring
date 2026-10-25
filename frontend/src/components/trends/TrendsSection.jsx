@@ -18,6 +18,7 @@ const CHARTS = [
   { dataKey: 'SpO2', label: 'SpO₂',         unit: '%',    color: '#0f9259', normalLo: 95,   normalHi: 100  },
   { dataKey: 'Temp', label: 'Temperature',  unit: '°C',   color: '#d97a10', normalLo: 36.0, normalHi: 37.5 },
   { dataKey: 'SBP',  label: 'Sys. BP',      unit: 'mmHg', color: '#8840c8', normalLo: 90,   normalHi: 120  },
+  { dataKey: 'DBP',  label: 'Dia. BP',      unit: 'mmHg', color: '#e0607a', normalLo: 60,   normalHi: 80   },
   { dataKey: 'MAP',  label: 'MAP',          unit: 'mmHg', color: '#009688', normalLo: 70,   normalHi: 100  },
 ]
 
@@ -47,9 +48,6 @@ export default function TrendsSection({ patientId }) {
             <motion.div
               key={c.dataKey}
               variants={chartVariants}
-              data-aos="fade-up"
-              data-aos-delay={i * 70}
-              data-aos-duration="550"
             >
               <TrendChart
                 data={vitalsData ?? []}

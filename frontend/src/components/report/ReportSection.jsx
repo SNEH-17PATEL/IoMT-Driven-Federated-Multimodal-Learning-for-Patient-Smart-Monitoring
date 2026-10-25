@@ -72,7 +72,7 @@ function renderLine(line, idx, accentColor) {
     )
   }
 
-  const text = trimmed.startsWith('•') ? trimmed.slice(1).trim() : trimmed
+  const text = /^[•\-\*]\s/.test(trimmed) ? trimmed.replace(/^[•\-\*]\s*/, '').trim() : trimmed
 
   if (text.includes('⚡')) {
     return (

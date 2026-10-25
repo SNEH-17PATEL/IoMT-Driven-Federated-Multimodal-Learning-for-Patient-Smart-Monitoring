@@ -102,7 +102,7 @@ def _parse_llm_sections(text: str) -> dict:
     positions = []
     for sec in _NAMES:
         m = re.search(
-            rf'(?:^|(?<=\n))[ \t]*(?:\d+\.\s*)?\*{{0,2}}\s*{re.escape(sec)}\s*\*{{0,2}}\s*[—\-:–]?\s*',
+            rf'(?:^|(?<=\n))[ \t]*#*[ \t]*(?:\d+\.\s*)?\*{{0,2}}\s*{re.escape(sec)}\s*\*{{0,2}}\s*[—\-:–]?\s*',
             text, re.IGNORECASE
         )
         if m:
@@ -177,10 +177,11 @@ def _build_prompt(predict_result: dict, care_mode: str) -> tuple[str, str]:
 {section_instructions}
 
 ━━━ STRICT FORMATTING RULES ━━━
-• Every item inside a section must be a bullet starting with •
+• Every item inside a section must be a bullet starting with the • character (Unicode bullet, not * or -)
 • Domain subheadings (Respiratory:, Hemodynamics:, etc.) go on their own line without a bullet — they act as sub-section labels
+• Write each of the 4 section headings EXACTLY as shown above — no # symbols, no markdown, no numbering prefix
 • Use **bold** ONLY for: drug names, critical numeric values, ⚡-marked actions, and organ system labels in CURRENT CONDITION bullets
-• Do NOT use ** to create your own section headings — use only the 4 headings listed above
+• Do NOT use # markdown headings or ** to create your own section headings — use only the 4 headings listed above
 • Do NOT write a closing summary, footnote, or disclaimer — end after the last bullet
 • Write every section completely — do not stop mid-sentence or truncate
 
@@ -264,10 +265,11 @@ Base all clinical reasoning strictly on the data above. Do not invent values or 
 {section_instructions}
 
 ━━━ STRICT FORMATTING RULES ━━━
-• Every item inside a section must be a bullet starting with •
+• Every item inside a section must be a bullet starting with the • character (Unicode bullet, not * or -)
 • Sub-headings like "For the Nurse:", "For the Family:", "Home Remedies:", "⚠️ Go to Hospital NOW if:" go on their own line WITHOUT a bullet
+• Write each of the 4 section headings EXACTLY as shown above — no # symbols, no markdown, no numbering prefix
 • Use **bold** ONLY for: the most critical actions, key numbers the family must watch, and ⚡-marked urgent actions
-• Do NOT use ** to create your own section headings — use only the 4 headings listed above
+• Do NOT use # markdown headings or ** to create your own section headings — use only the 4 headings listed above
 • Write in plain, calm English throughout — avoid clinical abbreviations and unexplained jargon
 • Do NOT write a closing summary, footnote, or disclaimer — end after the last bullet
 • Write every section completely — do not stop mid-sentence or truncate
@@ -549,7 +551,7 @@ def call_judge_llm(api_key: str, main_response: str, vitals: dict, sofa_val: flo
                 '"dangerous_details":""}'
             )
             resp = client.chat.completions.create(
-                model="openai/gpt-oss-20b",
+                model="qwen/qwen3.8-27b",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
                 max_tokens=300,

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { animate } from 'animejs'
 
+
 const BG = 'linear-gradient(165deg, #07111e 0%, #0c1828 55%, #091420 100%)'
 
 function ArcGauge({ score, maxScore = 24, color, isRefreshing }) {

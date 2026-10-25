@@ -36,6 +36,7 @@ const SECTIONS = [
   { key: 'IMMEDIATE ACTIONS', subtitle: 'Recommended next steps',           color: 'var(--danger-l)' },
 ]
 
+
 function ReportSkeleton() {
   return (
     <div className="space-y-4">
@@ -49,6 +50,32 @@ function ReportSkeleton() {
         ))}
       </div>
       <div className="h-44 rounded-xl skeleton" />
+    </div>
+  )
+}
+
+function ReportErrorState({ message }) {
+  const isRateLimit = message && (
+    message.includes('429') || message.includes('rate_limit') || message.includes('Rate limit')
+  )
+  return (
+    <div style={{
+      borderRadius: 'var(--r-xl)',
+      background: 'var(--s1)',
+      border: '1px solid var(--b1)',
+      padding: '32px 24px',
+      textAlign: 'center',
+      fontFamily: 'var(--font-display)',
+    }}>
+      <div style={{ fontSize: '26px', marginBottom: 10, opacity: 0.5 }}>⚠</div>
+      <p style={{ fontWeight: 700, color: 'var(--t1)', fontSize: '14px', marginBottom: 8 }}>
+        AI Assessment Unavailable
+      </p>
+      <p style={{ fontSize: '12px', color: 'var(--t3)', maxWidth: 460, margin: '0 auto', lineHeight: 1.6 }}>
+        {isRateLimit
+          ? 'The AI model\'s daily token quota has been reached. The report will regenerate automatically on the next reading cycle once the quota resets (usually within 24 h).'
+          : 'The AI service returned an error. It will retry automatically on the next reading.'}
+      </p>
     </div>
   )
 }
@@ -70,24 +97,29 @@ function StaleReportNotice({ message }) {
   )
 }
 
-export default function ReportContainer({ predictData, careMode }) {
+export default function ReportContainer({ predictData, careMode, onReportData }) {
   const [reportData,     setReportData]     = useState(null)
   const [prevReportData, setPrevReportData] = useState(null)
   const [isLoading,      setIsLoading]      = useState(false)
   const [error,          setError]          = useState(null)
 
   /* Track the last key + careMode that actually triggered an LLM call.
-     New vitals every 30s produce a new predictData object — we only want
+     New vitals every 90s produce a new predictData object — we only want
      to call the LLM when the clinical values (SOFA, HR, SpO2, SBP, GCS)
      genuinely change, or when the user switches care mode. */
   const lastKeyRef      = useRef(null)
   const lastCareModeRef = useRef(null)
+  // Each actual API call gets a unique ID. Old responses are ignored only
+  // when a *newer* call has started — not just because predictData re-fired
+  // with the same clinical values (which would set isCurrent=false via cleanup
+  // even though no new request was made, permanently burying the response).
+  const reqIdRef = useRef(0)
 
   useEffect(() => {
     if (!predictData) return
 
-    const key      = reportKey(predictData)
-    const modeChanged  = careMode !== lastCareModeRef.current
+    const key           = reportKey(predictData)
+    const modeChanged   = careMode !== lastCareModeRef.current
     const valuesChanged = key !== lastKeyRef.current
 
     // Skip LLM call if neither clinical values nor care mode changed
@@ -96,25 +128,25 @@ export default function ReportContainer({ predictData, careMode }) {
     lastKeyRef.current      = key
     lastCareModeRef.current = careMode
 
-    let isCurrent = true
+    // Stamp this request; any older in-flight response will see a stale ID
+    const myId = ++reqIdRef.current
 
     setIsLoading(true)
     setError(null)
 
     generateReport(predictData.patient_id, careMode, predictData)
       .then(r => {
-        if (!isCurrent) return
+        if (reqIdRef.current !== myId) return
         setReportData(r.data)
         setPrevReportData(r.data)
         setIsLoading(false)
+        onReportData?.(r.data)
       })
       .catch(() => {
-        if (!isCurrent) return
+        if (reqIdRef.current !== myId) return
         setError('Report generation failed. Showing previous assessment.')
         setIsLoading(false)
       })
-
-    return () => { isCurrent = false }
   }, [predictData, careMode])
 
   if (isLoading && !prevReportData) return <ReportSkeleton />
@@ -138,7 +170,8 @@ export default function ReportContainer({ predictData, careMode }) {
   const display = reportData ?? prevReportData
   if (!display) return null
 
-  const { sections, reliability_score, reliability_label, reliability_color, caution } = display
+  const { sections, reliability_score, reliability_label, reliability_color, caution, error: reportError } = display
+  const hasNoSections = !sections || !Object.values(sections).some(v => v)
 
   return (
     <div className="space-y-4">
@@ -149,46 +182,53 @@ export default function ReportContainer({ predictData, careMode }) {
         <StaleReportNotice message={error} />
       )}
 
-      <div style={{ opacity: isLoading ? 0.75 : 1, transition: 'opacity 0.3s' }}>
-        <motion.div
-          initial={{ opacity: 0, y: 12 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ type: 'spring', stiffness: 300, damping: 28 }}
-        >
-          <ReliabilityBadge
-            reliability_score={reliability_score}
-            reliability_label={reliability_label}
-            reliability_color={reliability_color}
-            caution={caution}
-          />
-        </motion.div>
-
-        <motion.div
-          className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4"
-          variants={reportGridVariants}
-          initial="hidden"
-          animate="visible"
-        >
-          {SECTIONS.map(({ key, subtitle, color }, i) => (
+      {/* API returned an error and there's no content to show */}
+      {reportError && hasNoSections ? (
+        <ReportErrorState message={reportError} />
+      ) : (
+        <div style={{ opacity: isLoading ? 0.75 : 1, transition: 'opacity 0.3s' }}>
+          {reliability_score != null && (
             <motion.div
-              key={key}
-              variants={reportCardVariants}
-              data-aos={i % 2 === 0 ? 'fade-right' : 'fade-left'}
-              data-aos-delay={i * 80}
-              data-aos-duration="600"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ type: 'spring', stiffness: 300, damping: 28 }}
             >
-              <ReportSection
-                name={key}
-                content={sections?.[key] ?? ''}
-                color={color}
-                subtitle={subtitle}
+              <ReliabilityBadge
+                reliability_score={reliability_score}
+                reliability_label={reliability_label}
+                reliability_color={reliability_color}
+                caution={caution}
               />
             </motion.div>
-          ))}
-        </motion.div>
+          )}
 
-        <SHAPPanel factors={predictData?.shap_top5} />
-      </div>
+          <motion.div
+            className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4"
+            variants={reportGridVariants}
+            initial="hidden"
+            animate="visible"
+          >
+            {SECTIONS.map(({ key, subtitle, color }, i) => (
+              <motion.div
+                key={key}
+                variants={reportCardVariants}
+                data-aos={i % 2 === 0 ? 'fade-right' : 'fade-left'}
+                data-aos-delay={i * 80}
+                data-aos-duration="600"
+              >
+                <ReportSection
+                  name={key}
+                  content={sections?.[key] ?? ''}
+                  color={color}
+                  subtitle={subtitle}
+                />
+              </motion.div>
+            ))}
+          </motion.div>
+
+          <SHAPPanel factors={predictData?.shap_top5} />
+        </div>
+      )}
     </div>
   )
 }

@@ -12,6 +12,14 @@ import VitalsGrid from '../components/overview/VitalsGrid.jsx'
 import TrendsSection from '../components/trends/TrendsSection.jsx'
 import ReportToggle from '../components/report/ReportToggle.jsx'
 import ReportContainer from '../components/report/ReportContainer.jsx'
+import HistoryDrawer from '../components/history/HistoryDrawer.jsx'
+import HistoryFAB from '../components/history/HistoryFAB.jsx'
+import CVMonitorFAB from '../components/cv/CVMonitorFAB.jsx'
+import CVMonitorModal from '../components/cv/CVMonitorModal.jsx'
+import SOFAValidationDrawer from '../components/validation/SOFAValidationDrawer.jsx'
+import LLMValidationDrawer from '../components/validation/LLMValidationDrawer.jsx'
+import SOFAValidationFAB from '../components/validation/SOFAValidationFAB.jsx'
+import LLMValidationFAB from '../components/validation/LLMValidationFAB.jsx'
 
 /* ─────────────────────────────────────────────────────────────────────────── */
 /* Clean SVG icons — no emojis, clinical precision                            */
@@ -259,6 +267,11 @@ export default function MonitorDashboard() {
 
   const { predictData, isRefreshing, lastUpdated, countdown, error } = useMonitor(id)
   const [careMode, setCareMode] = useState('hospital')
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [cvOpen, setCvOpen] = useState(false)
+  const [sofaValidOpen, setSofaValidOpen] = useState(false)
+  const [llmValidOpen, setLlmValidOpen] = useState(false)
+  const [llmReportData, setLlmReportData] = useState(null)
 
   /* Refresh AOS whenever new data renders so scroll-reveal picks up late-mounted elements */
   useEffect(() => {
@@ -285,6 +298,7 @@ export default function MonitorDashboard() {
       <main className="max-w-7xl mx-auto px-5 py-8">
         {error && <RefreshErrorBanner message={error} />}
 
+        {/* ── Section 1: Current Status — needs predictData ── */}
         {!predictData ? (
           <LoadingSkeleton />
         ) : (
@@ -302,7 +316,6 @@ export default function MonitorDashboard() {
               />
             </motion.div>
 
-            {/* ── Section 1: Current Status ── */}
             <motion.section
               initial={{ opacity: 0, y: 24 }}
               animate={{ opacity: 1, y: 0 }}
@@ -317,63 +330,110 @@ export default function MonitorDashboard() {
                 <VitalsGrid predictData={predictData} isRefreshing={isRefreshing} />
               </div>
             </motion.section>
-
-            <Divider />
-
-            {/* ── Section 2: Vital Trends ── */}
-            <motion.section
-              initial={{ opacity: 0, y: 28 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, amount: 0.15 }}
-              transition={{ type: 'spring', stiffness: 240, damping: 26 }}
-            >
-              <SectionHeading accent="var(--teal-l)" sub="last 20 readings" Icon={TrendsIcon}>Vital Trends</SectionHeading>
-              <TrendsSection patientId={id} />
-            </motion.section>
-
-            <Divider />
-
-            {/* ── Section 3: AI Clinical Report ── */}
-            <motion.section
-              initial={{ opacity: 0, y: 28 }}
-              whileInView={{ opacity: 1, y: 0 }}
-              viewport={{ once: true, amount: 0.12 }}
-              transition={{ type: 'spring', stiffness: 240, damping: 26, delay: 0.04 }}
-            >
-              <div className="flex items-center justify-between mb-7">
-                <div className="flex items-center gap-3.5">
-                  <div style={{
-                    width: 3, height: 28, borderRadius: 2, flexShrink: 0,
-                    background: 'linear-gradient(to bottom, var(--cyan-l), color-mix(in srgb, var(--cyan-l) 15%, transparent))',
-                    boxShadow: '0 0 10px color-mix(in srgb, var(--cyan-l) 50%, transparent)',
-                  }} />
-                  <div style={{
-                    width: 30, height: 30, borderRadius: 8, flexShrink: 0,
-                    background: 'color-mix(in srgb, var(--cyan-l) 12%, transparent)',
-                    border: '1px solid color-mix(in srgb, var(--cyan-l) 25%, transparent)',
-                    color: 'var(--cyan-l)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  }}>
-                    <ReportIcon />
-                  </div>
-                  <h2 style={{ fontSize: '16px', fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--t1)', fontFamily: 'var(--font-display)', margin: 0, lineHeight: 1.2 }}>
-                    AI Clinical Report
-                  </h2>
-                </div>
-                <ReportToggle careMode={careMode} setCareMode={setCareMode} />
-              </div>
-
-              <ReportContainer predictData={predictData} careMode={careMode} />
-
-              <p
-                className="text-center text-xs mt-10 pb-4"
-                style={{ color: 'var(--t3)', fontFamily: 'var(--font-display)' }}
-              >
-                Research prototype · All clinical decisions require qualified healthcare professionals
-              </p>
-            </motion.section>
           </>
         )}
+
+        <Divider />
+
+        {/* ── Section 2: Vital Trends — independent, fires immediately ── */}
+        <section>
+          <SectionHeading accent="var(--teal-l)" sub="last 20 readings" Icon={TrendsIcon}>Vital Trends</SectionHeading>
+          <TrendsSection patientId={id} />
+        </section>
+
+        <Divider />
+
+        {/* ── Section 3: AI Clinical Report — needs predictData ── */}
+        {predictData && (
+          <motion.section
+            initial={{ opacity: 0, y: 28 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true, amount: 0.12 }}
+            transition={{ type: 'spring', stiffness: 240, damping: 26, delay: 0.04 }}
+          >
+            <div className="flex items-center justify-between mb-7">
+              <div className="flex items-center gap-3.5">
+                <div style={{
+                  width: 3, height: 28, borderRadius: 2, flexShrink: 0,
+                  background: 'linear-gradient(to bottom, var(--cyan-l), color-mix(in srgb, var(--cyan-l) 15%, transparent))',
+                  boxShadow: '0 0 10px color-mix(in srgb, var(--cyan-l) 50%, transparent)',
+                }} />
+                <div style={{
+                  width: 30, height: 30, borderRadius: 8, flexShrink: 0,
+                  background: 'color-mix(in srgb, var(--cyan-l) 12%, transparent)',
+                  border: '1px solid color-mix(in srgb, var(--cyan-l) 25%, transparent)',
+                  color: 'var(--cyan-l)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  <ReportIcon />
+                </div>
+                <h2 style={{ fontSize: '16px', fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--t1)', fontFamily: 'var(--font-display)', margin: 0, lineHeight: 1.2 }}>
+                  AI Clinical Report
+                </h2>
+              </div>
+              <ReportToggle careMode={careMode} setCareMode={setCareMode} />
+            </div>
+
+            <ReportContainer
+              predictData={predictData}
+              careMode={careMode}
+              onReportData={setLlmReportData}
+            />
+
+            <p
+              className="text-center text-xs mt-10 pb-4"
+              style={{ color: 'var(--t3)', fontFamily: 'var(--font-display)' }}
+            >
+              Research prototype · All clinical decisions require qualified healthcare professionals
+            </p>
+          </motion.section>
+        )}
       </main>
+
+      {/* ── FAB stack (right rail, bottom → top: History / CV / LLM / SOFA) ── */}
+      {predictData && (
+        <>
+          <HistoryFAB
+            onClick={() => setHistoryOpen(true)}
+            recordCount={0}
+          />
+          <CVMonitorFAB
+            onClick={() => setCvOpen(v => !v)}
+            isActive={cvOpen}
+          />
+          <LLMValidationFAB
+            onClick={() => setLlmValidOpen(true)}
+            hasData={!!llmReportData}
+          />
+          <SOFAValidationFAB
+            onClick={() => setSofaValidOpen(true)}
+          />
+        </>
+      )}
+
+      {/* ── CV Monitor Modal ── */}
+      <CVMonitorModal open={cvOpen} onClose={() => setCvOpen(false)} />
+
+      {/* ── History drawer ── */}
+      <HistoryDrawer
+        patientId={id ? Number(id) : null}
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+      />
+
+      {/* ── SOFA Validation drawer ── */}
+      <SOFAValidationDrawer
+        open={sofaValidOpen}
+        onClose={() => setSofaValidOpen(false)}
+        predictData={predictData}
+      />
+
+      {/* ── LLM Validation drawer ── */}
+      <LLMValidationDrawer
+        open={llmValidOpen}
+        onClose={() => setLlmValidOpen(false)}
+        reportData={llmReportData}
+        careMode={careMode}
+      />
     </div>
   )
 }

@@ -4,6 +4,20 @@ import { useRef, useEffect } from 'react'
 /* color-mix helper — works with both CSS vars and hex colors, unlike ${color}XX hex-alpha hacks */
 const a = (color, pct) => `color-mix(in srgb, ${color} ${pct}%, transparent)`
 
+/* Always-on per-icon animation — every icon moves at all times; abnormal = faster */
+function iconAnimation(label, isAbnormal) {
+  const l = label.toLowerCase()
+  const spd = isAbnormal ? 0.65 : 1   // speed multiplier — tighter when alert
+  if (l.includes('heart'))             return `heartbeat   ${(1.9  * spd).toFixed(1)}s ease-in-out infinite`
+  if (l.includes('spo') || l.includes('o₂')) return `dropSway ${(3.4 * spd).toFixed(1)}s ease-in-out infinite`
+  if (l.includes('resp'))              return `breathe     ${(4.0  * spd).toFixed(1)}s ease-in-out infinite`
+  if (l.includes('temp'))              return `floatY      ${(3.6  * spd).toFixed(1)}s ease-in-out infinite`
+  if (l.includes('sys') || l.includes('sbp')) return `bpNudgeUp ${(2.6 * spd).toFixed(1)}s ease-in-out infinite`
+  if (l.includes('map'))               return `mapSpin     ${(9.0  * spd).toFixed(1)}s linear infinite`
+  if (l.includes('dia') || l.includes('dbp')) return `bpNudgeDn ${(2.6 * spd).toFixed(1)}s ease-in-out infinite`
+  return `iconPulse ${(3.0 * spd).toFixed(1)}s ease-in-out infinite`
+}
+
 const STATUS = {
   normal: { color: 'var(--ok-l)',     label: 'Normal',       arrow: null },
   high:   { color: 'var(--danger-l)', label: 'Above Normal', arrow: '↑'  },
@@ -57,11 +71,7 @@ function WideVitalCard({ Icon, label, value, unit, status, normalLo, normalHi })
     ? (Number.isInteger(value) ? value : value.toFixed(1))
     : '—'
 
-  const iconAnim = isAbnormal
-    ? (label.toLowerCase().includes('heart')
-        ? 'heartbeat 1.4s ease-in-out infinite'
-        : 'iconPulse 2.4s ease-in-out infinite')
-    : 'none'
+  const iconAnim = iconAnimation(label, isAbnormal)
 
   return (
     <motion.div
@@ -199,11 +209,7 @@ export default function VitalCard({ Icon, label, value, unit, status, normalLo, 
     ? (Number.isInteger(value) ? value : value.toFixed(1))
     : '—'
 
-  const iconAnim = isAbnormal
-    ? (label.toLowerCase().includes('heart')
-        ? 'heartbeat 1.4s ease-in-out infinite'
-        : 'iconPulse 2.4s ease-in-out infinite')
-    : 'none'
+  const iconAnim = iconAnimation(label, isAbnormal)
 
   return (
     <motion.div

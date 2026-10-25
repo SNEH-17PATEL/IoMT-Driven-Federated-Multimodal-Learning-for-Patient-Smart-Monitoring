@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -25,6 +26,7 @@ def get_history(patient_id: int, limit: int = 5):
         raise HTTPException(status_code=400, detail="limit must be between 1 and 50")
     try:
         df = get_prediction_history(patient_id, limit=limit)
-        return df.to_dict(orient="records")
+        # pandas .to_json() converts NaN → null; parse back so FastAPI can serialize
+        return json.loads(df.to_json(orient="records"))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"History query failed: {str(e)}")

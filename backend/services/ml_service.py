@@ -392,6 +392,7 @@ def run_prediction(patient_id: int, row_idx: int) -> dict:
         "SpO₂":       SpO2,
         "Temp (°C)":  Temp,
         "SBP":        SBP,
+        "DBP":        DBP,
         "MAP":        MAP,
         "GCS Eye":    GCS_eye,
         "Stress":     stress,
@@ -545,4 +546,9 @@ def run_prediction(patient_id: int, row_idx: int) -> dict:
         "_cv_block":          cv_block,
         "_risk_block":        risk_block,
         "_explanation_block": explanation_block,
+        # Validation fields consumed by SOFAValidationDrawer (Layer 2)
+        "_prev_sofa":         _prev_sofa,
+        "_sofa_jump":         round(_sofa_jump, 1) if _sofa_jump is not None else None,
+        "_traj_flagged":      _traj_flagged,
+        "_traj_msg":          _traj_msg,
     }

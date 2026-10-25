@@ -75,6 +75,7 @@ def init_db() -> None:
             SpO2        REAL,
             Temp        REAL,
             SBP         REAL,
+            DBP         REAL,
             MAP         REAL,
             GCS_Eye     INTEGER,
             Stress      REAL,
@@ -82,6 +83,11 @@ def init_db() -> None:
             updated_at  TEXT
         )
     """)
+    # Migrate existing DBs that may not have DBP column yet
+    try:
+        cur.execute("ALTER TABLE prediction_history ADD COLUMN DBP REAL")
+    except Exception:
+        pass  # column already exists
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_ph_patient ON prediction_history(patient)"
     )
@@ -246,9 +252,15 @@ def append_patient_vitals(patient: int, row: dict) -> None:
 def get_prediction_history(patient: int, limit: int = 50) -> pd.DataFrame:
     """Return the last `limit` predictions for a patient."""
     conn = get_conn()
+    # Ensure DBP column exists in case this DB predates the migration
+    try:
+        conn.execute("ALTER TABLE prediction_history ADD COLUMN DBP REAL")
+        conn.commit()
+    except Exception:
+        pass
     df = pd.read_sql(
         "SELECT Timestamp, Reading, SOFA, Risk, HR, RR, SpO2 as 'SpO₂', "
-        "       Temp as 'Temp (°C)', SBP, MAP, GCS_Eye as 'GCS Eye', Stress "
+        "       Temp as 'Temp (°C)', SBP, DBP, MAP, GCS_Eye as 'GCS Eye', Stress "
         "FROM prediction_history "
         "WHERE patient = ? "
         "ORDER BY id DESC LIMIT ?",
@@ -262,17 +274,24 @@ def append_prediction(patient: int, row: dict) -> None:
     """Insert one prediction row and keep only the most recent 50 per patient."""
     conn = get_conn()
     cur  = conn.cursor()
+    # Live migration: add DBP column to existing DBs that predate this field
+    try:
+        cur.execute("ALTER TABLE prediction_history ADD COLUMN DBP REAL")
+        conn.commit()
+    except Exception:
+        pass  # column already exists — safe to ignore
     cur.execute(
         "INSERT INTO prediction_history "
         "(patient, Timestamp, Reading, SOFA, Risk, HR, RR, SpO2, Temp, "
-        " SBP, MAP, GCS_Eye, Stress) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " SBP, DBP, MAP, GCS_Eye, Stress) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (patient,
          row.get("Timestamp"), row.get("Reading"),
          row.get("SOFA"),      row.get("Risk"),
          row.get("HR"),        row.get("RR"),
          row.get("SpO₂"),      row.get("Temp (°C)"),
-         row.get("SBP"),       row.get("MAP"),
+         row.get("SBP"),       row.get("DBP"),
+         row.get("MAP"),
          row.get("GCS Eye"),   row.get("Stress"))
     )
     # Keep only last 50 per patient
