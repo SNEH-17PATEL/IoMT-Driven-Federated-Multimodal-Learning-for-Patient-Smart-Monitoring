@@ -113,7 +113,7 @@ Top things to fix first:
 ### C9 — The DB write on every GET and per-request connections can corrupt/lose data under concurrency `[Likely]`
 - `get_prediction_history` runs `ALTER TABLE … ADD COLUMN DBP` (a schema write) on every GET (`db.py:256`), inside a read endpoint,
   and swallows every exception. `append_prediction` does the same.
-- `get_conn()` has no `timeout`/`busy_timeout`; FastAPI runs sync endpoints in a thread pool, so concurrent
+- `get_conn()` relies on sqlite3's default 5 s timeout (no explicit `busy_timeout`); FastAPI runs sync endpoints in a thread pool, so concurrent
   predict + history + vitals calls can raise `database is locked` (WAL helps but not for the writer/ALTER case).
 - `append_patient_vitals` is insert-then-trim in separate statements without a transaction guard across the two calls in
   `run_prediction`; two overlapping predicts for the same patient interleave and leave a window < 20 or with duplicates.
