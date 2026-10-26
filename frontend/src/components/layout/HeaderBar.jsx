@@ -408,8 +408,10 @@ export default function HeaderBar({ patient, predictData, isRefreshing, lastUpda
         }}
       >
         {[
-          { dot: '#22c55e', label: 'All Systems Operational' },
-          { dot: 'var(--t3)', label: `${patient ? '1' : '0'} Active Patient${patient ? '' : 's'}` },
+          connectionLost
+            ? { dot: '#ef4444', label: 'Connection Issue' }
+            : { dot: '#22c55e', label: 'All Systems Operational' },
+          { dot: 'var(--t3)', label: patient ? '1 Active Patient' : 'No Active Patient' },
           { dot: 'var(--t3)', label: 'ICU Ward A' },
         ].map(({ dot, label }, i) => (
           <div

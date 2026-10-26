@@ -272,6 +272,7 @@ export default function MonitorDashboard() {
   const [sofaValidOpen, setSofaValidOpen] = useState(false)
   const [llmValidOpen, setLlmValidOpen] = useState(false)
   const [llmReportData, setLlmReportData] = useState(null)
+  const [cvLiveData, setCvLiveData] = useState(null) // { stress, gcs_eye } from CV monitor
 
   /* Refresh AOS whenever new data renders so scroll-reveal picks up late-mounted elements */
   useEffect(() => {
@@ -411,7 +412,7 @@ export default function MonitorDashboard() {
       )}
 
       {/* ── CV Monitor Modal ── */}
-      <CVMonitorModal open={cvOpen} onClose={() => setCvOpen(false)} />
+      <CVMonitorModal open={cvOpen} onClose={() => setCvOpen(false)} onCVResults={setCvLiveData} />
 
       {/* ── History drawer ── */}
       <HistoryDrawer

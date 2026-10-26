@@ -36,7 +36,9 @@ function CustomTooltip({ active, payload, label, unit, color }) {
 function formatTime(timeStr) {
   if (!timeStr) return ''
   const parts = timeStr.split(' ')
-  return parts.length === 2 ? parts[1].slice(0, 5) : timeStr.slice(0, 5)
+  // Show HH:MM:SS for real-time readings (they share the same HH:MM minute)
+  const timePart = parts.length === 2 ? parts[1] : timeStr
+  return timePart.slice(0, 8) // HH:MM:SS
 }
 
 /* Latest value badge in the header */
@@ -64,8 +66,10 @@ export default function TrendChart({ data, dataKey, label, unit, color, normalLo
   const yMax = Math.ceil(Math.max(dataMax, normalHi) + pad)
 
   const formatted = data?.map(d => ({ ...d, _time: formatTime(d.time) })) ?? []
-  const hasAbnormal = values.some(v => v < normalLo || v > normalHi)
+  const hasAbnormal      = values.some(v => v < normalLo || v > normalHi)
   const isAbnormalLatest = latest != null && (latest < normalLo || latest > normalHi)
+  const latestIsHigh     = latest != null && latest > normalHi
+  const latestIsLow      = latest != null && latest < normalLo
 
   return (
     <div
@@ -126,7 +130,7 @@ export default function TrendChart({ data, dataKey, label, unit, color, normalLo
 
         {/* Right: latest value + abnormal badge */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-          {hasAbnormal && (
+          {isAbnormalLatest && (
             <span
               style={{
                 color: color,
@@ -141,7 +145,7 @@ export default function TrendChart({ data, dataKey, label, unit, color, normalLo
                 textTransform: 'uppercase',
               }}
             >
-              ↑ abnormal
+              {latestIsHigh ? '↑' : '↓'} abnormal
             </span>
           )}
           <LatestBadge value={latest} unit={unit} color={isAbnormalLatest ? color : 'rgba(255,255,255,0.80)'} />

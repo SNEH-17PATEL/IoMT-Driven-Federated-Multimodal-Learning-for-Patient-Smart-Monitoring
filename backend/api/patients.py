@@ -21,7 +21,7 @@ PATIENTS = {
         "description": "Community-acquired pneumonia — on supplemental O₂",
         "color":       "#e6a817",
         "risk_level":  "Moderate Risk",
-        "sofa_range":  "4 – 8",
+        "sofa_range":  "5 – 9",
     },
     3: {
         "id":          3,
@@ -31,7 +31,7 @@ PATIENTS = {
         "description": "Septic shock — vasopressors, intubated, multi-organ failure",
         "color":       "#dc3545",
         "risk_level":  "High Risk",
-        "sofa_range":  "8 – 18",
+        "sofa_range":  "10 – 24",
     },
 }
 

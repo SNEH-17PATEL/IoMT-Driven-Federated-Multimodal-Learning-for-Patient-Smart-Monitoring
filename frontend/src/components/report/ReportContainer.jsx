@@ -142,9 +142,15 @@ export default function ReportContainer({ predictData, careMode, onReportData })
         setIsLoading(false)
         onReportData?.(r.data)
       })
-      .catch(() => {
+      .catch(err => {
         if (reqIdRef.current !== myId) return
-        setError('Report generation failed. Showing previous assessment.')
+        const status = err?.response?.status
+        const detail = err?.response?.data?.detail ?? err?.message ?? null
+        const base = status === 401 ? 'Invalid API key'
+          : status === 429 ? 'Rate limit reached — resets in ~24h'
+          : status === 503 ? 'AI service temporarily unavailable'
+          : detail ?? 'Report generation failed'
+        setError(`${base}. Showing previous assessment.`)
         setIsLoading(false)
       })
   }, [predictData, careMode])

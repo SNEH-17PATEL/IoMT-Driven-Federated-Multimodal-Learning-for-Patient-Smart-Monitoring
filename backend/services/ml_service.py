@@ -225,7 +225,11 @@ def check_trajectory(patient_id, cur_sofa, HR_val, RR_val, SpO2_val, SBP_val, MA
     if len(hist) < 2:
         return None, 0.0, False, "First reading"
 
-    prev      = hist.iloc[-1]
+    # Skip duplicate rows (StrictMode / rapid reloads can write the same reading twice)
+    prev = hist.iloc[-1]
+    if (hist.iloc[-1].get("SOFA") == hist.iloc[0].get("SOFA") and
+            hist.iloc[-1].get("Timestamp") == hist.iloc[0].get("Timestamp")):
+        return None, 0.0, False, "First reading"
     prev_sofa = float(prev.get("SOFA", cur_sofa))
     jump      = cur_sofa - prev_sofa
 
@@ -551,4 +555,6 @@ def run_prediction(patient_id: int, row_idx: int) -> dict:
         "_sofa_jump":         round(_sofa_jump, 1) if _sofa_jump is not None else None,
         "_traj_flagged":      _traj_flagged,
         "_traj_msg":          _traj_msg,
+        # Confidence derived from conformal interval width (narrower = more confident)
+        "confidence":         round(max(0.0, 1.0 - conformal_q / 12.0), 3),
     }

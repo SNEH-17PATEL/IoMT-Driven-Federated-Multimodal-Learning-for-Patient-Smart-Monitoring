@@ -8,7 +8,7 @@ const a = (c, p) => `color-mix(in srgb, ${c} ${p}%, transparent)`
 /* Column definitions — order, label, width, normal ranges for coloring */
 const COLS = [
   { key: 'Timestamp',  label: 'Timestamp',    w: 130, type: 'text' },
-  { key: 'SOFA',       label: 'SOFA',          w: 64,  type: 'num', lo: 0,    hi: 6    },
+  { key: 'SOFA',       label: 'SOFA',          w: 64,  type: 'num', lo: 0,    hi: 9    },
   { key: 'Risk',       label: 'Risk',          w: 90,  type: 'risk' },
   { key: 'HR',         label: 'HR',            w: 56,  type: 'num', lo: 60,   hi: 100, unit: 'bpm' },
   { key: 'RR',         label: 'RR',            w: 50,  type: 'num', lo: 12,   hi: 20,  unit: '/m' },
@@ -24,7 +24,7 @@ const COLS = [
 /* ── Risk badge ─────────────────────────────────────────────────────────── */
 const RISK_STYLES = {
   'Low Risk':      { color: 'var(--ok-l)',     bg: a('var(--ok-l)', 12)     },
-  'Medium Risk':   { color: 'var(--warn-l)',   bg: a('var(--warn-l)', 12)   },
+  'Moderate Risk': { color: 'var(--warn-l)',   bg: a('var(--warn-l)', 12)   },
   'High Risk':     { color: 'var(--danger-l)', bg: a('var(--danger-l)', 12) },
   'Critical Risk': { color: 'var(--danger-l)', bg: a('var(--danger-l)', 18) },
 }

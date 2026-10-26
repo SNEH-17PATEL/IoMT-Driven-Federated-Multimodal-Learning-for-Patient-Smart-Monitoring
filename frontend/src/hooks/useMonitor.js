@@ -8,10 +8,11 @@ export function useMonitor(patientId) {
   const [countdown,    setCountdown]    = useState(90)
   const [error,        setError]        = useState(null)
 
-  const rowIdxRef      = useRef(0)
-  const patientIdRef   = useRef(patientId)
-  const fetchingRef    = useRef(false)   // guard: prevent overlapping fetches
-  patientIdRef.current = patientId
+  const rowIdxRef        = useRef(0)
+  const patientIdRef     = useRef(patientId)
+  const fetchingRef      = useRef(false)   // guard: prevent overlapping fetches
+  const lastPatientRef   = useRef(null)    // StrictMode guard: skip duplicate initial fetch
+  patientIdRef.current   = patientId
 
   // Stable fetch function — reads latest values from refs
   const fetchNext = useCallback(async () => {
@@ -27,7 +28,11 @@ export function useMonitor(patientId) {
       rowIdxRef.current += 1
     } catch (err) {
       console.error('Predict failed:', err)
-      setError('Refresh failed — showing last reading. Retrying in 90s.')
+      const detail = err?.response?.data?.detail ?? err?.message ?? null
+      setError(detail
+        ? `Refresh failed (${detail}). Retrying in 90s.`
+        : 'Refresh failed — showing last reading. Retrying in 90s.'
+      )
     } finally {
       setIsRefreshing(false)
       fetchingRef.current = false
@@ -38,7 +43,10 @@ export function useMonitor(patientId) {
   }, [])
 
   // Initial fetch + state reset when patient changes
+  // lastPatientRef prevents React StrictMode's double-invocation from firing two API calls
   useEffect(() => {
+    if (lastPatientRef.current === patientId) return
+    lastPatientRef.current = patientId
     rowIdxRef.current   = 0
     fetchingRef.current = false
     setCountdown(90)

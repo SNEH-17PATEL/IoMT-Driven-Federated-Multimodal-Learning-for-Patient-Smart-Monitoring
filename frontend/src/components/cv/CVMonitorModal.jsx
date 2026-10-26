@@ -217,7 +217,7 @@ function StatusPanel({ status, errorMsg, onRetry }) {
 /* ══════════════════════════════════════════════════════════════════════════════
    MAIN MODAL
 ══════════════════════════════════════════════════════════════════════════════ */
-export default function CVMonitorModal({ open, onClose }) {
+export default function CVMonitorModal({ open, onClose, onCVResults }) {
   const videoRef   = useRef(null)
   const canvasRef  = useRef(null)
   const flRef      = useRef(null)       // FaceLandmarker instance
@@ -400,6 +400,7 @@ export default function CVMonitorModal({ open, onClose }) {
       setGcsScore(score)
       setGcsLabel_(label)
       setGcsColor_(gcsColor(score))
+      onCVResults?.({ stress: sRound, gcs_eye: score })
 
       const obsSec = st.gcsHistory.length >= 2
         ? st.gcsHistory[st.gcsHistory.length - 1].ts - st.gcsHistory[0].ts
@@ -418,6 +419,14 @@ export default function CVMonitorModal({ open, onClose }) {
 
     rafRef.current = requestAnimationFrame(runLoop)
   }, [drawLandmarks, clearCanvas])
+
+  /* ── Escape key closes modal ─────────────────────────────────────────────── */
+  useEffect(() => {
+    if (!open) return
+    const handler = (e) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [open, onClose])
 
   /* ── Initialise / teardown on open ──────────────────────────────────────── */
   useEffect(() => {
@@ -491,6 +500,8 @@ export default function CVMonitorModal({ open, onClose }) {
             ? 'Camera permission denied. Please allow camera access in your browser.'
             : err.name === 'NotFoundError'
             ? 'No camera found. Please connect a webcam and try again.'
+            : (err.message?.toLowerCase().includes('fetch') || err.message?.toLowerCase().includes('network'))
+            ? 'Could not download face detection model — internet connection required for first use.'
             : err.message || 'Unknown error starting the CV monitor.'
           setErrorMsg(msg)
         }
