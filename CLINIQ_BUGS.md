@@ -359,8 +359,8 @@ MIMIC-derived data. `federated_model.pth`, `scaler.pkl`, `tfidf_vectorizer.pkl` 
 ### M26 — Pickled preprocessors were built with a different scikit-learn than documented `[Verified]`
 Loading `tfidf_vectorizer.pkl` raises `InconsistentVersionWarning: … from version 1.9.0 when using version 1.7.1`, but `requirements.txt` says they were fitted with 1.6.1 and pins `<2.0.0`. Unpickling across sklearn versions is explicitly unsupported and can silently change TF-IDF output; the documented pin is wrong.
 
-### M27 — Windows text-encoding crashes `[Verified]`
-`open()` is called without `encoding="utf-8"` in `server.py:134,145`, `train_federated.py:1024`, `ml_service.py:164` (and legacy `app.py:370`, `fl_dashboard.py:914`). `training_metadata.json` contains `→`, `η`, `β`, `μ`; on Windows (cp1252) writing raises `UnicodeEncodeError` and reading raises `UnicodeDecodeError`/mojibake. Printing predict results containing emoji (`risk_icon` 🟢🟡🔴) also fails in a cp1252 console.
+### M27 — Windows console/encoding pitfalls `[Verified]`
+`open()` is called without `encoding="utf-8"` in `server.py:134,145`, `train_federated.py:1024`, `ml_service.py:164` (and legacy `app.py:370`, `fl_dashboard.py:914`). This is currently harmless for `training_metadata.json` because `json.dump` escapes non-ASCII (`→`, `η`, `μ` are stored as `\uXXXX` escapes; verified), but any literal non-ASCII text added later would break on Windows cp1252. The reproduced problem is console output: printing predict results containing emoji (`risk_icon` 🟢🟡🔴), or the scripts' `→`/`✓`/`σ` banners, raises `UnicodeEncodeError` unless `PYTHONIOENCODING=utf-8` is set.
 
 ### M28 — Running the API mutates tracked repository files `[Verified]`
 `models/icu_monitor.db-shm` / `-wal` are tracked in git. Simply exercising the backend checkpointed SQLite and **deleted both files from the working tree** (`git status` showed ` D`). They'll keep appearing as modifications/deletions and can be committed by accident (see M23).
