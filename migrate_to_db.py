@@ -151,8 +151,13 @@ def migrate():
         has_full_schema = True
         print(f"  client {client_id}: {len(df):,} rows imported ✓")
     conn.commit()
-    # Rebuild index after replace/append
-    cur.execute("CREATE INDEX IF NOT EXISTS idx_ft_client ON fl_training(client_id)")
+    # Rebuild index only when the table was actually created/populated
+    if cur.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='fl_training'"
+    ).fetchone():
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ft_client ON fl_training(client_id)"
+        )
     conn.close()
 
     # ── Summary ────────────────────────────────────────────────────────────
@@ -163,7 +168,10 @@ def migrate():
     print("  Migration complete — row counts")
     print("=" * 56)
     for tbl in ["patient_vitals", "prediction_history", "sample_patients", "fl_training"]:
-        n = cur.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0]
+        exists = cur.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (tbl,)
+        ).fetchone()
+        n = cur.execute(f"SELECT COUNT(*) FROM {tbl}").fetchone()[0] if exists else 0
         print(f"  {tbl:<25} {n:>8,} rows")
     db_size = os.path.getsize(DB_PATH) / (1024 * 1024)
     print(f"\n  Database size: {db_size:.1f} MB")

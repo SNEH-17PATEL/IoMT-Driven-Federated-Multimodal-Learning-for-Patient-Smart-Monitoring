@@ -1,0 +1,116 @@
+/**
+ * Vitest global setup file.
+ * Loaded via vitest.config.js → test.setupFiles.
+ */
+import '@testing-library/jest-dom'
+
+// ── CSS custom properties used by components ──────────────────────────────
+// jsdom doesn't parse CSS variables; assign them so components don't crash.
+Object.assign(document.documentElement.style, {
+  '--t1': '#fff', '--t2': '#ccc', '--t3': '#aaa', '--t4': '#888',
+  '--s1': '#0d1a2a', '--s2': '#122236',
+  '--b1': 'rgba(255,255,255,0.08)',
+  '--r-xl': '16px', '--r-lg': '12px',
+  '--ok-l': '#28a745', '--danger-l': '#dc3545', '--warn-l': '#e6a817',
+  '--warn': '#e6a817', '--warn-bg': 'rgba(230,168,23,0.08)',
+  '--blue-l': '#60a5fa', '--cyan-l': '#38bdf8',
+  '--font-display': 'system-ui, sans-serif',
+  '--sh-sm': '0 2px 8px rgba(0,0,0,0.2)',
+})
+
+// ── framer-motion ─────────────────────────────────────────────────────────
+vi.mock('framer-motion', () => ({
+  motion: new Proxy({}, {
+    get: (_, tag) => {
+      const React = require('react')
+      // eslint-disable-next-line react/display-name
+      return React.forwardRef(({ children, ...rest }, ref) => {
+        const filtered = Object.fromEntries(
+          Object.entries(rest).filter(([k]) =>
+            !['initial','animate','exit','transition','variants',
+              'whileHover','whileTap','whileDrag','whileInView',
+              'onHoverStart','onHoverEnd','layoutId'].includes(k)
+          )
+        )
+        return React.createElement(tag, { ...filtered, ref }, children)
+      })
+    },
+  }),
+  AnimatePresence: ({ children }) => children,
+  useReducedMotion: () => false,
+  useAnimation: () => ({ start: vi.fn() }),
+  useInView: () => true,
+}))
+
+// ── animejs ───────────────────────────────────────────────────────────────
+vi.mock('animejs', () => ({
+  animate: vi.fn(),
+  createTimeline: vi.fn(() => ({ add: vi.fn() })),
+  default: {
+    animate: vi.fn(),
+    createTimeline: vi.fn(() => ({ add: vi.fn() })),
+  },
+}))
+
+// ── AOS ───────────────────────────────────────────────────────────────────
+vi.mock('aos', () => ({
+  default: { init: vi.fn(), refresh: vi.fn() },
+}))
+
+// ── recharts ──────────────────────────────────────────────────────────────
+vi.mock('recharts', () => {
+  const React = require('react')
+  const stub = ({ children }) => React.createElement('div', { 'data-testid': 'chart' }, children)
+  return {
+    ResponsiveContainer: stub,
+    LineChart: stub,
+    AreaChart: stub,
+    BarChart: stub,
+    Line: () => null,
+    Area: () => null,
+    Bar: () => null,
+    XAxis: () => null,
+    YAxis: () => null,
+    CartesianGrid: () => null,
+    Tooltip: () => null,
+    Legend: () => null,
+    ReferenceLine: () => null,
+  }
+})
+
+// ── @mediapipe/tasks-vision ────────────────────────────────────────────────
+vi.mock('@mediapipe/tasks-vision', () => ({
+  FaceLandmarker: { createFromOptions: vi.fn() },
+  FilesetResolver: { forVisionTasks: vi.fn() },
+  DrawingUtils: vi.fn(),
+}))
+
+// ── IntersectionObserver (used by SHAPPanel) ──────────────────────────────
+global.IntersectionObserver = class IntersectionObserver {
+  constructor(cb) { this._cb = cb }
+  observe(el) { this._cb([{ isIntersecting: true, target: el }]) }
+  unobserve()  {}
+  disconnect() {}
+}
+
+// ── ResizeObserver (used by recharts responsive container) ────────────────
+global.ResizeObserver = class ResizeObserver {
+  observe()    {}
+  unobserve()  {}
+  disconnect() {}
+}
+
+// ── window.matchMedia ─────────────────────────────────────────────────────
+Object.defineProperty(window, 'matchMedia', {
+  writable: true,
+  value: vi.fn().mockImplementation(query => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  })),
+})
