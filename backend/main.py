@@ -1,4 +1,6 @@
 import os
+import sys
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,7 +9,23 @@ from backend.api import patients, predict, report, history, vitals
 
 load_dotenv()
 
-app = FastAPI(title="ClinIQ API", version="1.0")
+# Ensure repo root (icu_monitor/) is on the path so db.py is importable
+_BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+_ROOT        = os.path.dirname(_BACKEND_DIR)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
+
+from db import init_db  # noqa: E402 — import after path fix
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialise the SQLite schema on startup so a fresh clone doesn't 500."""
+    init_db()
+    yield
+
+
+app = FastAPI(title="ClinIQ API", version="1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

@@ -10,7 +10,7 @@
 3. [Prerequisites](#prerequisites)
 4. [Installation](#installation)
 5. [Project Structure](#project-structure)
-6. [Running the Application](#running-the-application)
+6. [COMPLETE DEMO GUIDE](#complete-demo-guide)
 7. [Dashboard Features](#dashboard-features)
 8. [AI Clinical Report](#ai-clinical-report)
 9. [Model Details](#model-details)
@@ -18,7 +18,8 @@
 11. [Dataset Information](#dataset-information)
 12. [Technology Stack](#technology-stack)
 13. [Database Inspection (SQLite CLI)](#database-inspection-sqlite-cli)
-14. [Troubleshooting](#troubleshooting)
+14. [Test Suite](#test-suite)
+15. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -104,6 +105,7 @@ SOFA + vitals + SHAP top-5  →  openai/gpt-oss-120b  (main assessment, 3500 tok
 | FastAPI + uvicorn | 0.115+ / 0.30+ | API server |
 | Groq API Key | — | LLM clinical report |
 | Flower | 1.8+ | FL training (optional) |
+| Webcam | — | CV Monitor (optional) |
 
 ---
 
@@ -221,41 +223,26 @@ icu_monitor/
 │   ├── tfidf_vectorizer.pkl      ← TF-IDF vectorizer (90 SOFA-vocab terms)
 │   ├── feature_columns.pkl       ← Ordered list of 108 feature names
 │   ├── shap_background.npy       ← 300 background samples for SHAP (300 × 108)
-│   ├── training_metadata.json    ← Training config + performance metrics
-│   ├── patient_vitals/           ← Gitignored legacy CSVs (.gitkeep only)
-│   └── prediction_history/       ← Gitignored legacy CSVs (.gitkeep only)
+│   └── training_metadata.json    ← Training config + performance metrics
 │
 ├── data/
 │   ├── sample_patients/          ← Source CSVs for migrate_to_db.py
-│   │   ├── sample_patient01_data.csv
-│   │   ├── sample_patient02_data.csv
-│   │   └── sample_patient03_data.csv
 │   └── fl_training/              ← MIMIC-III FL training CSVs (gitignored)
-│       └── README.md
 │
-├── tests/                        ← pytest test suite
-│   ├── conftest.py
-│   ├── test_health.py
-│   ├── test_patients.py
-│   ├── test_predict.py
-│   ├── test_report.py
-│   ├── test_history.py
-│   ├── test_vitals.py
-│   └── test_integration.py
+├── tests/                        ← Full test suite (701 tests)
+│   ├── fl/                       ← 287 FL tests (unit + integration + system)
+│   └── cliniq/
+│       ├── backend/              ← 207 FastAPI backend tests
+│       └── frontend/             ← 207 Vitest frontend tests
 │
 ├── docs/                         ← Technical documentation
-│   ├── Project_Context.md
-│   ├── MODEL_DISCUSSION.md
-│   ├── VALIDATION.md
-│   ├── INPUT_OUTPUT.md
-│   ├── TRAIN_FEDERATED.md
-│   ├── CV_MONITOR.md
-│   └── FL_DASHBOARD_PLAN.md
 │
-├── db.py                         ← SQLite read/write helpers (used by backend)
-├── model_utils.py                ← ICUModel architecture (used by ml_service.py)
+├── db.py                         ← SQLite read/write helpers
+├── model_utils.py                ← ICUModel architecture
 ├── migrate_to_db.py              ← One-time CSV → SQLite migration
 ├── train_federated.py            ← FL training script (simulation mode)
+├── fl_dashboard.py               ← Streamlit FL Simulation Dashboard
+├── app.py                        ← Streamlit Legacy ICU Monitor
 ├── server.py                     ← Flower FL server (real FL demo)
 ├── client.py                     ← Flower FL client (real FL demo)
 ├── cv_monitor.py                 ← Computer Vision Monitor (standalone)
@@ -269,34 +256,404 @@ icu_monitor/
 
 ---
 
-## Running the Application
+## COMPLETE DEMO GUIDE
 
-Two processes must run simultaneously — the FastAPI backend and the Vite frontend.
+This section covers every demo-able component of the capstone project with full run commands. All commands run from `icu_monitor/` unless noted otherwise.
 
-### Terminal 1 — Backend
+**Recommended demo order:**
+1. ClinIQ Main Dashboard (most impressive — full-stack AI application)
+2. API Swagger Docs (shows the backend API surface)
+3. FL Simulation Dashboard (Streamlit visualisation of Federated Learning)
+4. FL Training in Terminal (shows real training logs)
+5. Real Flower FL Demo (4 terminals — actual federated clients connecting to server)
+6. Computer Vision Monitor (webcam-based stress detection)
+7. Legacy Streamlit ICU Monitor (original prototype)
+8. Trial ICU Inference App (early research prototype)
+9. Federated Learning Prototype App (early FL prototype)
+10. SQLite Database Inspection (shows raw data and model outputs)
+11. Full Test Suite (demonstrates 701 passing tests)
 
+---
+
+### Demo 1 — ClinIQ Main Dashboard (Full-Stack Web App)
+
+The primary deliverable: React 19 + FastAPI + PyTorch + Groq LLM, all wired together.
+
+**Terminal 1 — Start the FastAPI backend:**
 ```bash
 cd icu_monitor
+source venv/bin/activate
 uvicorn backend.main:app --port 8000 --reload
 ```
 
-Backend is available at **http://localhost:8000**  
-API docs (auto-generated): **http://localhost:8000/docs**
-
-### Terminal 2 — Frontend
-
+**Terminal 2 — Start the React frontend:**
 ```bash
 cd icu_monitor/frontend
 npm run dev
 ```
 
-Dashboard opens at **http://localhost:5174**
+**Open in browser:** http://localhost:5174
 
-### Restart commands (if port 8000 is already in use)
+**What to show:**
+- Patient selection screen — 3 ICU patients with ECG animation
+- Click a patient — Monitor Dashboard loads
+- Live 90-second countdown timer in the header
+- SOFA score gauge (circular, color-coded: green/yellow/red)
+- Vitals Grid — 7 vital signs (HR, RR, SpO₂, Temp, SBP, DBP, MAP) with range classification
+- Vital Trends — Recharts line charts for last 20 readings with normal-range bands
+- AI Clinical Report — 4 sections (Condition, Cause, Forecast, Actions) generated by Groq LLM
+- Reliability Badge — circular score showing 0–100% LLM reliability via 9-method scoring
+- SHAP Panel — top-5 risk drivers with animated bars (anime.js spring physics)
+- Toggle between Hospital and Home Care mode — LLM regenerates report instantly
+- Dark/light theme toggle (top-right)
+- Wait for 90-second cycle — watch vitals update live and SOFA gauge animate
 
+**If port 8000 is busy:**
 ```bash
 lsof -ti :8000 | xargs kill -9
 uvicorn backend.main:app --port 8000 --reload
+```
+
+---
+
+### Demo 2 — API Swagger Docs (Interactive REST API)
+
+Shows all backend endpoints with live testing capability. Backend from Demo 1 must be running.
+
+**Open in browser:** http://localhost:8000/docs
+
+**What to show:**
+- `GET /api/patients` — list all 3 ICU patients (click "Try it out" → Execute)
+- `GET /api/patients/1` — single patient details
+- `POST /api/predict` — run SOFA prediction + SHAP (paste patient id: 1)
+- `POST /api/report` — trigger LLM clinical assessment
+- `GET /api/vitals/1` — last 20 vital sign readings
+- `GET /api/history/1` — full prediction history log
+- Alternatively view the raw JSON at http://localhost:8000/api/patients
+
+---
+
+### Demo 3 — FL Simulation Dashboard (Streamlit)
+
+Interactive visualisation of the Federated Learning process: pick an algorithm, watch rounds train, and explore weight evolution charts.
+
+```bash
+cd icu_monitor
+source venv/bin/activate
+streamlit run fl_dashboard.py
+```
+
+**Open in browser:** http://localhost:8501
+
+**What to show:**
+- Sidebar controls: number of rounds (1–100), algorithm selector (FedAvg / FedYogi / FedProx), number of hospital clients, simulation speed
+- Click **Start FL Simulation** — watch per-round progress bars update live
+- Global Loss chart — training loss curve across rounds
+- Client Loss chart — per-hospital loss (Hospital 0, 1, 2)
+- Global MAE and R² curves — validation metrics improving per round
+- Round Log table — round-by-round summary (H0 Loss, H1 Loss, H2 Loss, Global)
+- Weight Statistics heatmap — mean/std/delta per client per round
+- Layer 1 weights histogram — distribution shift before vs after aggregation
+- Best Round indicator — round with lowest validation MAE highlighted
+- Try FedYogi vs FedAvg: run 20 rounds of each and compare convergence curves
+
+---
+
+### Demo 4 — FL Training in Terminal (Simulation Mode)
+
+Runs the complete federated training pipeline with live logs: BigQuery-sourced MIMIC-III data → 100 FL rounds → saves model weights.
+
+```bash
+cd icu_monitor
+source venv/bin/activate
+python train_federated.py
+```
+
+**What you see in the terminal:**
+```
+Phase 0: Loading FL training data from SQLite...
+  Client 0: 16,050 rows loaded
+  Client 1: 16,050 rows loaded
+  Client 2: 16,050 rows loaded
+
+Phase 1: Initialising global model (108 features, 3 clients)...
+Phase 2: FL Training — FedYogi server, FedProx clients
+  Round   1/100 | Global Loss: 47.23 | MAE: 6.21 | R²: -0.12
+  Round   2/100 | Global Loss: 43.81 | MAE: 5.98 | R²:  0.05
+  ...
+  Round 100/100 | Global Loss: 12.44 | MAE: 1.90 | R²:  0.60
+
+Phase 3: Saving model artifacts...
+  federated_model.pth    saved
+  scaler.pkl             saved
+  tfidf_vectorizer.pkl   saved
+  feature_columns.pkl    saved
+  shap_background.npy    saved
+  training_metadata.json saved
+
+Training complete. MAE: 1.8968 | R²: 0.5995 | AUROC: 0.9461
+```
+
+> Full training takes ~40–60 minutes. For a quick demo, interrupt with Ctrl+C after a few rounds to show the logs.
+
+---
+
+### Demo 5 — Real Flower Federated Learning (4 Terminals)
+
+Demonstrates actual federated learning: a Flower server coordinates 3 independent hospital clients that each train locally and send only weight updates — raw patient data never leaves the client.
+
+**Terminal 1 — Start the FL server:**
+```bash
+cd icu_monitor
+source venv/bin/activate
+python server.py
+```
+
+Expected output:
+```
+INFO flwr 2024 - Starting Flower server, config: ServerConfig(num_rounds=10)
+INFO flwr 2024 - Flower ECE: gRPC server running (insecure), listening on 0.0.0.0:8080
+```
+
+**Terminal 2 — Hospital 0:**
+```bash
+cd icu_monitor
+source venv/bin/activate
+python client.py --client_id 0
+```
+
+**Terminal 3 — Hospital 1:**
+```bash
+cd icu_monitor
+source venv/bin/activate
+python client.py --client_id 1
+```
+
+**Terminal 4 — Hospital 2:**
+```bash
+cd icu_monitor
+source venv/bin/activate
+python client.py --client_id 2
+```
+
+**What to show:**
+- Server terminal: waits for 3 clients, then starts Round 1
+- Each client terminal: shows local training progress per round
+- Server terminal: aggregates weights after each round, prints global metrics
+- Key point: each hospital trains on its own data — only weight updates are shared, never raw patient records
+
+---
+
+### Demo 6 — Computer Vision Monitor (Webcam Stress Detection)
+
+Standalone OpenCV + MediaPipe application that detects facial stress indicators (blink rate, eye openness, gaze deviation) and feeds a stress score into the ICU model as a supplementary feature.
+
+```bash
+cd icu_monitor
+source venv/bin/activate
+python cv_monitor.py
+```
+
+**What to show:**
+- Opens webcam feed in a window
+- MediaPipe face mesh overlay — 468 facial landmarks tracked in real-time
+- Blink rate counter (blinks per minute)
+- Eye Aspect Ratio (EAR) — drops sharply on each blink
+- Gaze deviation score — measures how much the patient looks away from center
+- Stress score composite — combines blink rate, EAR, and gaze into 0–1 score
+- This score populates `stress_score` in the 108-feature vector for the DNN
+
+Press **Q** to quit.
+
+---
+
+### Demo 7 — Legacy Streamlit ICU Monitor
+
+The original Streamlit prototype that preceded the full-stack React/FastAPI version. Runs as a single-page app.
+
+```bash
+cd icu_monitor
+source venv/bin/activate
+streamlit run app.py --server.port 8502
+```
+
+**Open in browser:** http://localhost:8502
+
+**What to show:**
+- Patient selector sidebar
+- Real-time vitals display with color-coded risk level
+- SOFA score prediction with the DNN model
+- Prediction history chart
+- Compares to the ClinIQ React app to show the evolution of the project
+
+---
+
+### Demo 8 — Trial ICU Inference App (Research Prototype)
+
+Early research prototype from the `trial/` directory, built during initial model development before federated learning was added.
+
+```bash
+cd trial
+streamlit run ICU_Inference.py --server.port 8503
+```
+
+**Open in browser:** http://localhost:8503
+
+**What to show:**
+- Manual vital sign input sliders
+- Ensemble model inference (Random Forest + XGBoost + LightGBM)
+- SHAP waterfall plots — visual breakdown of each feature's contribution
+- Risk classification output
+- Compares to the final federated DNN to show the progression from ensemble to FL
+
+---
+
+### Demo 9 — Federated Learning Prototype App
+
+Early Streamlit FL prototype from the `federated learning/` directory, before the full FL dashboard and Flower integration were built.
+
+```bash
+cd "federated learning"
+streamlit run app.py --server.port 8504
+```
+
+**Open in browser:** http://localhost:8504
+
+**What to show:**
+- Simulated FL training across 3 hospital nodes
+- Per-round loss and accuracy charts
+- Shows the early concept that evolved into the full FL simulation dashboard
+
+---
+
+### Demo 10 — SQLite Database Inspection
+
+Live inspection of the production database — shows MIMIC-III-derived data, prediction history, and FL training splits.
+
+```bash
+cd icu_monitor
+sqlite3 models/icu_monitor.db
+```
+
+Run these queries inside the SQLite shell:
+
+```sql
+.headers on
+.mode column
+
+-- ── Step 1: List every table in the database ─────────────────────────────────
+.tables
+
+-- ── Step 2: Row counts across all tables ─────────────────────────────────────
+SELECT 'patient_vitals'    AS table_name, COUNT(*) AS total_rows FROM patient_vitals
+UNION ALL SELECT 'prediction_history', COUNT(*) FROM prediction_history
+UNION ALL SELECT 'sample_patients',    COUNT(*) FROM sample_patients
+UNION ALL SELECT 'fl_training',        COUNT(*) FROM fl_training;
+
+-- ── Step 3: Schema of every table ────────────────────────────────────────────
+.schema patient_vitals
+.schema prediction_history
+.schema sample_patients
+.schema fl_training
+
+-- ── Step 4: First 10 rows — patient_vitals ───────────────────────────────────
+-- 60 rows (3 patients × 20 readings). Real-time vital signs from MIMIC-III.
+SELECT * FROM patient_vitals LIMIT 10;
+
+-- ── Step 5: First 10 rows — prediction_history ───────────────────────────────
+-- SOFA predictions logged over time. Written by the backend on every /api/predict call.
+SELECT * FROM prediction_history LIMIT 10;
+
+-- ── Step 6: First 10 rows — sample_patients ──────────────────────────────────
+-- 90 rows (3 patients × 30 readings). Powers the 90-second live monitoring cycle.
+SELECT * FROM sample_patients LIMIT 10;
+
+-- ── Step 7: First 10 rows — fl_training ──────────────────────────────────────
+-- 48,150 rows (MIMIC-III derived). Split across 3 hospital clients for federated training.
+SELECT * FROM fl_training LIMIT 10;
+
+-- ── Step 8: Per-patient breakdown ────────────────────────────────────────────
+SELECT patient, COUNT(*) AS readings FROM patient_vitals GROUP BY patient;
+SELECT patient, COUNT(*) AS readings FROM sample_patients GROUP BY patient;
+SELECT patient, COUNT(*) AS predictions FROM prediction_history GROUP BY patient;
+
+-- ── Step 9: Per-client FL training split ─────────────────────────────────────
+SELECT client_id, COUNT(*) AS rows FROM fl_training GROUP BY client_id;
+
+-- ── Step 10: Latest SOFA predictions per patient ─────────────────────────────
+SELECT patient, Timestamp, SOFA, Risk, HR, SpO2, MAP
+FROM prediction_history
+WHERE id IN (
+    SELECT MAX(id) FROM prediction_history GROUP BY patient
+);
+
+-- ── Step 11: Database file size ───────────────────────────────────────────────
+SELECT ROUND(page_count * page_size / 1024.0 / 1024.0, 2) AS db_size_mb
+FROM pragma_page_count(), pragma_page_size();
+
+.quit
+```
+
+**What to show:**
+- `.tables` — 4 tables: `patient_vitals`, `prediction_history`, `sample_patients`, `fl_training`
+- Row counts — 48,150 FL training rows + 90 simulation rows + 60 vitals rows
+- `sample_patients` schema — 108-feature rows including `stress_score`, `clinical_note`, `GCS_eye_opening`
+- `fl_training` schema — `client_id` column + all feature + `sofa_score` target columns
+- Per-client split — exactly 16,050 rows per hospital (clients 0, 1, 2)
+- `prediction_history` — shows SOFA, Risk, all vitals written by the live backend
+- The database is the single source of truth for both inference and FL training
+
+---
+
+### Demo 11 — Full Test Suite (701 Tests)
+
+Shows the complete automated test coverage: FL system, ClinIQ backend API, and React frontend.
+
+**FL System Tests (287 tests — all phases):**
+```bash
+cd icu_monitor
+source venv/bin/activate
+
+# Unit tests (fast)
+python -m pytest tests/fl/unit/ -v
+
+# Integration tests
+python -m pytest tests/fl/integration/ -v
+
+# System tests (end-to-end fl_thread simulation)
+python -m pytest tests/fl/system/ -v -m slow
+
+# All FL tests at once
+python -m pytest tests/fl/ -v
+```
+
+**ClinIQ Backend Tests (207 tests):**
+```bash
+cd icu_monitor
+source venv/bin/activate
+python -m pytest tests/cliniq/backend/ -v
+```
+
+**React Frontend Tests (207 Vitest tests):**
+```bash
+cd icu_monitor/frontend
+npx vitest run
+```
+
+**All runnable tests in one command:**
+```bash
+cd icu_monitor
+python -m pytest tests/ -v
+cd frontend && npx vitest run && cd ..
+```
+
+**Expected results:**
+```
+tests/fl/           287 passed
+tests/cliniq/backend/  207 passed
+frontend Vitest        207 passed
+─────────────────────────────────
+Total                  701 passed
 ```
 
 ---
@@ -424,7 +781,7 @@ cd icu_monitor
 python train_federated.py
 ```
 
-Takes ~40–60 minutes (Phase 0: BigQuery + TF-IDF, Phase 1–6: FL training).
+Takes ~40–60 minutes (Phase 0: data loading, Phase 1–6: FL training, Phase 7: evaluation + artifact saving).
 
 **Force Phase 0 re-run:**
 
@@ -475,6 +832,8 @@ The `fl_training` table holds the full 48,150 training rows used by `train_feder
 | **ML framework** | PyTorch 2.x |
 | **Federated Learning** | Flower (flwr) 1.8 — FedYogi + FedProx |
 | **Explainability** | SHAP 0.44 — DeepExplainer, top-5 features |
+| **FL Dashboard** | Streamlit (fl_dashboard.py) |
+| **Computer Vision** | OpenCV + MediaPipe (cv_monitor.py) |
 | **LLM (main)** | Groq `openai/gpt-oss-120b` — clinical assessment |
 | **LLM (judge)** | Groq `openai/gpt-oss-20b` — G-Eval + RAGAS reliability |
 | **Database** | SQLite 3 (stdlib) |
@@ -509,8 +868,56 @@ FROM prediction_history WHERE patient = 1 ORDER BY id DESC LIMIT 5;
 -- Verify 90-row simulation data (3 patients × 30 readings)
 SELECT patient, COUNT(*) AS rows FROM sample_patients GROUP BY patient;
 
+-- FL training split per hospital client
+SELECT client_id, COUNT(*) AS rows FROM fl_training GROUP BY client_id;
+
 .quit
 ```
+
+---
+
+## Test Suite
+
+### FL Tests — 287 tests across 10 phases
+
+```bash
+cd icu_monitor
+source venv/bin/activate
+
+# All FL tests
+python -m pytest tests/fl/ -v
+
+# By phase group
+python -m pytest tests/fl/unit/       -v          # Phases 1–6 (fast unit tests)
+python -m pytest tests/fl/integration/ -v         # Phases 7–9 (integration)
+python -m pytest tests/fl/system/     -v -m slow  # Phase 10 (end-to-end system)
+```
+
+### ClinIQ Backend Tests — 207 tests
+
+```bash
+cd icu_monitor
+python -m pytest tests/cliniq/backend/ -v
+```
+
+### React Frontend Tests — 207 Vitest tests
+
+```bash
+cd icu_monitor/frontend
+npx vitest run
+```
+
+### Run everything
+
+```bash
+# Python tests (494 total)
+cd icu_monitor && python -m pytest tests/ -v
+
+# Frontend tests (207 total)
+cd icu_monitor/frontend && npx vitest run
+```
+
+**Grand total: 701 passing tests.**
 
 ---
 
@@ -525,6 +932,12 @@ pip install -r requirements.txt
 ```bash
 lsof -ti :8000 | xargs kill -9
 uvicorn backend.main:app --port 8000 --reload
+```
+
+**Port 8501/8502/8503 already in use (Streamlit)**
+```bash
+lsof -ti :8501 | xargs kill -9
+streamlit run fl_dashboard.py
 ```
 
 **Report shows "No assessment available" in all sections**
@@ -545,6 +958,16 @@ Expected and harmless — `StandardScaler` is stable across 1.x versions.
 ```bash
 python migrate_to_db.py
 ```
+
+**Flower server: "address already in use"**
+```bash
+lsof -ti :8080 | xargs kill -9
+python server.py
+```
+
+**CV Monitor: no webcam detected**
+- Ensure no other application (FaceTime, Zoom) is using the webcam
+- macOS: grant camera access to Terminal in System Preferences → Privacy → Camera
 
 ---
 
@@ -571,6 +994,7 @@ uvicorn backend.main:app --port 8000 --reload
 cd frontend && npm run dev
 
 # Dashboard → http://localhost:5174
+# API docs  → http://localhost:8000/docs
 ```
 
 ---

@@ -14,11 +14,14 @@ _CACHE_LOCK = threading.Lock()
 _CACHE_TTL  = 90  # seconds — skip re-calling LLM if same patient+mode+sofa
 
 def _cache_key(predict_result: dict, care_mode: str) -> str:
+    pid    = predict_result.get("patient_id", 0)
     sofa   = round(predict_result.get("sofa_score", 0), 1)
     vitals = predict_result.get("vitals", {})
-    hr     = round(vitals.get("HR", 0))
+    hr     = round(vitals.get("HR",   0))
     spo2   = round(vitals.get("SpO2", 0))
-    return f"{care_mode}|{sofa}|{hr}|{spo2}"
+    sbp    = round(vitals.get("SBP",  0))
+    rr     = round(vitals.get("RR",   0))
+    return f"{care_mode}|{pid}|{sofa}|{hr}|{spo2}|{sbp}|{rr}"
 
 def _cache_get(key: str):
     with _CACHE_LOCK:
@@ -560,8 +563,9 @@ def call_judge_llm(api_key: str, main_response: str, vitals: dict, sofa_val: flo
             s, e = text.find("{"), text.rfind("}") + 1
             if s >= 0 and e > s:
                 result_box[0] = json.loads(text[s:e])
-        except Exception:
-            pass
+        except Exception as _e:
+            import sys as _sys
+            print(f"[ClinIQ] Judge LLM call failed: {_e}", file=_sys.stderr)
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
@@ -679,8 +683,13 @@ def generate_report(predict_result: dict, care_mode: str, api_key: str) -> dict:
 
     # ── Judge LLM call (capped at 12s so it never hangs the response) ──────────
     judge_result = None
+    judge_used   = False
     if api_key:
         judge_result = call_judge_llm(api_key, main_response, vitals_for_validation, sofa, timeout=12.0)
+        judge_used   = judge_result is not None
+        if not judge_used:
+            import sys as _sys
+            print("[ClinIQ] Judge LLM timed out or failed; geval/ragas defaulting to 0.5", file=_sys.stderr)
 
     # ── 9-method reliability ──
     rel_score, violations = compute_reliability(
@@ -707,6 +716,7 @@ def generate_report(predict_result: dict, care_mode: str, api_key: str) -> dict:
         "caution":           rel_score < 0.60,
         "violations":        violations,
         "care_mode":         care_mode,
+        "judge_used":        judge_used,
         "error":             None,
     }
     _cache_set(cache_key, result)

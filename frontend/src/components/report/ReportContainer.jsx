@@ -13,10 +13,11 @@ function reportKey(predictData) {
   return [
     predictData.patient_id,
     (predictData.sofa_score ?? 0).toFixed(1),
-    Math.round(v.HR  ?? 0),
-    Math.round(v.SpO2 ?? 0),
-    Math.round(v.SBP  ?? 0),
-    Math.round(v.GCS  ?? 0),
+    Math.round(v.HR      ?? 0),
+    Math.round(v.SpO2    ?? 0),
+    Math.round(v.SBP     ?? 0),
+    Math.round(v.GCS_eye ?? 0),
+    Math.round(v.stress  ?? 0),
   ].join('|')
 }
 

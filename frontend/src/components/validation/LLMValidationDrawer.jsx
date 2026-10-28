@@ -135,7 +135,9 @@ function OverviewTab({ reportData }) {
           </p>
           <p style={{ fontSize: '12px', color: 'var(--t2)', fontFamily: 'var(--font-display)', marginTop: 6 }}>
             {score != null
-              ? `✓ 9 / 9 methods ran · 2 LLM calls total`
+              ? reportData?.judge_used === false
+                ? '⚠ 7 / 9 methods ran · Judge LLM unavailable (G-Eval / RAGAS defaulted to 0.5)'
+                : '✓ 9 / 9 methods ran · 2 LLM calls total'
               : '⟳ Awaiting report generation…'}
           </p>
         </div>

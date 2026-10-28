@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import json
 import functools
@@ -89,6 +90,31 @@ CLINICAL_KEYWORDS = [
     "oxygen", "ventilat", "cardiac", "renal", "hepatic",
 ]
 
+# Short vital abbreviations that are common substrings of medical terms
+# (e.g. "hr" in "epinephrine", "rr" in "cirrhosis").
+# These need exact/boundary matching when applied to TF-IDF note tokens.
+_VITAL_ABBR = {"hr", "rr", "map", "sbp", "dbp", "gcs", "spo2"}
+
+
+def _is_clinical(f: str) -> bool:
+    """Return True if feature f is a clinical vital or clinical keyword.
+
+    Short abbreviations (hr, rr, map, …) use non-letter boundary matching to
+    prevent "hr" in "epinephrine" from being treated as a heart-rate feature.
+    """
+    if f in VITAL_UNITS:
+        return True
+    f_lower = f.lower()
+    for k in CLINICAL_KEYWORDS:
+        kl = k.lower()
+        if kl in _VITAL_ABBR:
+            if re.search(r'(?<![a-z])' + re.escape(kl) + r'(?![a-z])', f_lower):
+                return True
+        elif kl in f_lower:
+            return True
+    return False
+
+
 # ──────────────────────────────────────────────
 # CACHED LOADERS  (lru_cache replaces st.cache_resource)
 # ──────────────────────────────────────────────
@@ -169,11 +195,11 @@ def load_training_metadata():
         "hospital_names": ["General ICU", "Mixed ICU", "Cardiac/Trauma ICU"],
         "aggregation": "FedYogi (η=0.01, β1=0.9, β2=0.99) + FedProx (μ=0.5)",
         "split_type": "IID",
-        "train_samples": 48150, "test_samples": 12038,
+        "train_samples": 12795, "test_samples": 2559,
         "input_features": 108,
         "model_architecture": "108 → 128 → 64 → 32 → 1  (ReLU, no Dropout, FedProx)",
-        "best_round": 24,
-        "final_mae": 1.7588, "final_r2": 0.4724,
+        "best_round": 18,
+        "final_mae": 1.8968, "final_r2": 0.5995,
     }
 
 # ──────────────────────────────────────────────
@@ -308,12 +334,16 @@ def run_prediction(patient_id: int, row_idx: int) -> dict:
     clinical_note = str(current_row["clinical_note"])
 
     # ── 2. SEED VITALS IF EMPTY ──
+    # Start from index 1 so that index 0 (the current reading) is not duplicated
+    # when step 3 appends it with the real wall-clock timestamp.
     if len(get_patient_vitals(patient_id, limit=1)) == 0:
-        for _si in range(min(20, total_rows)):
+        for _si in range(1, min(20, total_rows)):
             _sr = get_sample_patient_row(patient_id, _si)
             if _sr is not None:
+                from datetime import timedelta
+                _seed_time = (datetime.now() - timedelta(minutes=(min(20, total_rows) - _si) * 1.5)).strftime("%Y-%m-%d %H:%M:%S")
                 append_patient_vitals(patient_id, {
-                    "time": f"2026-08-29 {(8 + _si // 6):02d}:{(_si % 6) * 10:02d}:00",
+                    "time": _seed_time,
                     "HR": float(_sr["HR"]),   "RR":  float(_sr["RR"]),
                     "SpO2": float(_sr["SpO2"]), "Temp": float(_sr["Temp"]),
                     "SBP": float(_sr["SBP"]),  "DBP":  float(_sr["DBP"]),
@@ -430,9 +460,6 @@ def run_prediction(patient_id: int, row_idx: int) -> dict:
         shap_df["abs_impact"] = shap_df["impact"].abs()
         shap_df = shap_df.sort_values("abs_impact", ascending=False)
 
-        def _is_clinical(f):
-            return any(k.lower() in f.lower() for k in CLINICAL_KEYWORDS)
-
         filtered  = shap_df[shap_df["feature"].apply(_is_clinical)]
         top_shap_df = (filtered.head(7) if len(filtered) >= 3 else shap_df.head(7)).copy()
 
@@ -443,8 +470,18 @@ def run_prediction(patient_id: int, row_idx: int) -> dict:
 
         seen = set()
         for _, r in top_shap_df.iterrows():
+            feat = r["feature"]
+            feat_is_vital = feat in VITAL_UNITS
             for k, v in RISK_MAP.items():
-                if k.lower() in r["feature"].lower() and v not in seen:
+                kl = k.lower()
+                fl = feat.lower()
+                if feat_is_vital:
+                    matched = kl in fl
+                elif kl in _VITAL_ABBR:
+                    matched = bool(re.search(r'(?<![a-z])' + re.escape(kl) + r'(?![a-z])', fl))
+                else:
+                    matched = kl in fl
+                if matched and v not in seen:
                     key_risks.append(v)
                     seen.add(v)
 

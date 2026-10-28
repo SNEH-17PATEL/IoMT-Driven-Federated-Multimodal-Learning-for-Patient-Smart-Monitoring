@@ -870,10 +870,10 @@ export default function CVMonitorModal({ open, onClose, onCVResults }) {
               flexShrink: 0,
             }}>
               <span style={{ fontSize: '10.5px', color: 'var(--t4)', fontFamily: 'var(--font-display)' }}>
-                ⚠ Computer vision proxy — not a clinical diagnosis
+                ⚠ Supplementary visual assessment — not a clinical diagnosis
               </span>
               <span style={{ fontSize: '10.5px', color: 'var(--t4)', fontFamily: 'var(--font-display)' }}>
-                PSPI formula · 30s GCS window · Values not stored
+                PSPI formula · 30s GCS window · Live CV data supplements clinical context; SOFA prediction uses dataset values
               </span>
             </div>
           </motion.div>

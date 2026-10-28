@@ -75,32 +75,36 @@ function SectionRule({ children }) {
 
 /* ── Layer 1: Population stats ── */
 function Layer1({ predictData }) {
-  const meta = predictData?._training_meta ?? {}
-  const mae    = meta.final_mae  ?? 1.7588
-  const r2     = meta.final_r2   ?? 0.4724
+  // Numbers sourced directly from models/training_metadata.json
+  // train_samples=12795, test_samples=2559, final_mae=1.8968, final_r2=0.5995
+  // high_risk_alert.auroc=0.9461, high_risk_alert.pr_auc=0.6840
+  const mae = 1.8968
+  const r2  = 0.5995
 
+  // From training_metadata.json → risk_classification_metrics.risk_bands.confusion_matrix
+  // Each row = [Pred Low, Pred Moderate, Pred High] for that true class
   const confMatrix = [
-    { label: 'Low Risk',      n: 7645, mae: 1.608, r2: '−1.314', diag: 7210, off1: 420,  off2: 15  },
-    { label: 'Moderate Risk', n: 3655, mae: 1.792, r2: '−1.911', diag: 3170, off1: 390,  off2: 95  },
-    { label: 'High Risk',     n: 738,  mae: 4.208, r2: '−4.913', diag: 378,  off1: 348,  off2: 12  },
+    { label: 'Low Risk',      cells: [1304, 178,  3  ] },
+    { label: 'Moderate Risk', cells: [378,  444,  4  ] },
+    { label: 'High Risk',     cells: [7,    192,  49 ] },
   ]
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <SectionRule>Held-out test set · 12,038 MIMIC-III patients</SectionRule>
+      <SectionRule>Held-out test split · 2,559 rows of 15,354 total MIMIC-III rows</SectionRule>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-        <MetricTile label="AUROC" value="0.9254" accent={CYAN}
-          sub="High-risk alarm ranking · benchmark avg 0.82–0.84" />
-        <MetricTile label="PR-AUC" value="0.5703" accent={GREEN}
-          sub="Precision-recall · 6% minority high-risk class" />
+        <MetricTile label="AUROC" value="0.9461" accent={CYAN}
+          sub="High-risk alarm ranking · benchmark avg 0.82–0.84 (binary, SOFA ≥ 8)" />
+        <MetricTile label="PR-AUC" value="0.6840" accent={GREEN}
+          sub="Precision-recall · 9.7% minority high-risk class" />
         <MetricTile label="MAE" value={mae.toFixed(4)} accent={AMBER}
-          sub="Avg SOFA error in points — 8% of the 0–24 range" />
+          sub="Avg SOFA error in points — ~8% of the 0–24 scale" />
         <MetricTile label="R²" value={r2.toFixed(4)} accent={PURPLE}
-          sub="Variance explained · ceiling ~0.55 without lab values" />
+          sub="Variance explained (row-level split; no lab values)" />
       </div>
 
-      <SectionRule>Risk-band classification · 3-class confusion matrix</SectionRule>
+      <SectionRule>Risk-band classification · 3-class confusion matrix (2,559 test rows)</SectionRule>
 
       <div style={{
         background: 'var(--s2)', border: '1px solid var(--b1)',
@@ -121,7 +125,7 @@ function Layer1({ predictData }) {
                 <td style={{ color: 'var(--t3)', padding: '5px 8px', whiteSpace: 'nowrap', fontWeight: 600 }}>
                   True {row.label}
                 </td>
-                {[row.diag, row.off1, row.off2].map((val, ci) => {
+                {row.cells.map((val, ci) => {
                   const isDiag = ri === ci
                   return (
                     <td key={ci} style={{
@@ -141,17 +145,19 @@ function Layer1({ predictData }) {
           </tbody>
         </table>
         <p style={{ fontSize: '11px', color: 'var(--t3)', marginTop: 10, lineHeight: 1.5, fontFamily: 'var(--font-display)' }}>
-          High-Risk recall (sensitivity): <strong style={{ color: AMBER }}>52.5%</strong> ·
-          Alert threshold set at SOFA ≥ 8 (not ≥ 10) to compensate for class imbalance
+          High-Risk recall (3-class, SOFA ≥ 10): <strong style={{ color: AMBER }}>19.8%</strong> ·
+          Alert recall (SOFA ≥ 8 threshold): <strong style={{ color: AMBER }}>56.9%</strong> ·
+          Alert threshold compensates for 9.7% minority class
         </p>
       </div>
 
       <InfoBox>
         <strong style={{ color: CYAN }}>What this means for you:</strong>{' '}
-        The model ranks high-risk patients above low-risk ones in 92.5% of pairwise comparisons (AUROC).
-        3-class band accuracy (Low / Moderate / High) is 63.2% — limited by missing lab values such as
+        The model ranks high-risk patients above low-risk ones in 94.6% of pairwise comparisons (AUROC).
+        3-class band accuracy (Low / Moderate / High) is 70.2% — limited by missing lab values such as
         bilirubin, creatinine, and platelet count, which require blood draws and are unavailable as
-        real-time vitals. The model's theoretical ceiling without those values is R² ≈ 0.45–0.55.
+        real-time vitals. Note: this is a row-level train/test split on MIMIC-III, not independent
+        clinical validation; patient stay IDs were not available to prevent leakage.
       </InfoBox>
     </div>
   )
