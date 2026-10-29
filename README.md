@@ -113,62 +113,43 @@ SOFA + vitals + SHAP top-5  →  openai/gpt-oss-120b  (main assessment, 3500 tok
 
 ### Step 1 — Clone / Download the project
 
-Ensure the `icu_monitor/` folder is on your machine.
+```bash
+git clone <repository-url>
+cd <project-folder>        # the folder name can be anything
+```
 
-### Step 2 — Create and activate a virtual environment
+Or download and extract the ZIP, then `cd` into the extracted folder.
+
+### Step 2 — Run the automated setup
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate          # macOS / Linux
-venv\Scripts\activate             # Windows
+python setup.py            # macOS / Linux / Windows — same command
 ```
 
-### Step 3 — Install Python dependencies
+This handles everything: creates `venv/`, installs pip packages, installs npm packages, initialises the database, and creates `.env`.  
+See the [COMPLETE DEMO GUIDE](#complete-demo-guide) for full details and the `--no-venv` option.
 
-```bash
-cd icu_monitor
-pip install -r requirements.txt
-```
+### Step 3 — Configure the Groq API key
 
-### Step 4 — Install frontend dependencies
-
-```bash
-cd frontend
-npm install
-cd ..
-```
-
-### Step 5 — Set up the SQLite database
-
-```bash
-cd icu_monitor
-python migrate_to_db.py
-```
-
-Expected output:
-```
-  patient_vitals                  60 rows
-  prediction_history             112 rows
-  sample_patients                 90 rows
-  fl_training                 48,150 rows
-  Database size: ~23 MB
-```
-
-> This is a one-time step. The database is gitignored. After a fresh clone, always run `migrate_to_db.py` first.
-
-### Step 6 — Configure the Groq API key
-
-```bash
-cp .env.example .env
-```
-
-Open `.env` and set your key:
+Open the `.env` file and set your key:
 
 ```
 GROQ_API_KEY=gsk_your_key_here
 ```
 
 Get a free key at [https://console.groq.com](https://console.groq.com)
+
+### Step 4 — Activate the virtual environment
+
+macOS / Linux:
+```bash
+source venv/bin/activate
+```
+
+Windows:
+```cmd
+venv\Scripts\activate
+```
 
 ---
 
@@ -258,7 +239,7 @@ icu_monitor/
 
 ## COMPLETE DEMO GUIDE
 
-This section covers every demo-able component of the capstone project with full run commands. All commands run from `icu_monitor/` unless noted otherwise.
+This guide starts from a **brand-new machine** — it covers installing every tool, setting up the project, and running all 11 demo components. Follow the steps in order on a fresh system.
 
 **Recommended demo order:**
 1. ClinIQ Main Dashboard (most impressive — full-stack AI application)
@@ -275,61 +256,257 @@ This section covers every demo-able component of the capstone project with full 
 
 ---
 
+### Step 0 — Install System Requirements (one-time, new machine only)
+
+These tools must be installed at the system level before anything else. `setup.py` cannot install them for you.
+
+#### Python 3.12+
+
+**macOS:**
+```bash
+# Option A — download the installer (easiest)
+# Go to https://www.python.org/downloads/ and install the latest 3.12.x pkg
+
+# Option B — via Homebrew
+brew install python@3.12
+
+# Verify
+python3 --version    # should print Python 3.12.x or later
+```
+
+**Windows:**
+```
+1. Go to https://www.python.org/downloads/
+2. Download the latest Python 3.12.x Windows installer
+3. Run it — check the box "Add Python to PATH" before clicking Install
+4. Open a new Command Prompt or PowerShell and verify:
+```
+```powershell
+python --version    # should print Python 3.12.x or later
+```
+
+---
+
+#### Node.js 18+ and npm
+
+**macOS:**
+```bash
+# Option A — download the installer (easiest)
+# Go to https://nodejs.org/ and download the LTS version
+
+# Option B — via Homebrew
+brew install node
+
+# Verify
+node --version    # v18.x or later
+npm  --version    # 9.x or later
+```
+
+**Windows:**
+```
+1. Go to https://nodejs.org/
+2. Download the LTS installer (Windows Installer .msi)
+3. Run the installer — keep all defaults (includes npm automatically)
+4. Open a new Command Prompt or PowerShell and verify:
+```
+```powershell
+node --version    # v18.x or later
+npm  --version    # 9.x or later
+```
+
+> **Note:** Node.js is only needed for the React frontend (Demo 1). All other demos (backend, FL, CV, tests) work with Python only.
+
+---
+
+#### SQLite3 CLI (for Demo 10 — database inspection)
+
+**macOS:** Already installed. Verify:
+```bash
+sqlite3 --version    # 3.x.x
+```
+
+**Windows:**
+```
+1. Go to https://www.sqlite.org/download.html
+2. Under "Precompiled Binaries for Windows", download sqlite-tools-win-x64-*.zip
+3. Extract it — you get sqlite3.exe
+4. Move sqlite3.exe to C:\Windows\ (or any folder that is in your PATH)
+5. Open a new Command Prompt and verify:
+```
+```powershell
+sqlite3 --version    # 3.x.x
+```
+
+---
+
+### Step 1 — Get the Project
+
+**If you have Git:**
+```bash
+git clone <repository-url>
+cd <project-folder>          # the folder name can be anything
+```
+
+**If you downloaded a ZIP:**
+```bash
+# Extract the ZIP, then cd into the extracted folder
+cd <extracted-folder>        # macOS / Linux
+cd <extracted-folder>        # Windows (same command in Command Prompt / PowerShell)
+```
+
+> All commands from here run from inside this project folder (the one that contains `requirements.txt` and `setup.py`).
+
+---
+
+### Step 2 — Run the Automated Setup
+
+A single script handles everything: creates a virtual environment, installs all Python and npm packages, initialises the SQLite database, and creates the `.env` file.
+
+```bash
+python setup.py              # macOS / Linux
+python setup.py              # Windows (same command)
+```
+
+What it does automatically:
+1. Checks Python ≥ 3.12
+2. Checks Node.js ≥ 18 and npm
+3. Creates `venv/` virtual environment
+4. Installs all Python packages from `requirements.txt`
+5. Installs all npm packages from `frontend/package.json`
+6. Initialises the SQLite database (runs `migrate_to_db.py`)
+7. Creates `.env` from `.env.example`
+
+To skip the virtual environment and install into system Python instead:
+```bash
+python setup.py --no-venv
+```
+
+---
+
+### Step 3 — Add Your Groq API Key
+
+Open the `.env` file that setup.py just created and add your key:
+
+```
+GROQ_API_KEY=gsk_your_key_here
+```
+
+Get a free key at https://console.groq.com  
+(The AI Clinical Report in Demo 1 won't work without this. All other demos work fine without it.)
+
+---
+
+### Step 4 — Activate the Virtual Environment
+
+**Do this once in every new terminal window before running any demo.**
+
+**macOS / Linux:**
+```bash
+source venv/bin/activate
+```
+
+**Windows (Command Prompt):**
+```cmd
+venv\Scripts\activate
+```
+
+**Windows (PowerShell):**
+```powershell
+venv\Scripts\Activate.ps1
+```
+
+> If PowerShell blocks the script with an execution policy error, run:
+> `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser`
+> then try activating again.
+
+You will see `(venv)` at the start of your prompt when it is active. Every terminal you open for the demos below needs this activation step.
+
+---
+
+---
+
 ### Demo 1 — ClinIQ Main Dashboard (Full-Stack Web App)
 
 The primary deliverable: React 19 + FastAPI + PyTorch + Groq LLM, all wired together.
 
-**Terminal 1 — Start the FastAPI backend:**
+> Requires: venv activated, Groq API key in `.env`, Node.js installed.
+
+**Terminal 1 — Activate venv and start the FastAPI backend:**
+
+macOS / Linux:
 ```bash
-cd icu_monitor
 source venv/bin/activate
 uvicorn backend.main:app --port 8000 --reload
 ```
 
-**Terminal 2 — Start the React frontend:**
+Windows:
+```cmd
+venv\Scripts\activate
+uvicorn backend.main:app --port 8000 --reload
+```
+
+**Terminal 2 — Start the React frontend (open a new terminal window):**
+
+macOS / Linux:
 ```bash
-cd icu_monitor/frontend
+source venv/bin/activate
+cd frontend
 npm run dev
 ```
 
-**Open in browser:** http://localhost:5174
+Windows:
+```cmd
+venv\Scripts\activate
+cd frontend
+npm run dev
+```
+
+**Open in browser:** http://localhost:5174  
+**API docs:** http://localhost:8000/docs
 
 **What to show:**
 - Patient selection screen — 3 ICU patients with ECG animation
 - Click a patient — Monitor Dashboard loads
 - Live 90-second countdown timer in the header
-- SOFA score gauge (circular, color-coded: green/yellow/red)
+- SOFA score gauge (circular, color-coded: green / yellow / red)
 - Vitals Grid — 7 vital signs (HR, RR, SpO₂, Temp, SBP, DBP, MAP) with range classification
 - Vital Trends — Recharts line charts for last 20 readings with normal-range bands
 - AI Clinical Report — 4 sections (Condition, Cause, Forecast, Actions) generated by Groq LLM
-- Reliability Badge — circular score showing 0–100% LLM reliability via 9-method scoring
+- Reliability Badge — 0–100% LLM reliability score via 9-method evaluation
 - SHAP Panel — top-5 risk drivers with animated bars (anime.js spring physics)
-- Toggle between Hospital and Home Care mode — LLM regenerates report instantly
-- Dark/light theme toggle (top-right)
-- Wait for 90-second cycle — watch vitals update live and SOFA gauge animate
+- Toggle Hospital ↔ Home Care mode — LLM regenerates report instantly
+- Dark / light theme toggle (top-right corner)
+- Wait for the 90-second cycle — watch vitals update live and SOFA gauge animate
 
-**If port 8000 is busy:**
+**If port 8000 is already in use:**
+
+macOS / Linux:
 ```bash
 lsof -ti :8000 | xargs kill -9
-uvicorn backend.main:app --port 8000 --reload
+```
+
+Windows (Command Prompt — find PID first, then kill):
+```cmd
+netstat -ano | findstr :8000
+taskkill /PID <pid-from-above> /F
 ```
 
 ---
 
 ### Demo 2 — API Swagger Docs (Interactive REST API)
 
-Shows all backend endpoints with live testing capability. Backend from Demo 1 must be running.
+Shows all backend endpoints with live request testing. Backend from Demo 1 must be running.
 
 **Open in browser:** http://localhost:8000/docs
 
 **What to show:**
 - `GET /api/patients` — list all 3 ICU patients (click "Try it out" → Execute)
 - `GET /api/patients/1` — single patient details
-- `POST /api/predict` — run SOFA prediction + SHAP (paste patient id: 1)
+- `POST /api/predict` — run SOFA prediction + SHAP (body: `{"patient_id": 1}`)
 - `POST /api/report` — trigger LLM clinical assessment
 - `GET /api/vitals/1` — last 20 vital sign readings
 - `GET /api/history/1` — full prediction history log
-- Alternatively view the raw JSON at http://localhost:8000/api/patients
+- Raw JSON: http://localhost:8000/api/patients
 
 ---
 
@@ -337,35 +514,62 @@ Shows all backend endpoints with live testing capability. Backend from Demo 1 mu
 
 Interactive visualisation of the Federated Learning process: pick an algorithm, watch rounds train, and explore weight evolution charts.
 
+> Open a new terminal window for this. Keep Demo 1 backend running if you want both at once.
+
+macOS / Linux:
 ```bash
-cd icu_monitor
 source venv/bin/activate
+streamlit run fl_dashboard.py
+```
+
+Windows:
+```cmd
+venv\Scripts\activate
 streamlit run fl_dashboard.py
 ```
 
 **Open in browser:** http://localhost:8501
 
 **What to show:**
-- Sidebar controls: number of rounds (1–100), algorithm selector (FedAvg / FedYogi / FedProx), number of hospital clients, simulation speed
-- Click **Start FL Simulation** — watch per-round progress bars update live
+- Sidebar: number of rounds (1–100), algorithm (FedAvg / FedYogi / FedProx), clients, speed
+- Click **Start FL Simulation** — per-round progress bars update live
 - Global Loss chart — training loss curve across rounds
 - Client Loss chart — per-hospital loss (Hospital 0, 1, 2)
 - Global MAE and R² curves — validation metrics improving per round
-- Round Log table — round-by-round summary (H0 Loss, H1 Loss, H2 Loss, Global)
-- Weight Statistics heatmap — mean/std/delta per client per round
+- Round Log table — H0 Loss, H1 Loss, H2 Loss, Global per round
+- Weight Statistics heatmap — mean / std / delta per client per round
 - Layer 1 weights histogram — distribution shift before vs after aggregation
 - Best Round indicator — round with lowest validation MAE highlighted
-- Try FedYogi vs FedAvg: run 20 rounds of each and compare convergence curves
+- Try FedYogi vs FedAvg: run 20 rounds each and compare convergence curves
+
+**If port 8501 is busy:**
+
+macOS / Linux:
+```bash
+lsof -ti :8501 | xargs kill -9
+```
+
+Windows:
+```cmd
+netstat -ano | findstr :8501
+taskkill /PID <pid> /F
+```
 
 ---
 
 ### Demo 4 — FL Training in Terminal (Simulation Mode)
 
-Runs the complete federated training pipeline with live logs: BigQuery-sourced MIMIC-III data → 100 FL rounds → saves model weights.
+Runs the complete federated training pipeline end-to-end with live logs.
 
+macOS / Linux:
 ```bash
-cd icu_monitor
 source venv/bin/activate
+python train_federated.py
+```
+
+Windows:
+```cmd
+venv\Scripts\activate
 python train_federated.py
 ```
 
@@ -384,84 +588,99 @@ Phase 2: FL Training — FedYogi server, FedProx clients
   Round 100/100 | Global Loss: 12.44 | MAE: 1.90 | R²:  0.60
 
 Phase 3: Saving model artifacts...
-  federated_model.pth    saved
-  scaler.pkl             saved
-  tfidf_vectorizer.pkl   saved
-  feature_columns.pkl    saved
-  shap_background.npy    saved
-  training_metadata.json saved
+  federated_model.pth  · scaler.pkl  · tfidf_vectorizer.pkl
+  feature_columns.pkl  · shap_background.npy  · training_metadata.json
 
 Training complete. MAE: 1.8968 | R²: 0.5995 | AUROC: 0.9461
 ```
 
-> Full training takes ~40–60 minutes. For a quick demo, interrupt with Ctrl+C after a few rounds to show the logs.
+> Full training takes ~40–60 minutes. For a quick demo, press Ctrl+C after a few rounds to show the live logs, then explain the full run produces the model that powers the dashboard.
 
 ---
 
 ### Demo 5 — Real Flower Federated Learning (4 Terminals)
 
-Demonstrates actual federated learning: a Flower server coordinates 3 independent hospital clients that each train locally and send only weight updates — raw patient data never leaves the client.
+Demonstrates true federated learning: a Flower gRPC server coordinates 3 hospital clients that each train locally and share only weight updates — raw patient data never leaves the client.
 
-**Terminal 1 — Start the FL server:**
+Open 4 separate terminal windows. Activate venv in each one first.
+
+**All platforms — activate in each terminal:**
+
+macOS / Linux: `source venv/bin/activate`  
+Windows: `venv\Scripts\activate`
+
+**Terminal 1 — FL server:**
 ```bash
-cd icu_monitor
-source venv/bin/activate
 python server.py
 ```
-
 Expected output:
 ```
-INFO flwr 2024 - Starting Flower server, config: ServerConfig(num_rounds=10)
-INFO flwr 2024 - Flower ECE: gRPC server running (insecure), listening on 0.0.0.0:8080
+INFO flwr - Starting Flower server, config: ServerConfig(num_rounds=10)
+INFO flwr - Flower ECE: gRPC server running (insecure), listening on 0.0.0.0:8080
+INFO flwr - Waiting for 3 clients to connect...
 ```
 
 **Terminal 2 — Hospital 0:**
 ```bash
-cd icu_monitor
-source venv/bin/activate
 python client.py --client_id 0
 ```
 
 **Terminal 3 — Hospital 1:**
 ```bash
-cd icu_monitor
-source venv/bin/activate
 python client.py --client_id 1
 ```
 
 **Terminal 4 — Hospital 2:**
 ```bash
-cd icu_monitor
-source venv/bin/activate
 python client.py --client_id 2
 ```
 
 **What to show:**
-- Server terminal: waits for 3 clients, then starts Round 1
-- Each client terminal: shows local training progress per round
-- Server terminal: aggregates weights after each round, prints global metrics
-- Key point: each hospital trains on its own data — only weight updates are shared, never raw patient records
+- Server terminal: shows "Waiting for clients…" then starts Round 1 once all 3 connect
+- Each client terminal: shows local training loss per round
+- Server terminal: aggregates weights each round and prints global metrics
+- Key point to explain: each hospital trains on its own local data — only gradient updates cross the network, never patient records
+
+**If port 8080 is busy:**
+
+macOS / Linux:
+```bash
+lsof -ti :8080 | xargs kill -9
+```
+
+Windows:
+```cmd
+netstat -ano | findstr :8080
+taskkill /PID <pid> /F
+```
 
 ---
 
 ### Demo 6 — Computer Vision Monitor (Webcam Stress Detection)
 
-Standalone OpenCV + MediaPipe application that detects facial stress indicators (blink rate, eye openness, gaze deviation) and feeds a stress score into the ICU model as a supplementary feature.
+Standalone OpenCV + MediaPipe application — tracks 468 facial landmarks in real-time and computes a stress score used as a feature in the ICU prediction model.
 
+> Requires a webcam. macOS: grant camera access to Terminal in System Preferences → Privacy & Security → Camera.
+
+macOS / Linux:
 ```bash
-cd icu_monitor
 source venv/bin/activate
 python cv_monitor.py
 ```
 
+Windows:
+```cmd
+venv\Scripts\activate
+python cv_monitor.py
+```
+
 **What to show:**
-- Opens webcam feed in a window
-- MediaPipe face mesh overlay — 468 facial landmarks tracked in real-time
-- Blink rate counter (blinks per minute)
-- Eye Aspect Ratio (EAR) — drops sharply on each blink
-- Gaze deviation score — measures how much the patient looks away from center
-- Stress score composite — combines blink rate, EAR, and gaze into 0–1 score
-- This score populates `stress_score` in the 108-feature vector for the DNN
+- Webcam feed opens in a window with MediaPipe face mesh overlay (468 landmarks)
+- Blink rate counter — blinks per minute
+- Eye Aspect Ratio (EAR) — dips sharply on each blink
+- Gaze deviation score — measures how far the gaze drifts from center
+- Stress score composite (0–1) — combines blink rate, EAR, and gaze deviation
+- Explain: this `stress_score` feeds into the 108-feature vector for the DNN alongside vitals
 
 Press **Q** to quit.
 
@@ -469,11 +688,17 @@ Press **Q** to quit.
 
 ### Demo 7 — Legacy Streamlit ICU Monitor
 
-The original Streamlit prototype that preceded the full-stack React/FastAPI version. Runs as a single-page app.
+The original Streamlit prototype that preceded the full-stack React/FastAPI version — shows the project's evolution.
 
+macOS / Linux:
 ```bash
-cd icu_monitor
 source venv/bin/activate
+streamlit run app.py --server.port 8502
+```
+
+Windows:
+```cmd
+venv\Scripts\activate
 streamlit run app.py --server.port 8502
 ```
 
@@ -482,38 +707,58 @@ streamlit run app.py --server.port 8502
 **What to show:**
 - Patient selector sidebar
 - Real-time vitals display with color-coded risk level
-- SOFA score prediction with the DNN model
+- SOFA score prediction using the same DNN model
 - Prediction history chart
-- Compares to the ClinIQ React app to show the evolution of the project
+- Compare with Demo 1 to illustrate how the project evolved from a single-file Streamlit app to a full React/FastAPI system
 
 ---
 
 ### Demo 8 — Trial ICU Inference App (Research Prototype)
 
-Early research prototype from the `trial/` directory, built during initial model development before federated learning was added.
+Early ensemble model prototype from the `trial/` folder — built before federated learning was introduced.
 
+> This app lives one level up from the main project folder. Navigate there from the parent directory.
+
+macOS / Linux:
 ```bash
-cd trial
+# From the parent directory (one level above the project folder)
+cd ../trial
+streamlit run ICU_Inference.py --server.port 8503
+```
+
+Windows:
+```cmd
+cd ..\trial
 streamlit run ICU_Inference.py --server.port 8503
 ```
 
 **Open in browser:** http://localhost:8503
 
 **What to show:**
-- Manual vital sign input sliders
-- Ensemble model inference (Random Forest + XGBoost + LightGBM)
-- SHAP waterfall plots — visual breakdown of each feature's contribution
-- Risk classification output
-- Compares to the final federated DNN to show the progression from ensemble to FL
+- Manual vital sign input sliders (HR, RR, SpO₂, Temp, SBP, MAP, GCS)
+- Ensemble model inference — Random Forest + XGBoost + LightGBM weighted average
+- SHAP waterfall plot — visual breakdown of each feature's contribution to the SOFA prediction
+- Risk classification output (Low / Moderate / High)
+- Compare with Demo 1: this uses hand-crafted features and ensemble models; the final system uses a Federated DNN with 108 features and TF-IDF
 
 ---
 
 ### Demo 9 — Federated Learning Prototype App
 
-Early Streamlit FL prototype from the `federated learning/` directory, before the full FL dashboard and Flower integration were built.
+Early Streamlit FL prototype from the `federated learning/` folder — the concept that became the full FL simulation dashboard.
 
+> Also lives one level up from the main project folder.
+
+macOS / Linux:
 ```bash
-cd "federated learning"
+# From the parent directory
+cd "../federated learning"
+streamlit run app.py --server.port 8504
+```
+
+Windows:
+```cmd
+cd "..\federated learning"
 streamlit run app.py --server.port 8504
 ```
 
@@ -522,7 +767,7 @@ streamlit run app.py --server.port 8504
 **What to show:**
 - Simulated FL training across 3 hospital nodes
 - Per-round loss and accuracy charts
-- Shows the early concept that evolved into the full FL simulation dashboard
+- Compare with Demo 3: this is the early prototype; the full FL dashboard (Demo 3) adds real algorithms (FedYogi, FedProx), weight statistics heatmaps, and live visualisation
 
 ---
 
@@ -530,9 +775,14 @@ streamlit run app.py --server.port 8504
 
 Live inspection of the production database — shows MIMIC-III-derived data, prediction history, and FL training splits.
 
+macOS / Linux:
 ```bash
-cd icu_monitor
 sqlite3 models/icu_monitor.db
+```
+
+Windows (if sqlite3.exe is in PATH):
+```cmd
+sqlite3 models\icu_monitor.db
 ```
 
 Run these queries inside the SQLite shell:
@@ -541,53 +791,53 @@ Run these queries inside the SQLite shell:
 .headers on
 .mode column
 
--- ── Step 1: List every table in the database ─────────────────────────────────
+-- ── Step 1: List every table in the database ─────────────────────────────
 .tables
 
--- ── Step 2: Row counts across all tables ─────────────────────────────────────
+-- ── Step 2: Row counts across all tables ─────────────────────────────────
 SELECT 'patient_vitals'    AS table_name, COUNT(*) AS total_rows FROM patient_vitals
 UNION ALL SELECT 'prediction_history', COUNT(*) FROM prediction_history
 UNION ALL SELECT 'sample_patients',    COUNT(*) FROM sample_patients
 UNION ALL SELECT 'fl_training',        COUNT(*) FROM fl_training;
 
--- ── Step 3: Schema of every table ────────────────────────────────────────────
+-- ── Step 3: Schema of every table ────────────────────────────────────────
 .schema patient_vitals
 .schema prediction_history
 .schema sample_patients
 .schema fl_training
 
--- ── Step 4: First 10 rows — patient_vitals ───────────────────────────────────
--- 60 rows (3 patients × 20 readings). Real-time vital signs from MIMIC-III.
+-- ── Step 4: First 10 rows — patient_vitals ───────────────────────────────
+-- 60 rows total (3 patients × 20 readings). Real-time vital signs from MIMIC-III.
 SELECT * FROM patient_vitals LIMIT 10;
 
--- ── Step 5: First 10 rows — prediction_history ───────────────────────────────
--- SOFA predictions logged over time. Written by the backend on every /api/predict call.
+-- ── Step 5: First 10 rows — prediction_history ───────────────────────────
+-- Written by the backend on every /api/predict call during live monitoring.
 SELECT * FROM prediction_history LIMIT 10;
 
--- ── Step 6: First 10 rows — sample_patients ──────────────────────────────────
--- 90 rows (3 patients × 30 readings). Powers the 90-second live monitoring cycle.
+-- ── Step 6: First 10 rows — sample_patients ──────────────────────────────
+-- 90 rows (3 patients × 30 readings). Powers the 90-second monitoring cycle.
 SELECT * FROM sample_patients LIMIT 10;
 
--- ── Step 7: First 10 rows — fl_training ──────────────────────────────────────
--- 48,150 rows (MIMIC-III derived). Split across 3 hospital clients for federated training.
+-- ── Step 7: First 10 rows — fl_training ──────────────────────────────────
+-- 48,150 rows (MIMIC-III derived). The training data for federated learning.
 SELECT * FROM fl_training LIMIT 10;
 
--- ── Step 8: Per-patient breakdown ────────────────────────────────────────────
-SELECT patient, COUNT(*) AS readings FROM patient_vitals GROUP BY patient;
-SELECT patient, COUNT(*) AS readings FROM sample_patients GROUP BY patient;
+-- ── Step 8: Per-patient row counts ───────────────────────────────────────
+SELECT patient, COUNT(*) AS readings    FROM patient_vitals    GROUP BY patient;
+SELECT patient, COUNT(*) AS readings    FROM sample_patients   GROUP BY patient;
 SELECT patient, COUNT(*) AS predictions FROM prediction_history GROUP BY patient;
 
--- ── Step 9: Per-client FL training split ─────────────────────────────────────
+-- ── Step 9: FL training split per hospital client ────────────────────────
 SELECT client_id, COUNT(*) AS rows FROM fl_training GROUP BY client_id;
 
--- ── Step 10: Latest SOFA predictions per patient ─────────────────────────────
+-- ── Step 10: Latest SOFA prediction per patient ──────────────────────────
 SELECT patient, Timestamp, SOFA, Risk, HR, SpO2, MAP
 FROM prediction_history
 WHERE id IN (
     SELECT MAX(id) FROM prediction_history GROUP BY patient
 );
 
--- ── Step 11: Database file size ───────────────────────────────────────────────
+-- ── Step 11: Database file size ──────────────────────────────────────────
 SELECT ROUND(page_count * page_size / 1024.0 / 1024.0, 2) AS db_size_mb
 FROM pragma_page_count(), pragma_page_size();
 
@@ -597,63 +847,78 @@ FROM pragma_page_count(), pragma_page_size();
 **What to show:**
 - `.tables` — 4 tables: `patient_vitals`, `prediction_history`, `sample_patients`, `fl_training`
 - Row counts — 48,150 FL training rows + 90 simulation rows + 60 vitals rows
-- `sample_patients` schema — 108-feature rows including `stress_score`, `clinical_note`, `GCS_eye_opening`
-- `fl_training` schema — `client_id` column + all feature + `sofa_score` target columns
-- Per-client split — exactly 16,050 rows per hospital (clients 0, 1, 2)
-- `prediction_history` — shows SOFA, Risk, all vitals written by the live backend
-- The database is the single source of truth for both inference and FL training
+- `sample_patients` schema — 108-feature rows including `stress_score`, `GCS_eye_opening`, `clinical_note`
+- `fl_training` schema — `client_id` column + all features + `sofa_score` target
+- FL split — exactly 16,050 rows per hospital client (0, 1, 2)
+- `prediction_history` — SOFA, Risk, and all vitals written by the live backend
 
 ---
 
 ### Demo 11 — Full Test Suite (701 Tests)
 
-Shows the complete automated test coverage: FL system, ClinIQ backend API, and React frontend.
+Shows the complete automated test coverage across all layers of the system.
 
-**FL System Tests (287 tests — all phases):**
+> Activate venv first. Run from the project root folder (same folder as `requirements.txt`).
+
+macOS / Linux:
 ```bash
-cd icu_monitor
 source venv/bin/activate
+```
 
-# Unit tests (fast)
+Windows:
+```cmd
+venv\Scripts\activate
+```
+
+**FL unit tests — Phases 1–6 (fast, ~30 seconds):**
+```bash
 python -m pytest tests/fl/unit/ -v
+```
 
-# Integration tests
+**FL integration tests — Phases 7–9:**
+```bash
 python -m pytest tests/fl/integration/ -v
+```
 
-# System tests (end-to-end fl_thread simulation)
+**FL system tests — Phase 10 (end-to-end `fl_thread` simulation):**
+```bash
 python -m pytest tests/fl/system/ -v -m slow
+```
 
-# All FL tests at once
+**All FL tests at once (287 tests):**
+```bash
 python -m pytest tests/fl/ -v
 ```
 
-**ClinIQ Backend Tests (207 tests):**
+**ClinIQ backend API tests (207 tests):**
 ```bash
-cd icu_monitor
-source venv/bin/activate
 python -m pytest tests/cliniq/backend/ -v
 ```
 
-**React Frontend Tests (207 Vitest tests):**
+**All Python tests at once (494 tests):**
 ```bash
-cd icu_monitor/frontend
-npx vitest run
+python -m pytest tests/ -v
 ```
 
-**All runnable tests in one command:**
+**React frontend tests — Vitest (207 tests):**
 ```bash
-cd icu_monitor
-python -m pytest tests/ -v
-cd frontend && npx vitest run && cd ..
+cd frontend
+npx vitest run
+cd ..
 ```
 
 **Expected results:**
 ```
-tests/fl/           287 passed
-tests/cliniq/backend/  207 passed
-frontend Vitest        207 passed
-─────────────────────────────────
-Total                  701 passed
+tests/fl/unit/           ~256 passed
+tests/fl/integration/     ~14 passed
+tests/fl/system/          ~17 passed  (slow mark)
+tests/cliniq/backend/    207 passed
+──────────────────────────────────────
+Python total             494 passed
+
+frontend Vitest          207 passed
+──────────────────────────────────────
+Grand total              701 passed
 ```
 
 ---
@@ -777,7 +1042,6 @@ Total parameters: ~23,000
 ### Retrain the model (simulation mode)
 
 ```bash
-cd icu_monitor
 python train_federated.py
 ```
 
@@ -785,9 +1049,17 @@ Takes ~40–60 minutes (Phase 0: data loading, Phase 1–6: FL training, Phase 7
 
 **Force Phase 0 re-run:**
 
+macOS / Linux:
 ```bash
 sqlite3 models/icu_monitor.db "DELETE FROM fl_training;"
 rm models/scaler.pkl models/tfidf_vectorizer.pkl models/feature_columns.pkl
+python train_federated.py
+```
+
+Windows:
+```cmd
+sqlite3 models\icu_monitor.db "DELETE FROM fl_training;"
+del models\scaler.pkl models\tfidf_vectorizer.pkl models\feature_columns.pkl
 python train_federated.py
 ```
 
@@ -878,43 +1150,42 @@ SELECT client_id, COUNT(*) AS rows FROM fl_training GROUP BY client_id;
 
 ## Test Suite
 
+> Activate your venv first (`source venv/bin/activate` on macOS/Linux, `venv\Scripts\activate` on Windows), then run all commands from the project root.
+
 ### FL Tests — 287 tests across 10 phases
 
 ```bash
-cd icu_monitor
-source venv/bin/activate
-
 # All FL tests
 python -m pytest tests/fl/ -v
 
 # By phase group
-python -m pytest tests/fl/unit/       -v          # Phases 1–6 (fast unit tests)
-python -m pytest tests/fl/integration/ -v         # Phases 7–9 (integration)
-python -m pytest tests/fl/system/     -v -m slow  # Phase 10 (end-to-end system)
+python -m pytest tests/fl/unit/        -v          # Phases 1–6 (fast unit tests)
+python -m pytest tests/fl/integration/ -v          # Phases 7–9 (integration)
+python -m pytest tests/fl/system/      -v -m slow  # Phase 10 (end-to-end system)
 ```
 
 ### ClinIQ Backend Tests — 207 tests
 
 ```bash
-cd icu_monitor
 python -m pytest tests/cliniq/backend/ -v
 ```
 
 ### React Frontend Tests — 207 Vitest tests
 
 ```bash
-cd icu_monitor/frontend
+cd frontend
 npx vitest run
+cd ..
 ```
 
 ### Run everything
 
 ```bash
-# Python tests (494 total)
-cd icu_monitor && python -m pytest tests/ -v
+# All Python tests (494 total)
+python -m pytest tests/ -v
 
 # Frontend tests (207 total)
-cd icu_monitor/frontend && npx vitest run
+cd frontend && npx vitest run && cd ..
 ```
 
 **Grand total: 701 passing tests.**
@@ -928,16 +1199,17 @@ cd icu_monitor/frontend && npx vitest run
 pip install -r requirements.txt
 ```
 
-**Port 8000 already in use**
+**Port already in use (8000 / 8080 / 8501 / 8502 / 8503 / 8504)**
+
+macOS / Linux:
 ```bash
-lsof -ti :8000 | xargs kill -9
-uvicorn backend.main:app --port 8000 --reload
+lsof -ti :8000 | xargs kill -9    # replace 8000 with the port that is busy
 ```
 
-**Port 8501/8502/8503 already in use (Streamlit)**
-```bash
-lsof -ti :8501 | xargs kill -9
-streamlit run fl_dashboard.py
+Windows:
+```cmd
+netstat -ano | findstr :8000       # find the PID in the last column
+taskkill /PID <pid> /F             # replace <pid> with that number
 ```
 
 **Report shows "No assessment available" in all sections**
@@ -973,24 +1245,55 @@ python server.py
 
 ## Quick Start
 
+### Automated setup (recommended — works on macOS, Linux, Windows)
+
 ```bash
-# 1. Install Python dependencies
+# Clone / download the project, then cd into it (any folder name works)
+cd <project-folder>
+
+# One command sets up everything: venv, pip, npm, DB, .env
+python setup.py
+
+# Skip the virtual environment if you prefer system Python
+python setup.py --no-venv
+```
+
+`setup.py` handles all 7 steps automatically:
+checks Python ≥ 3.12, checks Node ≥ 18, creates `venv/`, installs pip packages,
+installs npm packages, initialises the SQLite database, and creates `.env` from `.env.example`.
+
+After setup, add your Groq API key to `.env`:
+```
+GROQ_API_KEY=gsk_your_key_here
+```
+Get a free key at https://console.groq.com
+
+### Manual setup (step by step)
+
+```bash
+# 1. Create and activate a virtual environment (optional but recommended)
+python -m venv venv
+source venv/bin/activate        # macOS / Linux
+venv\Scripts\activate           # Windows
+
+# 2. Install Python dependencies
 pip install -r requirements.txt
 
-# 2. Install frontend dependencies
+# 3. Install frontend dependencies
 cd frontend && npm install && cd ..
 
-# 3. Set up database (one-time)
+# 4. Set up the database (one-time migration)
 python migrate_to_db.py
 
-# 4. Set Groq API key
-cp .env.example .env
-# Edit .env and add your GROQ_API_KEY
+# 5. Set your Groq API key
+cp .env.example .env            # macOS / Linux
+copy .env.example .env          # Windows
+# Then open .env and set: GROQ_API_KEY=gsk_your_key_here
 
-# 5. Start backend (Terminal 1)
+# 6. Start the backend (Terminal 1)
 uvicorn backend.main:app --port 8000 --reload
 
-# 6. Start frontend (Terminal 2)
+# 7. Start the frontend (Terminal 2)
 cd frontend && npm run dev
 
 # Dashboard → http://localhost:5174
