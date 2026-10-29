@@ -554,10 +554,10 @@ def call_judge_llm(api_key: str, main_response: str, vitals: dict, sofa_val: flo
                 '"dangerous_details":""}'
             )
             resp = client.chat.completions.create(
-                model="qwen/qwen3.8-27b",
+                model="openai/gpt-oss-120b",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.0,
-                max_tokens=300,
+                max_tokens=1200,
             )
             text = _strip_thinking(resp.choices[0].message.content.strip())
             s, e = text.find("{"), text.rfind("}") + 1
@@ -661,7 +661,7 @@ def generate_report(predict_result: dict, care_mode: str, api_key: str) -> dict:
                 {"role": "user",   "content": final_prompt},
             ],
             temperature=0.15,
-            max_tokens=3500,
+            max_tokens=6000,
         )
         text = _strip_thinking(resp.choices[0].message.content)
         main_response = text if text else _FALLBACK_MSG

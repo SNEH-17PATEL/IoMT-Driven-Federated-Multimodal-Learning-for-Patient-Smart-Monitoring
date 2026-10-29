@@ -859,7 +859,7 @@ def get_multiple_llm_responses(api_key, prompt, n=3, system_msg=None):
                 {"role": "user", "content": prompt}
             ],
             temperature=0.15,
-            max_tokens=3500,
+            max_tokens=6000,
         )
         text = _strip_thinking(resp.choices[0].message.content)
         responses.append(text if text else _FALLBACK_MSG)
@@ -1306,7 +1306,7 @@ def numeric_hallucination_score(response, vitals, sofa_val):
 # ── Methods 7+8: Judge LLM — G-Eval (F1) + RAGAS Faithfulness (F2) ───────────
 def call_judge_llm(api_key, main_response, vitals, sofa_val):
     """
-    Second LLM call (lightweight llama-3.1-8b-instant).
+    Second LLM call (openai/gpt-oss-120b judge).
     Combines G-Eval clinical scoring (F1) + RAGAS faithfulness (F2)
     in one structured JSON prompt.
     Returns parsed dict or None on failure — callers must handle None gracefully.
@@ -1348,10 +1348,10 @@ Scoring guide (be strict, not generous):
 
     try:
         resp = client.chat.completions.create(
-            model="llama-3.1-8b-instant",
+            model="openai/gpt-oss-120b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.0,
-            max_tokens=400,
+            max_tokens=1200,
         )
         text = _strip_thinking(resp.choices[0].message.content.strip())
         s, e = text.find("{"), text.rfind("}") + 1
