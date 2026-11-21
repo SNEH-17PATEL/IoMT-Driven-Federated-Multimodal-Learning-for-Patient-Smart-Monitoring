@@ -10,19 +10,19 @@
     "Mixed ICU",
     "Cardiac/Trauma ICU"
   ],
-  "aggregation": "FedYogi (\u03b7=0.01, \u03b21=0.9, \u03b22=0.99) + FedProx (\u03bc=0.5)",
+  "aggregation": "FedAvg + FedProx (\u03bc=0.5)",
   "split_type": "IID",
-  "train_samples": 12795,
-  "test_samples": 2559,
+  "train_samples": 41798,
+  "test_samples": 10450,
   "input_features": 108,
-  "model_architecture": "108 \u2192 128 \u2192 64 \u2192 32 \u2192 1  (ReLU, no Dropout, FedProx)",
-  "best_round": 18,
-  "final_mae": 1.8968,
-  "final_r2": 0.5995,
-  "pred_range_min": -0.22,
-  "pred_range_max": 14.38,
+  "model_architecture": "108 \u2192 256 \u2192 128 \u2192 64 \u2192 1  (ReLU, Dropout 0.3, FedProx)",
+  "best_round": 37,
+  "final_mae": 1.8006,
+  "final_r2": 0.4806,
+  "pred_range_min": 1.78,
+  "pred_range_max": 23.07,
   "oversample": false,
-  "loss_weights": "Linear (1 + SOFA\u00d70.5) \u2014 mild high-SOFA emphasis (~2\u00d7 at SOFA=10)",
+  "loss_weights": "None \u2014 plain MSE",
   "optimizer": "AdamW (weight_decay=1e-4)",
   "differential_privacy": false,
   "dp_sensitivity": null,
@@ -30,7 +30,7 @@
   "dp_epsilon": null,
   "dp_delta": null,
   "bigquery_project": "mimic-project-2",
-  "tfidf_features": 200,
+  "tfidf_features": 90,
   "tfidf_ngram": [
     1,
     2
@@ -45,77 +45,79 @@
       ],
       "confusion_matrix": [
         [
-          1304,
-          178,
-          3
+          6714,
+          306,
+          7
         ],
         [
-          378,
-          444,
-          4
+          2086,
+          669,
+          66
         ],
         [
-          7,
-          192,
-          49
+          119,
+          219,
+          264
         ]
       ],
       "per_class": {
         "Low (<5)": {
-          "precision": 0.7720544701006513,
-          "recall": 0.8781144781144781,
-          "sensitivity": 0.8781144781144781,
-          "specificity": 0.6415270018621974,
-          "f1": 0.8216761184625079
+          "precision": 0.7527749747729566,
+          "recall": 0.9554575209904653,
+          "sensitivity": 0.9554575209904653,
+          "specificity": 0.3558282208588957,
+          "f1": 0.842092060704879
         },
         "Moderate (5-<10)": {
-          "precision": 0.5454545454545454,
-          "recall": 0.5375302663438256,
-          "sensitivity": 0.5375302663438256,
-          "specificity": 0.7864974033467974,
-          "f1": 0.5414634146341464
+          "precision": 0.5603015075376885,
+          "recall": 0.23714994682736618,
+          "sensitivity": 0.23714994682736618,
+          "specificity": 0.9311836413684624,
+          "f1": 0.3332503113325031
         },
         "High (>=10)": {
-          "precision": 0.875,
-          "recall": 0.1975806451612903,
-          "sensitivity": 0.1975806451612903,
-          "specificity": 0.9969710082215492,
-          "f1": 0.3223684210526316
+          "precision": 0.7833827893175074,
+          "recall": 0.43853820598006643,
+          "sensitivity": 0.43853820598006643,
+          "specificity": 0.992587327376117,
+          "f1": 0.5623003194888179
         }
       },
       "macro": {
-        "precision": 0.7308363385183988,
-        "recall": 0.5377417965398646,
-        "sensitivity": 0.5377417965398646,
-        "specificity": 0.808331804476848,
-        "f1": 0.5618359847164286
+        "precision": 0.698819757209384,
+        "recall": 0.5437152245992993,
+        "sensitivity": 0.5437152245992993,
+        "specificity": 0.7598663965344917,
+        "f1": 0.5792142305087333
       }
     },
     "high_risk_alert": {
-      "predicted_sofa_threshold": 8.0,
+      "predicted_sofa_threshold": 7.0,
       "actual_high_risk_threshold": 10.0,
       "confusion_matrix": [
         [
-          2253,
-          58
+          9513,
+          335
         ],
         [
-          107,
-          141
+          194,
+          408
         ]
       ],
-      "true_negative": 2253,
-      "false_positive": 58,
-      "false_negative": 107,
-      "true_positive": 141,
-      "precision": 0.7085427135678392,
-      "recall": 0.5685483870967742,
-      "sensitivity": 0.5685483870967742,
-      "specificity": 0.9749026395499784,
-      "f1": 0.6308724832214765,
-      "auroc": 0.9461499001968146,
-      "pr_auc": 0.6840148203488288
+      "true_negative": 9513,
+      "false_positive": 335,
+      "false_negative": 194,
+      "true_positive": 408,
+      "precision": 0.5491251682368775,
+      "recall": 0.6777408637873754,
+      "sensitivity": 0.6777408637873754,
+      "specificity": 0.965982940698619,
+      "f1": 0.6066914498141264,
+      "auroc": 0.9181203799412195,
+      "pr_auc": 0.6465900873840437
     }
   },
-  "evaluation_limitation": "Row-level train/test split \u2014 patient/ICU-stay IDs unavailable. Treat as initial evaluation results, not independent clinical validation."
+  "evaluation_limitation": "One row per ICU stay, split 80/20 by ICU stay \u2014 a patient with several stays can appear in both train and test. Retrospective MIMIC-III results, not independent clinical validation.",
+  "sklearn_version": "1.9.0",
+  "torch_version": "2.13.0"
 }

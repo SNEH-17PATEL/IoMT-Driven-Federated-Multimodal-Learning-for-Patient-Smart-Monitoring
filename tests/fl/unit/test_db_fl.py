@@ -69,12 +69,12 @@ def _create_fl_table(db_path, rows, if_exists="replace"):
 # 1A — fl_training_exists()
 # ═════════════════════════════════════════════════════════════════════════════
 
-def test_fl_training_exists_raises_when_table_absent(tmp_db):
-    """fl_training is not created by init_db() → OperationalError on first call."""
+def test_fl_training_exists_false_when_table_absent(tmp_db):
+    """fl_training is not created by init_db(); on a fresh DB the check returns
+    False (so training runs Phase 0) instead of crashing."""
     import db as db_mod
     # init_db() was already called by tmp_db fixture; fl_training still absent
-    with pytest.raises(Exception):
-        db_mod.fl_training_exists()
+    assert db_mod.fl_training_exists() is False
 
 
 def test_fl_training_exists_false_when_empty(tmp_db):
@@ -233,27 +233,26 @@ def test_fl_training_client_id_index_created(tmp_db):
     assert "idx_ft_client" in indexes
 
 
-def test_fl_training_created_at_trigger_fires(tmp_db):
-    """trg_ft_created_at trigger auto-sets created_at on INSERT into fl_training."""
+def test_init_db_never_installs_fl_training_trigger(tmp_db):
+    """fl_training is written by pandas to_sql (no timestamp columns), so init_db()
+    must not install a timestamp trigger on it — even once the table exists —
+    and plain inserts must keep working."""
     import db as db_mod
-    # Create table with timestamp columns so the trigger can write them
-    _create_fl_table(tmp_db, _make_rows(0, n=2, with_timestamps=True))
-    # Reinstall trigger now that the table exists
+    _create_fl_table(tmp_db, _make_rows(0, n=2))
     db_mod.init_db()
-    # Insert a new row via raw SQL and verify trigger sets created_at
     conn = sqlite3.connect(tmp_db)
+    triggers = {r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger'"
+    ).fetchall()}
     conn.execute(
-        "INSERT INTO fl_training "
-        "(client_id, feature1, feature2, sofa_score, created_at, updated_at) "
-        "VALUES (0, 99.0, 198.0, 7.0, NULL, NULL)"
+        "INSERT INTO fl_training (client_id, feature1, feature2, sofa_score) "
+        "VALUES (0, 99.0, 198.0, 7.0)"
     )
     conn.commit()
-    row = conn.execute(
-        "SELECT created_at FROM fl_training WHERE feature1 = 99.0"
-    ).fetchone()
+    n = conn.execute("SELECT COUNT(*) FROM fl_training WHERE feature1 = 99.0").fetchone()[0]
     conn.close()
-    assert row is not None, "Row not found after INSERT"
-    assert row[0] is not None, "created_at should be set by trigger"
+    assert "trg_ft_created_at" not in triggers
+    assert n == 1
 
 
 def test_init_db_skips_fl_trigger_when_table_absent(tmp_db):
@@ -274,13 +273,13 @@ def test_init_db_skips_fl_trigger_when_table_absent(tmp_db):
 # 1D — get_conn() extended
 # ═════════════════════════════════════════════════════════════════════════════
 
-def test_get_conn_foreign_keys_enabled(tmp_db):
-    """get_conn() sets PRAGMA foreign_keys=ON (returns 1)."""
+def test_get_conn_uses_wal_journal_mode(tmp_db):
+    """get_conn() enables WAL so the API and training can read/write concurrently."""
     import db as db_mod
     conn = db_mod.get_conn()
-    fk = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+    mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     conn.close()
-    assert fk == 1
+    assert mode.lower() == "wal"
 
 
 def test_get_conn_concurrent_wal_writes(tmp_db):

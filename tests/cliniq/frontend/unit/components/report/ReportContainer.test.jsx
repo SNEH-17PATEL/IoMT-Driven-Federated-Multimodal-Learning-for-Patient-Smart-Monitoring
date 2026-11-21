@@ -8,6 +8,10 @@ vi.mock('@/api/client.js', () => ({
 
 import { generateReport } from '@/api/client.js'
 
+// The component also prefetches the other care mode in the background, so
+// count calls per mode rather than in total.
+const callsFor = (mode) => generateReport.mock.calls.filter(c => c[1] === mode).length
+
 const predictData = {
   patient_id: 1,
   sofa_score: 5.5,
@@ -99,22 +103,97 @@ describe('ReportContainer', () => {
     const { rerender } = render(
       <ReportContainer predictData={predictData} careMode="hospital" onReportData={() => {}} />
     )
-    await waitFor(() => expect(generateReport).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(callsFor('hospital')).toBe(1))
 
     // Re-render with same clinical values (same key) — should not re-call
     rerender(<ReportContainer predictData={{ ...predictData }} careMode="hospital" onReportData={() => {}} />)
-    await waitFor(() => expect(generateReport).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(callsFor('hospital')).toBe(1))
   })
 
-  it('calls generateReport again when care mode changes', async () => {
+  it('requests a report for each care mode', async () => {
     generateReport.mockResolvedValue({ data: reportResponse })
     const { rerender } = render(
       <ReportContainer predictData={predictData} careMode="hospital" onReportData={() => {}} />
     )
-    await waitFor(() => expect(generateReport).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(callsFor('hospital')).toBe(1))
 
     rerender(<ReportContainer predictData={predictData} careMode="homecare" onReportData={() => {}} />)
-    await waitFor(() => expect(generateReport).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(callsFor('homecare')).toBe(1))
+  })
+
+  it('prefetches the other care mode once the current report has loaded', async () => {
+    generateReport.mockResolvedValue({ data: reportResponse })
+    render(<ReportContainer predictData={predictData} careMode="hospital" onReportData={() => {}} />)
+    await waitFor(() => expect(callsFor('homecare')).toBe(1))
+    expect(callsFor('hospital')).toBe(1)
+  })
+
+  it('switches care mode instantly from cache, with no extra request or skeleton', async () => {
+    const hospital = { ...reportResponse, care_mode: 'hospital', reliability_score: 0.64 }
+    const homecare = { ...reportResponse, care_mode: 'homecare', reliability_score: 0.81,
+      sections: { ...reportResponse.sections, 'CURRENT CONDITION': 'Resting comfortably at home.' } }
+    generateReport.mockImplementation((_, mode) =>
+      Promise.resolve({ data: mode === 'homecare' ? homecare : hospital }))
+    const onReportData = vi.fn()
+
+    const { rerender } = render(
+      <ReportContainer predictData={predictData} careMode="hospital" onReportData={onReportData} />
+    )
+    await waitFor(() => expect(callsFor('homecare')).toBe(1))  // prefetch done
+    await act(async () => {})
+
+    rerender(<ReportContainer predictData={predictData} careMode="homecare" onReportData={onReportData} />)
+    // Shown on the very next render — no loading skeleton, no new request
+    expect(screen.getByText(/Resting comfortably at home/i)).toBeInTheDocument()
+    expect(screen.queryByText(/Generating AI assessment/i)).not.toBeInTheDocument()
+    expect(onReportData).toHaveBeenLastCalledWith(homecare)
+
+    rerender(<ReportContainer predictData={predictData} careMode="hospital" onReportData={onReportData} />)
+    expect(screen.getByText(/haemodynamically compromised/i)).toBeInTheDocument()
+    expect(onReportData).toHaveBeenLastCalledWith(hospital)
+    expect(generateReport).toHaveBeenCalledTimes(2)
+  })
+
+  it('never shows one care mode\'s report under the other tab while loading', async () => {
+    const hospital = { ...reportResponse, care_mode: 'hospital' }
+    generateReport.mockImplementation((_, mode) =>
+      mode === 'hospital' ? Promise.resolve({ data: hospital }) : new Promise(() => {}))
+    const onReportData = vi.fn()
+    const { rerender } = render(
+      <ReportContainer predictData={predictData} careMode="hospital" onReportData={onReportData} />
+    )
+    await waitFor(() => expect(screen.getByText(/haemodynamically compromised/i)).toBeInTheDocument())
+
+    rerender(<ReportContainer predictData={predictData} careMode="homecare" onReportData={onReportData} />)
+    expect(screen.queryByText(/haemodynamically compromised/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/Generating AI assessment/i)).toBeInTheDocument()
+    expect(onReportData).toHaveBeenLastCalledWith(null)
+  })
+
+  it('a new reading empties the cache so both modes are regenerated', async () => {
+    generateReport.mockResolvedValue({ data: reportResponse })
+    const { rerender } = render(
+      <ReportContainer predictData={predictData} careMode="hospital" onReportData={() => {}} />
+    )
+    await waitFor(() => expect(callsFor('homecare')).toBe(1))
+
+    const next = { ...predictData, vitals: { ...predictData.vitals, HR: 120 } }
+    rerender(<ReportContainer predictData={next} careMode="hospital" onReportData={() => {}} />)
+    await waitFor(() => expect(callsFor('homecare')).toBe(2))
+    expect(callsFor('hospital')).toBe(2)
+  })
+
+  it('does not cache a failed report — the same reading retries', async () => {
+    generateReport.mockRejectedValueOnce({ response: { status: 503, data: {} } })
+    generateReport.mockResolvedValue({ data: reportResponse })
+    const { rerender } = render(
+      <ReportContainer predictData={predictData} careMode="hospital" onReportData={() => {}} />
+    )
+    await waitFor(() => expect(screen.getByText(/temporarily unavailable/i)).toBeInTheDocument())
+
+    rerender(<ReportContainer predictData={predictData} careMode="homecare" onReportData={() => {}} />)
+    rerender(<ReportContainer predictData={predictData} careMode="hospital" onReportData={() => {}} />)
+    await waitFor(() => expect(callsFor('hospital')).toBe(2))
   })
 
   it('calls generateReport again when GCS_eye changes', async () => {
@@ -122,11 +201,11 @@ describe('ReportContainer', () => {
     const { rerender } = render(
       <ReportContainer predictData={predictData} careMode="hospital" onReportData={() => {}} />
     )
-    await waitFor(() => expect(generateReport).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(callsFor('hospital')).toBe(1))
 
     const newData = { ...predictData, vitals: { ...predictData.vitals, GCS_eye: 1 } }
     rerender(<ReportContainer predictData={newData} careMode="hospital" onReportData={() => {}} />)
-    await waitFor(() => expect(generateReport).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(callsFor('hospital')).toBe(2))
   })
 
   it('renders nothing when predictData is null', () => {
@@ -186,11 +265,11 @@ describe('ReportContainer', () => {
     const { rerender } = render(
       <ReportContainer predictData={predictData} careMode="hospital" onReportData={() => {}} />
     )
-    await waitFor(() => expect(generateReport).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(callsFor('hospital')).toBe(1))
 
     const newData = { ...predictData, sofa_score: 10.5 }
     rerender(<ReportContainer predictData={newData} careMode="hospital" onReportData={() => {}} />)
-    await waitFor(() => expect(generateReport).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(callsFor('hospital')).toBe(2))
   })
 
   it('calls generateReport again when stress changes', async () => {
@@ -198,11 +277,11 @@ describe('ReportContainer', () => {
     const { rerender } = render(
       <ReportContainer predictData={predictData} careMode="hospital" onReportData={() => {}} />
     )
-    await waitFor(() => expect(generateReport).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(callsFor('hospital')).toBe(1))
 
     const newData = { ...predictData, vitals: { ...predictData.vitals, stress: 8.0 } }
     rerender(<ReportContainer predictData={newData} careMode="hospital" onReportData={() => {}} />)
-    await waitFor(() => expect(generateReport).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(callsFor('hospital')).toBe(2))
   })
 
   it('does not call generateReport when only non-reportKey fields change', async () => {
@@ -210,12 +289,12 @@ describe('ReportContainer', () => {
     const { rerender } = render(
       <ReportContainer predictData={predictData} careMode="hospital" onReportData={() => {}} />
     )
-    await waitFor(() => expect(generateReport).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(callsFor('hospital')).toBe(1))
 
     // risk_level and row_idx are not part of reportKey — same clinical values
     const newData = { ...predictData, risk_level: 'High Risk', row_idx: 999 }
     rerender(<ReportContainer predictData={newData} careMode="hospital" onReportData={() => {}} />)
     await new Promise(r => setTimeout(r, 80))
-    expect(generateReport).toHaveBeenCalledTimes(1)
+    expect(callsFor('hospital')).toBe(1)
   })
 })

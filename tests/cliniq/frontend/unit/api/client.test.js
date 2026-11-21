@@ -41,14 +41,12 @@ describe('API client', () => {
     expect(api.post).toHaveBeenCalledWith('/predict', { patient_id: 1, row_idx: 5 })
   })
 
-  it('generateReport calls POST /report with correct fields', () => {
+  it('generateReport calls POST /report with only patient_id and care_mode', () => {
     api.post.mockResolvedValue({ data: {} })
-    const pred = { patient_id: 1, sofa_score: 4.0 }
-    generateReport(1, 'hospital', pred)
+    generateReport(1, 'hospital')
     expect(api.post).toHaveBeenCalledWith('/report', {
       patient_id: 1,
       care_mode: 'hospital',
-      predict_result: pred,
     })
   })
 
@@ -64,10 +62,10 @@ describe('API client', () => {
     expect(api.get).toHaveBeenCalledWith('/vitals/1?limit=20')
   })
 
-  it('getHistory uses default limit of 5', () => {
+  it('getHistory uses default limit of 50', () => {
     api.get.mockResolvedValue({ data: [] })
     getHistory(2)
-    expect(api.get).toHaveBeenCalledWith('/history/2?limit=5')
+    expect(api.get).toHaveBeenCalledWith('/history/2?limit=50')
   })
 
   it('getVitals uses default limit of 20', () => {

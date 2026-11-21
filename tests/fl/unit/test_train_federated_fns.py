@@ -2,7 +2,7 @@
 Phase 6 — Train Federated Helpers  (test_train_federated_fns.py)
 =================================================================
 Tests make_noniid_split, HospitalClient (train variant),
-SaveBestStrategy (FedYogi variant), and config constants from
+SaveBestStrategy (FedAvg default), and config constants from
 train_federated.py.
 
 Import strategy (train_federated.py has heavy module-level side-effects):
@@ -18,7 +18,7 @@ Import strategy (train_federated.py has heavy module-level side-effects):
 30 tests across 4 groups:
   6A  make_noniid_split()           —  8 tests
   6B  HospitalClient (train)        —  7 tests
-  6C  SaveBestStrategy (FedYogi)    —  5 tests
+  6C  SaveBestStrategy (FedAvg)     —  7 tests
   6D  Config constants              — 10 tests
 """
 import builtins
@@ -303,7 +303,7 @@ def test_hospital_client_evaluate_returns_correct_structure(monkeypatch):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 6C — SaveBestStrategy (FedYogi variant)
+# 6C — SaveBestStrategy (FedAvg by default, FedYogi if USE_FEDYOGI)
 # ═════════════════════════════════════════════════════════════════════════════
 
 def test_strategy_configure_fit_adds_server_round(monkeypatch):
@@ -323,7 +323,7 @@ def test_strategy_configure_fit_adds_server_round(monkeypatch):
 def test_strategy_aggregate_fit_stores_params_in_last_weights(monkeypatch):
     """aggregate_fit() stores the aggregated result in _last_weights['params']."""
     fake_params = MagicMock()
-    monkeypatch.setattr(fl.server.strategy.FedYogi, "aggregate_fit",
+    monkeypatch.setattr(trf._BaseStrategy, "aggregate_fit",
                         MagicMock(return_value=(fake_params, {})))
     trf.strategy.aggregate_fit(1, [], [])
     assert trf._last_weights.get("params") is fake_params
@@ -331,7 +331,7 @@ def test_strategy_aggregate_fit_stores_params_in_last_weights(monkeypatch):
 
 def test_strategy_aggregate_evaluate_updates_best_loss(monkeypatch):
     """aggregate_evaluate() updates _best_loss when avg_loss is a new minimum."""
-    monkeypatch.setattr(fl.server.strategy.FedYogi, "aggregate_evaluate",
+    monkeypatch.setattr(trf._BaseStrategy, "aggregate_evaluate",
                         MagicMock(return_value=(None, {})))
     results = [(MagicMock(), MagicMock(loss=0.4))]
     trf.strategy.aggregate_evaluate(1, results, [])
@@ -340,7 +340,7 @@ def test_strategy_aggregate_evaluate_updates_best_loss(monkeypatch):
 
 def test_strategy_aggregate_evaluate_copies_last_to_best_on_new_best(monkeypatch):
     """On a new best, _best_weights['params'] is set from _last_weights['params']."""
-    monkeypatch.setattr(fl.server.strategy.FedYogi, "aggregate_evaluate",
+    monkeypatch.setattr(trf._BaseStrategy, "aggregate_evaluate",
                         MagicMock(return_value=(None, {})))
     fake_params = MagicMock()
     trf._last_weights["params"] = fake_params     # pre-populate (autouse gave us {})
@@ -350,9 +350,9 @@ def test_strategy_aggregate_evaluate_copies_last_to_best_on_new_best(monkeypatch
 
 
 def test_strategy_aggregate_evaluate_calls_super(monkeypatch):
-    """aggregate_evaluate() delegates to the parent FedYogi.aggregate_evaluate."""
+    """aggregate_evaluate() delegates to the parent strategy (FedAvg by default)."""
     mock_parent = MagicMock(return_value=(None, {}))
-    monkeypatch.setattr(fl.server.strategy.FedYogi, "aggregate_evaluate", mock_parent)
+    monkeypatch.setattr(trf._BaseStrategy, "aggregate_evaluate", mock_parent)
     results = [(MagicMock(), MagicMock(loss=0.5))]
     trf.strategy.aggregate_evaluate(1, results, [])
     mock_parent.assert_called_once()
@@ -378,8 +378,18 @@ def test_mu_fedprox_is_0_5():
     assert trf.MU_FEDPROX == pytest.approx(0.5)
 
 
-def test_server_eta_is_0_01():
-    assert trf.SERVER_ETA == pytest.approx(0.01)
+def test_server_eta_is_0_001():
+    # Only used when USE_FEDYOGI is True; 0.01 made the server loss explode.
+    assert trf.SERVER_ETA == pytest.approx(0.001)
+
+
+def test_use_fedyogi_default_is_false():
+    assert trf.USE_FEDYOGI is False
+
+
+def test_strategy_is_fedavg_by_default():
+    assert isinstance(trf.strategy, fl.server.strategy.FedAvg)
+    assert not isinstance(trf.strategy, fl.server.strategy.FedYogi)
 
 
 def test_server_beta1_is_0_9():

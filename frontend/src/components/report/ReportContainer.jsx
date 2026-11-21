@@ -1,12 +1,14 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
 import { generateReport } from '../../api/client.js'
 import ReliabilityBadge from './ReliabilityBadge.jsx'
 import ReportSection from './ReportSection.jsx'
 import SHAPPanel from './SHAPPanel.jsx'
 
-/* Build a stable key from the values that actually matter for the report.
-   LLM is only re-called when this key changes OR when careMode changes. */
+const CARE_MODES = ['hospital', 'homecare']
+
+/* Identifies one reading: every value the report prompt quotes.
+   Keep in sync with _cache_key() in backend/services/llm_service.py. */
 function reportKey(predictData) {
   if (!predictData) return null
   const v = predictData.vitals ?? {}
@@ -14,11 +16,27 @@ function reportKey(predictData) {
     predictData.patient_id,
     (predictData.sofa_score ?? 0).toFixed(1),
     Math.round(v.HR      ?? 0),
+    Math.round(v.RR      ?? 0),
     Math.round(v.SpO2    ?? 0),
     Math.round(v.SBP     ?? 0),
+    Math.round(v.DBP     ?? 0),
+    Math.round(v.MAP     ?? 0),
+    (v.Temp ?? 0).toFixed(1),
     Math.round(v.GCS_eye ?? 0),
     Math.round(v.stress  ?? 0),
   ].join('|')
+}
+
+const hasSections = (d) => !!d?.sections && Object.values(d.sections).some(Boolean)
+
+function errorMessage(err) {
+  const status = err?.response?.status
+  const detail = err?.response?.data?.detail ?? err?.message ?? null
+  const base = status === 401 ? 'Invalid API key'
+    : status === 429 ? 'Rate limit reached — resets in ~24h'
+    : status === 503 ? 'AI service temporarily unavailable'
+    : detail ?? 'Report generation failed'
+  return `${base}. Showing previous assessment.`
 }
 
 const reportGridVariants = {
@@ -43,7 +61,7 @@ function ReportSkeleton() {
     <div className="space-y-4">
       <div className="h-16 rounded-xl skeleton" />
       <p className="text-xs text-center" style={{ color: 'var(--t3)' }}>
-        Generating AI assessment — this may take ~5s…
+        Generating AI assessment — this may take ~30s…
       </p>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {[0, 1, 2, 3].map(i => (
@@ -104,62 +122,138 @@ export default function ReportContainer({ predictData, careMode, onReportData })
   const [isLoading,      setIsLoading]      = useState(false)
   const [error,          setError]          = useState(null)
 
-  /* Track the last key + careMode that actually triggered an LLM call.
-     New vitals every 90s produce a new predictData object — we only want
-     to call the LLM when the clinical values (SOFA, HR, SpO2, SBP, GCS)
-     genuinely change, or when the user switches care mode. */
-  const lastKeyRef      = useRef(null)
-  const lastCareModeRef = useRef(null)
-  // Each actual API call gets a unique ID. Old responses are ignored only
-  // when a *newer* call has started — not just because predictData re-fired
-  // with the same clinical values (which would set isCurrent=false via cleanup
-  // even though no new request was made, permanently burying the response).
-  const reqIdRef = useRef(0)
+  /* Reports for the current reading, one per care mode:
+       "<reportKey>|<careMode>" → { promise, data }
+     `promise` is shared, so a toggle (or StrictMode's double effect) while a
+     request is in flight joins it instead of starting another. Only successful
+     reports get `data`; failures are dropped so the next reading retries. */
+  const cacheRef         = useRef(new Map())
+  const lastPatientIdRef = useRef(null)
+  const boxRef           = useRef(null)
+  const lastHeightRef    = useRef(0)
+
+  function getEntry(pd, mode, key) {
+    const ck    = `${key}|${mode}`
+    const cache = cacheRef.current
+    let entry   = cache.get(ck)
+    if (!entry) {
+      entry = { data: null }
+      entry.promise = generateReport(pd.patient_id, mode).then(
+        r => {
+          const d = r.data
+          if (cache.get(ck) === entry) {
+            if (hasSections(d)) entry.data = d
+            else cache.delete(ck)
+          }
+          return d
+        },
+        err => {
+          if (cache.get(ck) === entry) cache.delete(ck)
+          throw err
+        },
+      )
+      entry.promise.catch(() => {})  // prefetches may fail with nobody awaiting
+      cache.set(ck, entry)
+    }
+    return entry
+  }
+
+  // H2: when patient changes, immediately clear the displayed report so
+  // the previous patient's AI assessment is never shown under the new patient's header.
+  useEffect(() => {
+    if (!predictData) return
+    const pid = predictData.patient_id
+    if (lastPatientIdRef.current !== null && lastPatientIdRef.current !== pid) {
+      setReportData(null)
+      setPrevReportData(null)
+      lastHeightRef.current = 0
+    }
+    lastPatientIdRef.current = pid
+  }, [predictData?.patient_id])  // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!predictData) return
+    const key = reportKey(predictData)
 
-    const key           = reportKey(predictData)
-    const modeChanged   = careMode !== lastCareModeRef.current
-    const valuesChanged = key !== lastKeyRef.current
+    // A new reading empties the cache: reports for older readings quote stale
+    // vitals and must never be shown again.
+    for (const ck of [...cacheRef.current.keys()]) {
+      if (!ck.startsWith(`${key}|`)) cacheRef.current.delete(ck)
+    }
 
-    // Skip LLM call if neither clinical values nor care mode changed
-    if (!modeChanged && !valuesChanged) return
+    // Once this mode's report is ready, generate the other mode in the
+    // background so switching Hospital ↔ Home Care is instant.
+    const prefetchOther = () => {
+      for (const m of CARE_MODES) if (m !== careMode) getEntry(predictData, m, key)
+    }
 
-    lastKeyRef.current      = key
-    lastCareModeRef.current = careMode
+    const entry = getEntry(predictData, careMode, key)
+    if (entry.data) {
+      setReportData(entry.data)
+      setPrevReportData(entry.data)
+      setError(null)
+      setIsLoading(false)
+      prefetchOther()
+      return
+    }
 
-    // Stamp this request; any older in-flight response will see a stale ID
-    const myId = ++reqIdRef.current
-
-    setIsLoading(true)
+    let cancelled = false
     setError(null)
-
-    generateReport(predictData.patient_id, careMode, predictData)
-      .then(r => {
-        if (reqIdRef.current !== myId) return
-        setReportData(r.data)
-        setPrevReportData(r.data)
+    setIsLoading(true)
+    entry.promise.then(
+      d => {
+        if (cancelled) return
+        setReportData(d)
+        // A soft failure (sections: null) keeps the last good report visible.
+        if (hasSections(d)) {
+          setPrevReportData(d)
+          prefetchOther()
+        }
         setIsLoading(false)
-        onReportData?.(r.data)
-      })
-      .catch(err => {
-        if (reqIdRef.current !== myId) return
-        const status = err?.response?.status
-        const detail = err?.response?.data?.detail ?? err?.message ?? null
-        const base = status === 401 ? 'Invalid API key'
-          : status === 429 ? 'Rate limit reached — resets in ~24h'
-          : status === 503 ? 'AI service temporarily unavailable'
-          : detail ?? 'Report generation failed'
-        setError(`${base}. Showing previous assessment.`)
+      },
+      err => {
+        if (cancelled) return
+        setError(errorMessage(err))
         setIsLoading(false)
-      })
-  }, [predictData, careMode])
+      },
+    )
+    // Ignore this response if the mode or reading changes before it arrives
+    return () => { cancelled = true }
+  }, [predictData, careMode])  // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (isLoading && !prevReportData) return <ReportSkeleton />
+  // Read the cache during render so a cached mode switch paints the new report
+  // on the same frame. Waiting for the effect would paint one blank frame, the
+  // page would shrink, and the browser would drop the reader's scroll position.
+  const cachedNow = predictData
+    ? cacheRef.current.get(`${reportKey(predictData)}|${careMode}`)?.data ?? null
+    : null
+  const display = cachedNow ?? reportData ?? prevReportData
+  // Never show (or publish) one care mode's report under the other mode's tab
+  const wrongMode = !!display?.care_mode && display.care_mode !== careMode
+  const shown = wrongMode ? null : display
+  const loading = isLoading && !cachedNow
 
-  if (error && !prevReportData) {
-    return (
+  // Remember the report's height; while the other mode is still generating,
+  // the loading state keeps that height so the page doesn't shrink and jump.
+  useLayoutEffect(() => {
+    if (shown && boxRef.current) lastHeightRef.current = boxRef.current.offsetHeight
+  })
+
+  // Publish whatever report is on screen (or null) so the header strip and
+  // validation drawer always show the same score as the visible report.
+  useEffect(() => {
+    onReportData?.(shown)
+  }, [shown])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!predictData) return null
+
+  const boxStyle = shown ? undefined : { minHeight: lastHeightRef.current || undefined }
+  const box = (children) => <div ref={boxRef} style={boxStyle}>{children}</div>
+
+  if (loading && (!prevReportData || wrongMode)) return box(<ReportSkeleton />)
+
+  if (error && (!prevReportData || wrongMode)) {
+    return box(
       <div
         className="rounded-xl p-6 text-sm"
         style={{
@@ -174,15 +268,14 @@ export default function ReportContainer({ predictData, careMode, onReportData })
     )
   }
 
-  const display = reportData ?? prevReportData
-  if (!display) return null
+  if (!shown) return null
 
-  const { sections, reliability_score, reliability_label, reliability_color, caution, error: reportError } = display
+  const { sections, reliability_score, reliability_label, reliability_color, caution, error: reportError } = shown
   const hasNoSections = !sections || !Object.values(sections).some(v => v)
 
-  return (
+  return box(
     <div className="space-y-4">
-      {isLoading && (
+      {loading && (
         <StaleReportNotice message="Updating report for new reading…" />
       )}
       {error && (
@@ -193,7 +286,7 @@ export default function ReportContainer({ predictData, careMode, onReportData })
       {reportError && hasNoSections ? (
         <ReportErrorState message={reportError} />
       ) : (
-        <div style={{ opacity: isLoading ? 0.75 : 1, transition: 'opacity 0.3s' }}>
+        <div style={{ opacity: loading ? 0.75 : 1, transition: 'opacity 0.3s' }}>
           {reliability_score != null && (
             <motion.div
               initial={{ opacity: 0, y: 12 }}
@@ -233,7 +326,7 @@ export default function ReportContainer({ predictData, careMode, onReportData })
             ))}
           </motion.div>
 
-          <SHAPPanel factors={predictData?.shap_top5} />
+          <SHAPPanel factors={predictData?.shap_top5} patientId={predictData?.patient_id} />
         </div>
       )}
     </div>

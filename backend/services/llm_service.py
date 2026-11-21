@@ -11,30 +11,49 @@ import numpy as np
 # ─── Simple in-process TTL cache ──────────────────────────────────────────────
 _REPORT_CACHE: dict = {}
 _CACHE_LOCK = threading.Lock()
-_CACHE_TTL  = 90  # seconds — skip re-calling LLM if same patient+mode+sofa
+_CACHE_TTL  = 90  # seconds — matches the 90 s reading cycle
+# key → Event for a report currently being generated, so concurrent requests
+# for the same key wait for one LLM call instead of each starting their own.
+_INFLIGHT: dict = {}
 
 def _cache_key(predict_result: dict, care_mode: str) -> str:
+    # Every vital that appears in the prompt must be here, otherwise a changed
+    # reading can be served a report quoting the previous reading's numbers.
+    # Keep in sync with reportKey() in frontend ReportContainer.jsx.
     pid    = predict_result.get("patient_id", 0)
     sofa   = round(predict_result.get("sofa_score", 0), 1)
-    vitals = predict_result.get("vitals", {})
-    hr     = round(vitals.get("HR",   0))
-    spo2   = round(vitals.get("SpO2", 0))
-    sbp    = round(vitals.get("SBP",  0))
-    rr     = round(vitals.get("RR",   0))
-    return f"{care_mode}|{pid}|{sofa}|{hr}|{spo2}|{sbp}|{rr}"
+    vitals = predict_result.get("vitals") or {}
+    return "|".join(str(p) for p in (
+        care_mode, pid, sofa,
+        round(vitals.get("HR",      0)),
+        round(vitals.get("RR",      0)),
+        round(vitals.get("SpO2",    0)),
+        round(vitals.get("SBP",     0)),
+        round(vitals.get("DBP",     0)),
+        round(vitals.get("MAP",     0)),
+        round(vitals.get("Temp",    0), 1),
+        round(vitals.get("GCS_eye", 0)),
+        round(vitals.get("stress",  0)),
+    ))
+
+def _cache_get_locked(key: str):
+    entry = _REPORT_CACHE.get(key)
+    if entry and (time.time() - entry["ts"]) < _CACHE_TTL:
+        return entry["data"]
+    return None
 
 def _cache_get(key: str):
     with _CACHE_LOCK:
-        entry = _REPORT_CACHE.get(key)
-        if entry and (time.time() - entry["ts"]) < _CACHE_TTL:
-            return entry["data"]
-        if entry:
-            del _REPORT_CACHE[key]
-    return None
+        return _cache_get_locked(key)
 
 def _cache_set(key: str, data: dict):
+    now = time.time()
     with _CACHE_LOCK:
-        _REPORT_CACHE[key] = {"ts": time.time(), "data": data}
+        # Evict every expired entry, not just this key: each new reading makes a
+        # new key, so old keys are never read again and would otherwise pile up.
+        for k in [k for k, e in _REPORT_CACHE.items() if now - e["ts"] >= _CACHE_TTL]:
+            del _REPORT_CACHE[k]
+        _REPORT_CACHE[key] = {"ts": now, "data": data}
 
 _SERVICES_DIR = os.path.dirname(os.path.abspath(__file__))
 _ROOT         = os.path.dirname(os.path.dirname(_SERVICES_DIR))
@@ -90,10 +109,14 @@ _FALLBACK_MSG = (
 # ──────────────────────────────────────────────
 
 def _strip_thinking(text: str) -> str:
-    if "</think>" in text:
+    if "<think>" in text and "</think>" in text:
         text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     elif "<think>" in text:
+        # Unclosed tag: model spent all tokens on reasoning; discard
         text = text[: text.find("<think>")]
+    elif "</think>" in text:
+        # Stray closing tag (no opening): discard everything before it
+        text = text[text.find("</think>") + len("</think>") :]
     return text.strip()
 
 
@@ -189,7 +212,7 @@ def _build_prompt(predict_result: dict, care_mode: str) -> tuple[str, str]:
 • Write every section completely — do not stop mid-sentence or truncate
 
 ━━━ PATIENT DATA ━━━
-SOFA Score: {sofa:.1f} / 24   (0–6 = low risk, 7–9 = moderate, ≥10 = high, ≥15 = critical)
+SOFA Score: {sofa:.1f} / 24   (0–4 = Low Risk, 5–9 = Moderate Risk, ≥10 = High Risk; alert fires at ≥8)
 Risk Level: {risk_text}
 Predicted SOFA uncertainty: ± {conf_q:.1f} points (90% conformal interval)
 
@@ -278,7 +301,7 @@ Base all clinical reasoning strictly on the data above. Do not invent values or 
 • Write every section completely — do not stop mid-sentence or truncate
 
 ━━━ PATIENT DATA ━━━
-SOFA Score: {sofa:.1f} / 24   (higher = worse; above 6 = concerning, above 10 = serious)
+SOFA Score: {sofa:.1f} / 24   (0–4 = Low Risk, 5–9 = Moderate Risk, ≥10 = High Risk)
 Current Risk Level: {risk_text}
 Monitoring Uncertainty: predictions accurate to within ± {conf_q:.1f} SOFA points
 
@@ -361,9 +384,10 @@ _LLM_HARD_RULES = [
         "rule":      "SOFA ≥ 10 → must use urgency language",
     },
     {
-        "condition": lambda v, s: v.get("stress", 0) > 7,
+        # 6.5 = start of the HIGH stress band shown on the dashboard
+        "condition": lambda v, s: v.get("stress", 0) >= 6.5,
         "required":  ["pain", "sedation", "agitation", "comfort", "distress", "analgesia"],
-        "rule":      "Stress Score > 7 → must mention pain management or sedation",
+        "rule":      "Stress Score ≥ 6.5 (High) → must mention pain management or sedation",
     },
     {
         "condition": lambda v, s: v.get("GCS_eye", 4) == 1,
@@ -634,12 +658,30 @@ def generate_report(predict_result: dict, care_mode: str, api_key: str) -> dict:
     Builds prompt from predict_result, calls Groq, validates, returns report dict.
     care_mode: "hospital" or "homecare"
     """
-    # ── TTL cache check ───────────────────────────────────────────────────────
     cache_key = _cache_key(predict_result, care_mode)
-    cached = _cache_get(cache_key)
-    if cached:
-        return cached
+    while True:
+        with _CACHE_LOCK:
+            cached = _cache_get_locked(cache_key)
+            if cached:
+                return cached
+            event = _INFLIGHT.get(cache_key)
+            if event is None:
+                event = threading.Event()
+                _INFLIGHT[cache_key] = event
+                break
+        # Another request is generating this exact report — wait, then re-check
+        # the cache. If that call failed (nothing cached), this one takes over.
+        event.wait(timeout=120)
 
+    try:
+        return _generate_uncached(predict_result, care_mode, api_key, cache_key)
+    finally:
+        with _CACHE_LOCK:
+            _INFLIGHT.pop(cache_key, None)
+        event.set()
+
+
+def _generate_uncached(predict_result: dict, care_mode: str, api_key: str, cache_key: str) -> dict:
     final_prompt, system_msg = _build_prompt(predict_result, care_mode)
 
     vitals_for_validation = {
@@ -667,7 +709,9 @@ def generate_report(predict_result: dict, care_mode: str, api_key: str) -> dict:
         main_response = text if text else _FALLBACK_MSG
         llm_ok = bool(text)
     except Exception as e:
-        main_response = f"⚠️ LLM unavailable: {e}"
+        import sys as _sys
+        print(f"[ClinIQ] LLM error: {e}", file=_sys.stderr)
+        main_response = "⚠️ LLM unavailable — please retry."
 
     if not llm_ok:
         return {

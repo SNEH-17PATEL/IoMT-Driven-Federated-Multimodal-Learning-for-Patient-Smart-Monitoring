@@ -3,14 +3,14 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from backend.services.llm_service import generate_report
+from backend.api.predict import _LAST_PREDICT
 
 router = APIRouter()
 
 
 class ReportRequest(BaseModel):
     patient_id: int
-    care_mode: str        # "hospital" or "homecare"
-    predict_result: dict  # full result dict from /api/predict
+    care_mode: str   # "hospital" or "homecare"
 
 
 @router.post("/api/report")
@@ -21,15 +21,13 @@ def report(body: ReportRequest):
     if body.care_mode not in ("hospital", "homecare"):
         raise HTTPException(status_code=400, detail="care_mode must be 'hospital' or 'homecare'")
 
-    # Ensure the predict_result actually belongs to the claimed patient to prevent
-    # cross-patient report generation and prompt injection via fabricated payloads.
-    pr = body.predict_result
-    if pr.get("patient_id") != body.patient_id:
-        raise HTTPException(status_code=400, detail="predict_result.patient_id does not match patient_id")
-    if not isinstance(pr.get("vitals"), dict):
-        raise HTTPException(status_code=400, detail="predict_result.vitals must be a dict")
-    if not isinstance(pr.get("sofa_score"), (int, float)):
-        raise HTTPException(status_code=400, detail="predict_result.sofa_score is required")
+    # Always use the server's own last prediction — never trust client-supplied data.
+    pr = _LAST_PREDICT.get(body.patient_id)
+    if pr is None:
+        raise HTTPException(
+            status_code=409,
+            detail="No prediction has been run yet for this patient. Call /api/predict first.",
+        )
 
     api_key = os.getenv("GROQ_API_KEY", "")
     if not api_key:
@@ -38,7 +36,7 @@ def report(body: ReportRequest):
     try:
         result = generate_report(pr, body.care_mode, api_key)
         return result
-    except KeyError as e:
-        raise HTTPException(status_code=400, detail=f"Missing field in predict_result: {e}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Report generation failed: {str(e)}")
+        import sys as _sys
+        print(f"[ClinIQ] Report error: {e}", file=_sys.stderr)
+        raise HTTPException(status_code=500, detail="Report generation failed — check server logs.")

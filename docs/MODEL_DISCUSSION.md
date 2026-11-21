@@ -1,7 +1,40 @@
 # Model Discussion — ICU CDSS
 **From Weighted Ensemble (Trial Version) to Federated DNN (Final Version)**
 **Status:** Fully implemented and verified
-**Best result:** R²=0.4724, MAE=1.76 SOFA points (full training set, 48,150 patients)
+**Current result (2026-11-12):** MAE 1.8247, R² 0.4725, AUROC 0.9254 on the held-out test set (10,450 ICU stays, dataset_v2)
+
+---
+
+## Current model (2026-11-12)
+
+This is the model the dashboard runs today. Sections below that describe older settings are marked as historical.
+
+| Item | Current value |
+|---|---|
+| Data | BigQuery dataset `dataset_v2`: adults (age ≥ 16), ICU stay ≥ 6 h, 52,248 ICU stays / 38,304 patients. Newest row per ICU stay; label = SOFA_24hours at that hour |
+| Split | 80/20 stratified by High-Risk (SOFA ≥ 10): train 41,798 / test 10,450 |
+| Hospitals | 3 IID, stratified: 13,932 / 13,933 / 13,933 (each Low 67%, Moderate 27%, High 6%) |
+| Inputs | 108 features = 9 trend vitals + 7 latest vitals + 2 CV + 90 SOFA-vocabulary TF-IDF terms |
+| Network | 108 → 256 → 128 → 64 → 1, ReLU, Dropout 0.3 after each hidden layer — 69,121 parameters |
+| Loss | Plain MSE (`train_model(..., weighted_loss=True)` restores the earlier weighted loss) |
+| Federated setup | FedAvg server + FedProx clients (μ=0.5), 100 rounds, 3 local epochs, batch 64, AdamW lr 0.001 (×0.99/round, floor 1e-4), weight decay 1e-4, grad clip 1.0, no oversampling, DP off |
+| Model selection | Round with the lowest average server validation MSE — round 26 in the current run |
+| Test results | MAE 1.8247, R² 0.4725, prediction range 1.72–23.45 |
+| High-risk alert | Predicted SOFA ≥ 7 (`ALERT_THRESHOLD = 7.0`) vs actual SOFA ≥ 10: AUROC 0.9254, PR-AUC 0.6456, recall 67.1% (404/602), specificity 96.3% |
+
+**How we got here (same test set except the first row):**
+
+| Run | MAE | R² | AUROC | Recall |
+|---|---|---|---|---|
+| Old dataset (FedYogi, weighted MSE, 128-64-32), alert ≥ 8 — *historical* | 1.80 | 0.398 | 0.879 | 23% |
+| dataset_v2, FedYogi η=0.01, weighted MSE, alert ≥ 8 — *historical* | 1.914 | 0.426 | 0.915 | 53.8% |
+| + FedAvg + plain MSE, alert ≥ 8 | 1.850 | 0.457 | 0.921 | 59.3% |
+| + 256-128-64 + dropout 0.3, alert ≥ 8 | 1.825 | 0.473 | 0.925 | 61.1% |
+| same model, alert ≥ 7 (**current**) | 1.825 | 0.473 | 0.925 | 67.1% |
+
+(MAE on the old dataset is not directly comparable: the label definition changed.)
+
+The main limit on accuracy is the input design, not the network: SOFA is mostly computed from labs (bilirubin, creatinine, platelets, PaO2/FiO2) and vasopressor doses, which are deliberately not inputs (non-invasive design). A centralized gradient-boosting reference on the same 108 columns reaches only MAE ~1.81, R² ~0.49, AUROC ~0.927.
 
 ---
 
@@ -31,10 +64,10 @@ Every concept is explained from first principles with examples, so anyone readin
    - [What a Deep Neural Network Is](#22-what-a-deep-neural-network-is)
    - [Our Model Architecture — Every Layer Explained](#23-our-model-architecture--every-layer-explained)
    - [How the Model Is Trained — Step by Step](#24-how-the-model-is-trained--step-by-step)
-   - [The Loss Function: Weighted MSE](#25-the-loss-function-weighted-mse)
+   - [The Loss Function: Plain MSE (Weighted MSE Earlier)](#25-the-loss-function-plain-mse-weighted-mse-earlier)
    - [Backpropagation: How the Model Learns](#26-backpropagation-how-the-model-learns)
    - [The Optimiser: AdamW](#27-the-optimiser-adamw)
-   - [Why No Dropout](#28-why-no-dropout)
+   - [Dropout: Rejected Earlier, Used Now](#28-dropout-rejected-earlier-used-now)
    - [Why No BatchNorm or LayerNorm](#29-why-no-batchnorm-or-layernorm)
    - [How Federated Learning Works With This DNN](#210-how-federated-learning-works-with-this-dnn)
 3. [Alternative Models Considered](#3-alternative-models-considered)
@@ -268,7 +301,7 @@ DeepExplainer produces smoother, more consistent attributions across similar pat
 
 Two capabilities make PyTorch essential for this project:
 
-**Automatic differentiation (Autograd):** PyTorch tracks every mathematical operation performed on its data structures (tensors) and can automatically compute the gradient of any output with respect to any input. This is what enables training: PyTorch computes, without any manual calculus, exactly how each of the 23,000 model parameters should change to reduce the prediction error.
+**Automatic differentiation (Autograd):** PyTorch tracks every mathematical operation performed on its data structures (tensors) and can automatically compute the gradient of any output with respect to any input. This is what enables training: PyTorch computes, without any manual calculus, exactly how each of the 69,121 model parameters should change to reduce the prediction error.
 
 ```
 Simple example of what Autograd does:
@@ -285,8 +318,8 @@ Simple example of what Autograd does:
   
   These gradients tell us: "increase w slightly and increase b slightly to reduce error"
   
-  For a full DNN with 23,000 parameters and 108 inputs,
-  PyTorch computes all 23,000 gradients automatically in one backward pass.
+  For a full DNN with 69,121 parameters and 108 inputs,
+  PyTorch computes all 69,121 gradients automatically in one backward pass.
 ```
 
 **Dynamic computation graphs:** The model's computation is defined on-the-fly as code runs, not pre-compiled as a static graph. This makes debugging intuitive — you can print intermediate values, inspect shapes, and modify the computation mid-training without restructuring the entire model definition.
@@ -372,77 +405,80 @@ Input:  108 features per patient
          ↓
          
 ┌─────────────────────────────────────────────────────────────────┐
-│  LINEAR LAYER 1:   108 → 128                                    │
-│  Parameter count: 108×128 weights + 128 biases = 13,952        │
+│  LINEAR LAYER 1:   108 → 256                                    │
+│  Parameter count: 108×256 weights + 256 biases = 27,904        │
 │  What it learns:  relationships between raw input features      │
 │  Example: weight matrix entry W[3][47] learns how much the      │
 │           3rd neuron cares about TF-IDF feature 47 ("sepsis")  │
 └─────────────────────────────────────────────────────────────────┘
-         ↓ 128 values
+         ↓ 256 values
          
 ┌─────────────────────────────────────────────────────────────────┐
-│  ReLU ACTIVATION                                                │
-│  Each of 128 values: output = max(0, value)                    │
-│  Negative values → 0  (neuron is "off")                        │
-│  Positive values → kept unchanged                               │
-│  Why: introduces non-linearity, allows learning complex patterns│
+│  ReLU ACTIVATION  →  DROPOUT (p = 0.3, training only)           │
+│  ReLU: each value → max(0, value)                               │
+│        Negative values → 0  (neuron is "off")                   │
+│        Why: introduces non-linearity                            │
+│  Dropout: in training, 30% of the 256 values are randomly set   │
+│        to 0 each step; in model.eval() nothing is dropped       │
 └─────────────────────────────────────────────────────────────────┘
-         ↓ 128 values (some now zero)
+         ↓ 256 values (some now zero)
          
 ┌─────────────────────────────────────────────────────────────────┐
-│  LINEAR LAYER 2:   128 → 64                                     │
-│  Parameter count: 128×64 weights + 64 biases = 8,256           │
-│  What it learns:  combinations of the 128 Layer 1 patterns     │
+│  LINEAR LAYER 2:   256 → 128                                    │
+│  Parameter count: 256×128 weights + 128 biases = 32,896        │
+│  What it learns:  combinations of the 256 Layer 1 patterns     │
 │  Example: "respiratory distress signal" × "vasopressor signal" │
 │           → "septic respiratory failure syndrome"               │
 └─────────────────────────────────────────────────────────────────┘
-         ↓ 64 values
+         ↓ 128 values
          
 ┌─────────────────────────────────────────────────────────────────┐
-│  ReLU ACTIVATION                                                │
+│  ReLU ACTIVATION  →  DROPOUT (p = 0.3, training only)           │
 └─────────────────────────────────────────────────────────────────┘
-         ↓ 64 values
+         ↓ 128 values
 
 ┌─────────────────────────────────────────────────────────────────┐
-│  LINEAR LAYER 3:   64 → 32                                      │
-│  Parameter count: 64×32 weights + 32 biases = 2,080            │
+│  LINEAR LAYER 3:   128 → 64                                     │
+│  Parameter count: 128×64 weights + 64 biases = 8,256           │
 │  What it learns:  final compression into severity dimensions    │
 └─────────────────────────────────────────────────────────────────┘
-         ↓ 32 values
+         ↓ 64 values
          
 ┌─────────────────────────────────────────────────────────────────┐
-│  ReLU ACTIVATION                                                │
+│  ReLU ACTIVATION  →  DROPOUT (p = 0.3, training only)           │
 └─────────────────────────────────────────────────────────────────┘
-         ↓ 32 values
+         ↓ 64 values
 
 ┌─────────────────────────────────────────────────────────────────┐
-│  LINEAR LAYER 4:   32 → 1  (output layer)                       │
-│  Parameter count: 32×1 weights + 1 bias = 33                   │
-│  What it does:    linear combination of 32 severity signals     │
+│  LINEAR LAYER 4:   64 → 1  (output layer)                       │
+│  Parameter count: 64×1 weights + 1 bias = 65                   │
+│  What it does:    linear combination of 64 severity signals     │
 │                   → single SOFA prediction (0–24)               │
 │  No activation:   output is raw float (correct for regression)  │
 └─────────────────────────────────────────────────────────────────┘
          ↓
 Output: Predicted SOFA score  (e.g., 8.37)
 
-Total trainable parameters: 13,952 + 8,256 + 2,080 + 33 = 24,321
+Total trainable parameters: 27,904 + 32,896 + 8,256 + 65 = 69,121
+(Dropout layers have no parameters.)
 ```
 
-**Why this shape — 108 → 128 → 64 → 32 → 1?**
+**Why this shape — 108 → 256 → 128 → 64 → 1?**
 
-**Why expand from 108 to 128 first?**
-The input expansion from 108 to 128 neurons creates space for the model to represent feature combinations — things that are not in any individual input feature but emerge from their interaction. For example, "high HR_std (variable heart rate) AND low MAP_mean AND 'septic shock' in notes" is a combination of three separate features. The 128-neuron first layer has enough capacity to represent this and many other combinations simultaneously.
+**Why expand from 108 to 256 first?**
+The input expansion from 108 to 256 neurons creates space for the model to represent feature combinations — things that are not in any individual input feature but emerge from their interaction. For example, "high HR_std (variable heart rate) AND low MAP_mean AND 'septic shock' in notes" is a combination of three separate features. The 256-neuron first layer has enough capacity to represent this and many other combinations simultaneously — even while Dropout switches off 30% of them in each training step.
 
-**Why progressively narrow (128 → 64 → 32 → 1)?**
-Each subsequent layer must compress the previous layer's 128 (or 64) representations into fewer dimensions. This compression forces the model to retain only the most important information for predicting SOFA and discard the rest. By the time we reach 32 dimensions, the model has learned a compact representation of clinical severity.
+**Why progressively narrow (256 → 128 → 64 → 1)?**
+Each subsequent layer must compress the previous layer's representation into fewer dimensions. This compression forces the model to retain only the most important information for predicting SOFA and discard the rest. By the time we reach 64 dimensions, the model has learned a compact representation of clinical severity.
 
-**Why ~23,000 parameters total?**
-With 48,150 training patients, the ratio is approximately 2:1 (samples per parameter). Machine learning theory and empirical experience on tabular datasets suggest this ratio is appropriate for good generalisation:
-- Too few parameters (1:1 or below) → underfitting: model cannot learn the complexity of the data
-- Too many parameters (0.5:1 or below) → overfitting: model memorises training data but fails on new patients
-- 2:1 → right-sized: model learns genuine patterns without overfitting
+**Why 69,121 parameters — and why it used to be smaller (historical):**
+In an earlier version the network was 108 → 128 → 64 → 32 → 1 with no Dropout (24,321 parameters). On dataset_v2, with plain MSE and FedAvg, that smaller network reached its best round early and then started to overfit: each hospital's training loss kept falling while the server's validation loss rose. Two changes together fixed this:
+- **Dropout 0.3** after each hidden layer stops the network from memorising individual training patients.
+- **Extra width** (256-128-64) gives the network room to keep learning while Dropout is switched on.
 
-The previous architecture (618 → 256 → 128 → 64 → 1 = ~200,000 parameters) had only 0.24 samples per parameter — severe over-parameterisation that contributed to poor generalisation.
+On the same test set this improved MAE 1.850 → 1.825, R² 0.457 → 0.473 and AUROC 0.921 → 0.925 (alert ≥ 8 in both runs). In the current run the server validation loss stayed flat (~5.8–6.1) with no overfitting climb, and an even wider 512-256-128 network gave no further gain.
+
+An even older architecture (618 → 256 → 128 → 64 → 1, from before the 90-term SOFA vocabulary whitelist) had ~200,000 parameters, most of them attached to noisy TF-IDF inputs — that was over-parameterisation on the input side, which the whitelist removed.
 
 ---
 
@@ -452,17 +488,18 @@ Training repeats the same 4-step cycle thousands of times, each time adjusting t
 
 #### Training setup
 ```
-Dataset: 48,150 patients (80% of all data)
+Dataset: 41,798 ICU stays (80% of the 52,248 stays in dataset_v2)
+         split across 3 hospitals: 13,932 / 13,933 / 13,933
 Mini-batch size: 64 patients per step
-Steps per epoch: 48,150 / 64 ≈ 752 gradient steps
+Steps per epoch (per hospital): hospital size / 64 gradient steps
 Epochs per FL round: 3
-Total FL rounds: 100
-Total gradient steps: 752 × 3 × 100 = 225,600 weight updates
+Total FL rounds: 100 (the best round is kept — round 26 in the current run)
+Dropout: active during these training steps only
 ```
 
 #### Step 1: Forward Pass — Make a Prediction
 
-Take a mini-batch of 64 patients. Feed their feature vectors through all 4 layers:
+Take a mini-batch of 64 patients. Feed their feature vectors through all 4 layers (Dropout is applied after each hidden layer during training):
 
 ```
 Patient with high-risk clinical presentation:
@@ -474,19 +511,19 @@ Patient with high-risk clinical presentation:
     "creatinine" TF-IDF = 1.2 (normalised: present)
     ... (103 other features)
     
-  Layer 1 (108 → 128):
-    h1 = ReLU(W1 @ input + b1)
-    128 values, some positive (active patterns), some zero (inactive)
+  Layer 1 (108 → 256):
+    h1 = Dropout(ReLU(W1 @ input + b1))
+    256 values, some positive (active patterns), some zero (inactive or dropped)
     
-  Layer 2 (128 → 64):
-    h2 = ReLU(W2 @ h1 + b2)
-    64 values — compressed clinical syndrome representations
+  Layer 2 (256 → 128):
+    h2 = Dropout(ReLU(W2 @ h1 + b2))
+    128 values — compressed clinical syndrome representations
     
-  Layer 3 (64 → 32):
-    h3 = ReLU(W3 @ h2 + b3)
-    32 values — final severity representations
+  Layer 3 (128 → 64):
+    h3 = Dropout(ReLU(W3 @ h2 + b3))
+    64 values — final severity representations
     
-  Layer 4 (32 → 1):
+  Layer 4 (64 → 1):
     prediction = W4 @ h3 + b4
     = 11.2  (model predicts SOFA = 11.2)
     
@@ -496,41 +533,40 @@ Patient with high-risk clinical presentation:
 #### Step 2: Compute Loss — Measure How Wrong We Are
 
 ```
-Error for this patient:
+Error for this patient (current model — plain MSE):
   Residual = prediction − true = 11.2 − 14 = −2.8  (predicted too low)
+  Squared error = (−2.8)² = 7.84
   
-  Weight = 1 + target × 0.5 = 1 + 14 × 0.5 = 8.0  (high SOFA → high weight)
-  After batch normalisation: normalised_weight = 8.0 / batch_mean_weight
-  
-  Weighted squared error = normalised_weight × (−2.8)² = ~2.6 × 7.84 = ~20.4
-  
-This patient's error contributes 2.6× more to the batch loss than an average patient.
-The model receives stronger training signal to improve its predictions for this
-high-SOFA patient.
+Because the error is squared, a big miss on a severe patient already counts
+much more than a small miss on a stable patient (a 2.8-point miss counts
+7.84; a 0.5-point miss counts only 0.25).
+
+(Historical: with the earlier weighted MSE this patient's squared error was
+also multiplied by a weight of 1 + 14 × 0.5 = 8.0, normalised by the batch
+mean weight.)
 ```
 
-The total batch loss is the average weighted squared error across all 64 patients in the batch.
+The total batch loss is the average squared error across all 64 patients in the batch (plus the FedProx proximal term during federated training).
 
 ---
 
-### 2.5 The Loss Function: Weighted MSE
+### 2.5 The Loss Function: Plain MSE (Weighted MSE Earlier)
 
-The loss function is the mathematical measure of prediction error. Standard Mean Squared Error (MSE) treats all patients equally:
+The loss function is the mathematical measure of prediction error. **The current model uses plain Mean Squared Error (MSE)**, which treats all patients equally:
 
 ```
-Standard MSE = mean((predicted - actual)²)
-
-Problem: 63% of ICU patients have SOFA 0–4 (Low Risk)
-         6% have SOFA ≥ 10 (High Risk — the most clinically important group)
-         
-With equal weighting:
-  The model focuses 63% of its learning on Low-Risk patients
-  and only 6% on the most critical High-Risk patients.
-  
-  This is the opposite of what we want for an ICU early warning system.
+Plain MSE = mean((predicted - actual)²)
 ```
 
-**Our Weighted MSE:**
+**History — why a weighted loss was tried first, and why it was dropped:**
+
+In an earlier version the model used a linear-weighted MSE. The idea was that only about 6% of ICU stays have SOFA ≥ 10 (High Risk — the most clinically important group), so with equal weighting the model would spend most of its learning on Low-Risk patients.
+
+On dataset_v2 the weighted loss turned out to hurt: it pushed every prediction upward and raised MAE without catching more high-risk patients. Switching to plain MSE (together with FedAvg instead of FedYogi) improved MAE 1.914 → 1.850, R² 0.426 → 0.457 and AUROC 0.915 → 0.921 on the same test set (alert ≥ 8 in both runs). Under-prediction of severe patients is now handled at the decision step instead — by the lower alert threshold (predicted SOFA ≥ 7, see INPUT_OUTPUT.md). The weighted loss is still in the code and can be switched back on with `train_model(..., weighted_loss=True)`.
+
+The rest of this section documents the earlier weighted loss (historical).
+
+**The earlier Weighted MSE (historical, now optional):**
 
 ```python
 def weighted_mse_loss(predictions, targets):
@@ -567,7 +603,7 @@ The gradient update will strongly push the model to improve its prediction for
 patients like D — which is exactly what we want.
 ```
 
-**Why multiplier 0.5 and not 3.0 (which was tried earlier)?**
+**Why multiplier 0.5 and not 3.0 (historical — both are earlier settings)?**
 
 ```
 With weight = 1 + SOFA × 3.0 (the earlier setting):
@@ -581,7 +617,7 @@ With weight = 1 + SOFA × 3.0 (the earlier setting):
   The server evaluates models using unweighted MSE — dominated by Low Risk.
   Training optimised for High Risk; selection favoured Low Risk → mismatch.
   
-With weight = 1 + SOFA × 0.5 (current setting):
+With weight = 1 + SOFA × 0.5 (the later weighted setting, before plain MSE replaced it):
   Low-Risk patient (SOFA=2): normalised weight ≈ 0.67  (33% reduction — meaningful but not severe)
   Average patient (SOFA=4):  normalised weight ≈ 1.0   (fair share)
   High-Risk patient (SOFA=12): normalised weight ≈ 2.0  (2× emphasis — meaningful but not overwhelming)
@@ -593,7 +629,7 @@ With weight = 1 + SOFA × 0.5 (current setting):
 
 ### 2.6 Backpropagation: How the Model Learns
 
-After computing the loss, the model must update all 23,000+ parameters to reduce that loss. **Backpropagation** is the algorithm that computes how each parameter should change.
+After computing the loss, the model must update all 69,121 parameters to reduce that loss. **Backpropagation** is the algorithm that computes how each parameter should change.
 
 **The chain rule — the mathematical foundation:**
 
@@ -620,12 +656,12 @@ For our DNN:
 
 **What backpropagation computes:**
 
-For every one of the 23,000+ parameters:
+For every one of the 69,121 parameters:
 - A positive gradient → "this parameter is too large, decrease it to reduce loss"
 - A negative gradient → "this parameter is too small, increase it to reduce loss"
 - Gradient near zero → "this parameter barely affects the loss, leave it alone"
 
-PyTorch computes all 23,000+ gradients automatically in one backward pass — no manual calculus required.
+PyTorch computes all 69,121 gradients automatically in one backward pass — no manual calculus required.
 
 **Gradient clipping:**
 
@@ -739,13 +775,15 @@ AdamW weight decay:
 
 ---
 
-### 2.8 Why No Dropout
+### 2.8 Dropout: Rejected Earlier, Used Now
+
+**Current status:** the current model **uses Dropout 0.3** after each of its three hidden layers. Dropout is only active in `model.train()`; evaluation, SHAP and the backend all call `model.eval()`, so predictions are deterministic. The rest of this section explains why Dropout was rejected in an earlier version, and what changed.
 
 **Dropout** is a very popular regularisation technique for neural networks. During training, each neuron's output is randomly set to zero with probability `p`. With `p=0.3`, 30% of neurons are "dropped" in each forward pass, forcing the network to not rely on any single neuron.
 
 In standard (centralised) training, Dropout works very well: it forces redundancy and prevents neurons from co-adapting, effectively training many different sub-networks and averaging their effects.
 
-**Why Dropout fails catastrophically in Federated Learning:**
+**The earlier worry — why we thought Dropout would fail in Federated Learning (historical):**
 
 ```
 Round 1 of FL training:
@@ -763,7 +801,7 @@ Hospital 1 trained a sub-network with neurons {7, 11, 38, 82, 99, ...} ALWAYS IN
 
 These are effectively two different model architectures with 30% of neurons in different positions.
 
-FedYogi now averages the weights:
+The server (FedYogi at the time) now averages the weights:
   W[5] for Hospital 0: never got any gradient (always dropped) → random value
   W[5] for Hospital 1: was active, has been trained on many patients → meaningful value
   
@@ -774,14 +812,16 @@ dropped by at least one hospital and trained by at least one other.
 The result is a model that satisfies no hospital's training objective.
 ```
 
-**Test results:**
+**Earlier test results (historical — old dataset, FedYogi, weighted MSE, 128-64-32 network):**
 | Configuration | R² | 
 |---|---|
-| No Dropout (current) | 0.2229 |
+| No Dropout (chosen at the time) | 0.2229 |
 | Dropout p=0.3/0.2 | 0.057 |
 | Dropout p=0.1/0.05 | −0.067 |
 
-Even small Dropout probabilities caused catastrophic failure in the FL setting. The regularisation is handled instead by AdamW's weight decay, which applies uniformly and consistently across all 3 hospitals.
+In that earlier setup even small Dropout probabilities caused failure, so regularisation was left to AdamW's weight decay.
+
+**What changed (current):** after the move to dataset_v2, plain MSE and FedAvg, the small no-dropout network reached its best round early and then overfit (each hospital's training loss kept falling while the server's validation loss rose). Re-testing Dropout 0.3 together with a wider 256-128-64 network fixed this: MAE 1.850 → 1.825, R² 0.457 → 0.473, AUROC 0.921 → 0.925 on the same test set. The "different dropout masks pull the average in different directions" problem described above did not happen in these runs — so the earlier failure appears to have been tied to the old setup rather than to Dropout itself. AdamW weight decay (1e-4) is still used alongside Dropout.
 
 ---
 
@@ -841,24 +881,24 @@ Round 1:
   Server creates random initial weights W⁰ (same random seed for all hospitals)
   Server sends W⁰ to Hospital 0, Hospital 1, Hospital 2
 
-  Hospital 0 (15,889 General ICU patients):
-    Loads W⁰ → trains 3 local epochs (750 gradient steps) → produces W⁰_H0
+  Hospital 0 (13,932 ICU stays — Low 67%, Moderate 27%, High 6%):
+    Loads W⁰ → trains 3 local epochs (FedProx μ=0.5) → produces W⁰_H0
     
-  Hospital 1 (15,890 Mixed ICU patients):
+  Hospital 1 (13,933 ICU stays, same mix):
     Loads W⁰ → trains 3 local epochs → produces W⁰_H1
     
-  Hospital 2 (16,371 Cardiac/Trauma patients):
+  Hospital 2 (13,933 ICU stays, same mix):
     Loads W⁰ → trains 3 local epochs → produces W⁰_H2
 
   All hospitals send their weight matrices back to server.
   
-  FedAvg (sample-size weighted average):
-    W_avg = (15889 × W⁰_H0 + 15890 × W⁰_H1 + 16371 × W⁰_H2) / 48150
+  FedAvg (sample-size weighted average) — this is the current server update:
+    W¹ = (13932 × W⁰_H0 + 13933 × W⁰_H1 + 13933 × W⁰_H2) / 41798
   
-  FedYogi server update (adaptive momentum):
-    Δ = W_avg − W⁰  ← pseudo-gradient
-    Update m, v using Yogi rule
-    W¹ = W⁰ + 0.01 × m / (√v + 0.001)
+  (Historical: an earlier version added a FedYogi server step on top —
+   Δ = W_avg − W⁰, update m, v with the Yogi rule, W¹ = W⁰ + η × m / (√v + τ)
+   with η = 0.01. On dataset_v2 this made the server loss explode, so it is now
+   off: USE_FEDYOGI = False. If switched back on, η is now 0.001.)
   
   W¹ is the new global model. It contains knowledge from all 3 hospitals
   without any patient data being shared.
@@ -867,8 +907,8 @@ Round 2:
   Server sends W¹ to all 3 hospitals.
   ... repeat for 100 rounds ...
 
-Round 24: Best-performing round (lowest aggregate validation MSE)
-  W²⁴ saved as the deployed model.
+Round 26: Best-performing round in the current run (lowest average server validation MSE)
+  W²⁶ saved as the deployed model.
 ```
 
 **Why this is fundamentally different from tree-based FL:**
@@ -930,7 +970,7 @@ The complexity cost did not justify the benefit in our specific setting:
 
 3. **FL compatibility is the same:** RNNs are gradient-based and their weights are matrices — FedAvg applies just as well as with our DNN. This was not a deciding factor.
 
-4. **More data required:** LSTMs have more parameters than a flat DNN of the same depth (because they have internal gating mechanisms). With 48,150 training samples, we would need to be careful about overfitting.
+4. **More data required:** LSTMs have more parameters than a flat DNN of the same depth (because they have internal gating mechanisms). With 41,798 training ICU stays, we would need to be careful about overfitting.
 
 ---
 
@@ -973,8 +1013,8 @@ For clinical text, ClinicalBERT or BioBERT (BERT models pre-trained on medical l
 The size problem is prohibitive in our FL setting:
 
 ```
-Our DNN: ~23,000 parameters → ~90 KB to transmit per FL round
-         × 3 hospitals × 100 rounds = 27 MB total FL communication
+Our DNN: 69,121 parameters → well under 1 MB to transmit per FL round
+         × 3 hospitals × 100 rounds = a small total FL communication cost
 
 A small clinical Transformer: ~5,000,000 parameters → ~20 MB per FL round
          × 3 hospitals × 100 rounds = 6 GB total FL communication
@@ -1028,7 +1068,7 @@ Research has proposed methods to perform FL with gradient boosted trees — the 
 
 ```
 Standard (non-federated) gradient boosting:
-  Server has all 48,150 patients
+  Server has all 41,798 training ICU stays
   For each tree, compute gradients for all patients
   Find the best split by examining all patients' feature values
   
@@ -1064,7 +1104,7 @@ All 108 features contribute with fixed linear weights. Ridge Regression adds an 
 
 **Why it matters to understand:**
 
-Linear Regression serves as our **interpretability baseline**. If the DNN achieves R²=0.47 and Linear Regression achieves R²=0.15, the difference (0.32 R²) is the value that the DNN's non-linearity and depth added — the learned feature interactions and threshold effects that a linear model cannot capture.
+Linear Regression serves as our **interpretability baseline**. If the DNN achieves R²≈0.47 and Linear Regression achieves R²=0.15, the difference (0.32 R²) is the value that the DNN's non-linearity and depth added — the learned feature interactions and threshold effects that a linear model cannot capture.
 
 **Why it cannot be the primary model:**
 
@@ -1148,7 +1188,7 @@ Additionally, for MIMIC-III data specifically, TF-IDF with our clinical vocabula
 
 | Model | FL Compatible | SHAP Method | Estimated R² | Complexity | Why Not Used |
 |---|---|---|---|---|---|
-| **PyTorch DNN (current)** | ✅ Yes — FedYogi + FedProx | DeepExplainer (gradient-based) | **0.4724** | Medium | **Current choice** |
+| **PyTorch DNN (current)** | ✅ Yes — FedAvg + FedProx | DeepExplainer (gradient-based) | **0.4725** (measured) | Medium | **Current choice** |
 | LightGBM + XGBoost Ensemble | ❌ No — cannot FedAvg trees | TreeExplainer (path-based) | ~0.35–0.40* | Low | Fundamental FL incompatibility |
 | Random Forest | ❌ No | TreeExplainer | ~0.25–0.30* | Low | FL incompatible; 0% weight in ensemble |
 | LSTM / GRU | ✅ Yes — gradient-based | GradientExplainer | ~0.28–0.35* | High | Integration complexity; feature engineering achieves similar result |
@@ -1179,16 +1219,17 @@ All three predicted SOFA on a 0–1 normalised scale; output was multiplied by 2
 
 A **PyTorch Deep Neural Network**:
 
-- Architecture: 108 → 128 → 64 → 32 → 1 (four linear layers with ReLU activations)
-- ~23,000 trainable parameters (2:1 samples-per-parameter ratio with 48K training patients)
-- Weighted MSE loss (weight = 1 + SOFA × 0.5) to give clinical emphasis to High-Risk patients
+- Architecture: 108 → 256 → 128 → 64 → 1 (four linear layers, ReLU, Dropout 0.3 after each hidden layer)
+- 69,121 trainable parameters
+- Plain MSE loss (an earlier version used weighted MSE, 1 + SOFA × 0.5; it raised MAE without catching more high-risk patients)
 - AdamW optimiser with weight decay (1e-4) and gradient clipping (norm ≤ 1.0)
-- No Dropout (FL incompatible), no BatchNorm or LayerNorm (both tested and failed)
-- Trained via Flower Federated Learning across 3 simulated hospitals (FedYogi server + FedProx clients)
+- Dropout only during training; no BatchNorm or LayerNorm (both tested and failed)
+- Trained via Flower Federated Learning across 3 simulated hospitals (FedAvg server + FedProx clients, μ=0.5; an earlier version used FedYogi on the server)
+- High-risk alert when predicted SOFA ≥ 7 (`ALERT_THRESHOLD = 7.0`), because the model under-predicts severe patients
 - SHAP DeepExplainer for feature attribution
 - Predicts raw SOFA directly (0–24) — no unit conversion multiplication
 
-**Performance:** R²=0.4724, MAE=1.76 SOFA points (full 48,150-patient training set, 12,038-patient test set)
+**Performance (held-out test set, 10,450 ICU stays; trained on 41,798):** MAE 1.8247, R² 0.4725, AUROC 0.9254, PR-AUC 0.6456; alert recall 67.1% at 96.3% specificity
 
 ### Q3: Why did you switch from the ensemble to the DNN?
 
@@ -1207,10 +1248,10 @@ Without a DNN, there is no federated learning. Without federated learning, the p
 
 ### Q4: Is there a performance trade-off?
 
-Yes. Tree-based models (LightGBM, XGBoost) typically outperform DNNs on tabular datasets with fewer than 100,000 training samples. The ensemble would likely achieve R² ≈ 0.35–0.40 on our task. Our DNN achieves R² = 0.4724.
+Yes. Tree-based models (LightGBM, XGBoost) typically outperform DNNs on tabular datasets with fewer than 100,000 training samples. The ensemble would likely achieve R² ≈ 0.35–0.40 on our task. Our DNN achieves R² = 0.4725. A centralized gradient-boosting reference on the same 108 columns (no federated learning) reaches R² ~0.49, MAE ~1.81, AUROC ~0.927 — so the federated DNN is close to the ceiling set by the inputs.
 
 The gap is smaller than expected because:
-1. The DNN was optimised with federated-specific techniques (FedYogi, FedProx) that substantially improved performance
+1. The DNN was tuned for the federated setting (FedProx on the clients, FedAvg on the server, plain MSE, Dropout 0.3 with a wider network) — each step improved test performance
 2. The 90-term SOFA vocabulary whitelist removed the noise that typically hurts DNNs on TF-IDF features
 
 The trade-off is:

@@ -216,7 +216,7 @@ function PatientPill({ patient, predictData }) {
             flexShrink: 0,
           }}
         >
-          {patient.name?.[0] ?? 'P'}
+          {patient.initial ?? patient.name?.[0] ?? 'P'}
         </div>
 
         <div className="flex flex-col" style={{ gap: 1 }}>
@@ -282,7 +282,7 @@ export default function HeaderBar({ patient, predictData, isRefreshing, lastUpda
 
   /* Decide top accent gradient color */
   const accentColor = riskColor ?? 'var(--blue-l)'
-  const isHighRisk = riskColor && riskColor !== '#0d8a52' && riskColor !== '#18c872' && riskColor !== 'var(--ok-l)'
+  const isHighRisk = riskColor && riskColor !== '#28a745'
 
   return (
     <header

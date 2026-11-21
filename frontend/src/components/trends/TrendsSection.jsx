@@ -29,11 +29,24 @@ function SkeletonChart() {
 }
 
 export default function TrendsSection({ patientId }) {
-  const { data: vitalsData, isLoading } = useQuery({
+  // H8: refetch every 90 s to match the predict polling cadence (was 30 s)
+  const { data: vitalsData, isLoading, isError } = useQuery({
     queryKey: ['vitals', patientId],
     queryFn: () => getVitals(patientId, 20).then(r => r.data),
-    refetchInterval: 30_000,
+    refetchInterval: 90_000,
   })
+
+  // H8: surface fetch errors instead of silently showing empty charts
+  if (isError) {
+    return (
+      <div
+        className="rounded-xl p-5 text-sm text-center"
+        style={{ background: 'var(--danger-bg)', border: '1px solid var(--danger)', color: 'var(--danger-l)' }}
+      >
+        ⚠ Could not load trend data — retrying automatically.
+      </div>
+    )
+  }
 
   return (
     <motion.div
@@ -44,7 +57,7 @@ export default function TrendsSection({ patientId }) {
     >
       {isLoading
         ? CHARTS.map(c => <SkeletonChart key={c.dataKey} />)
-        : CHARTS.map((c, i) => (
+        : CHARTS.map((c) => (
             <motion.div
               key={c.dataKey}
               variants={chartVariants}

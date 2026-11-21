@@ -187,13 +187,15 @@ def test_fit_dp_enabled_calls_dp(monkeypatch):
     mock_dp.assert_called_once()
 
 
-def test_fit_extra_dict_is_empty(monkeypatch):
-    """fit() third return value is always an empty dict."""
+def test_fit_returns_training_metrics(monkeypatch):
+    """fit() reports loss/MAE/R² so the server can log per-client training stats."""
     monkeypatch.setattr(cli, "train_model", MagicMock(return_value=0.5))
     monkeypatch.setattr(cli, "evaluate_model", MagicMock(return_value=_make_mock_metrics()))
     client = _hospital_client()
     _, _, extras = client.fit(_real_params(), {"server_round": 1})
-    assert extras == {}
+    assert set(extras) == {"loss", "mae", "r2"}
+    assert extras["loss"] == pytest.approx(0.5)
+    assert all(isinstance(v, float) for v in extras.values())
 
 
 def test_fit_weights_list_is_returned(monkeypatch):

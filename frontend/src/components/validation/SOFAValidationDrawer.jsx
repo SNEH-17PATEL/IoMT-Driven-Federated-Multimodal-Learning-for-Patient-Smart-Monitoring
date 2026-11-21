@@ -74,90 +74,125 @@ function SectionRule({ children }) {
 }
 
 /* ── Layer 1: Population stats ── */
-function Layer1({ predictData }) {
-  // Numbers sourced directly from models/training_metadata.json
-  // train_samples=12795, test_samples=2559, final_mae=1.8968, final_r2=0.5995
-  // high_risk_alert.auroc=0.9461, high_risk_alert.pr_auc=0.6840
-  const mae = 1.8968
-  const r2  = 0.5995
+const fmt  = (v, d = 4) => (typeof v === 'number' && Number.isFinite(v) ? v.toFixed(d) : '—')
+const pct  = (v, d = 1) => (typeof v === 'number' && Number.isFinite(v) ? `${(v * 100).toFixed(d)}%` : '—')
+const int  = v => (typeof v === 'number' && Number.isFinite(v) ? v.toLocaleString() : '—')
 
-  // From training_metadata.json → risk_classification_metrics.risk_bands.confusion_matrix
-  // Each row = [Pred Low, Pred Moderate, Pred High] for that true class
-  const confMatrix = [
-    { label: 'Low Risk',      cells: [1304, 178,  3  ] },
-    { label: 'Moderate Risk', cells: [378,  444,  4  ] },
-    { label: 'High Risk',     cells: [7,    192,  49 ] },
-  ]
+function Layer1({ predictData }) {
+  // Every number here comes from models/training_metadata.json, which the
+  // backend sends with each prediction as _training_meta — so the panel always
+  // describes the model that is actually loaded.  Missing values show "—".
+  const meta   = predictData?._training_meta ?? {}
+  const risk   = meta.risk_classification_metrics ?? {}
+  const alert  = risk.high_risk_alert ?? {}
+  const bands  = risk.risk_bands ?? {}
+  const matrix = Array.isArray(bands.confusion_matrix) ? bands.confusion_matrix : null
+  const highRecall = bands.per_class?.['High (>=10)']?.recall
+
+  const nTest  = meta.test_samples
+  const nTrain = meta.train_samples
+  const nTotal = typeof nTest === 'number' && typeof nTrain === 'number' ? nTest + nTrain : undefined
+
+  // 3-class accuracy and High-risk share, computed from the saved confusion matrix
+  let bandAcc, highShare
+  if (matrix) {
+    const total = matrix.flat().reduce((x, y) => x + y, 0)
+    if (total > 0) {
+      bandAcc   = matrix.reduce((acc, row, i) => acc + (row[i] ?? 0), 0) / total
+      highShare = (matrix[2] ?? []).reduce((x, y) => x + y, 0) / total
+    }
+  }
+  const thr = alert.predicted_sofa_threshold
+  const thrText = typeof thr === 'number' ? thr.toFixed(0) : '—'
+
+  const rowLabels = ['Low Risk', 'Moderate Risk', 'High Risk']
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      <SectionRule>Held-out test split · 2,559 rows of 15,354 total MIMIC-III rows</SectionRule>
+      <SectionRule>
+        Held-out test set · {int(nTest)} ICU stays of {int(nTotal)} total
+      </SectionRule>
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-        <MetricTile label="AUROC" value="0.9461" accent={CYAN}
-          sub="High-risk alarm ranking · benchmark avg 0.82–0.84 (binary, SOFA ≥ 8)" />
-        <MetricTile label="PR-AUC" value="0.6840" accent={GREEN}
-          sub="Precision-recall · 9.7% minority high-risk class" />
-        <MetricTile label="MAE" value={mae.toFixed(4)} accent={AMBER}
-          sub="Avg SOFA error in points — ~8% of the 0–24 scale" />
-        <MetricTile label="R²" value={r2.toFixed(4)} accent={PURPLE}
-          sub="Variance explained (row-level split; no lab values)" />
+        <MetricTile label="AUROC" value={fmt(alert.auroc)} accent={CYAN}
+          sub="How well the model ranks truly high-risk patients (actual SOFA ≥ 10) above others" />
+        <MetricTile label="PR-AUC" value={fmt(alert.pr_auc)} accent={GREEN}
+          sub={`Precision-recall · high-risk patients are ${pct(highShare)} of the test set`} />
+        <MetricTile label="MAE" value={fmt(meta.final_mae)} accent={AMBER}
+          sub="Average SOFA error in points (0–24 scale)" />
+        <MetricTile label="R²" value={fmt(meta.final_r2)} accent={PURPLE}
+          sub="Share of SOFA variation explained (no lab values used)" />
       </div>
 
-      <SectionRule>Risk-band classification · 3-class confusion matrix (2,559 test rows)</SectionRule>
+      <SectionRule>Alert performance · alert fires at predicted SOFA ≥ {thrText}</SectionRule>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <MetricTile label="Alert recall" value={pct(alert.recall)} accent={AMBER}
+          sub={`High-risk patients caught · missed ${int(alert.false_negative)}`} />
+        <MetricTile label="Specificity" value={pct(alert.specificity)} accent={GREEN}
+          sub={`Non-high-risk patients left alone · false alarms ${int(alert.false_positive)}`} />
+      </div>
+
+      <SectionRule>Risk-band classification · 3-class confusion matrix ({int(nTest)} test stays)</SectionRule>
 
       <div style={{
         background: 'var(--s2)', border: '1px solid var(--b1)',
         borderRadius: 'var(--r-md)', padding: 14, overflowX: 'auto',
       }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', fontFamily: 'var(--font-display)' }}>
-          <thead>
-            <tr>
-              <th style={{ color: 'var(--t4)', textAlign: 'left', padding: '4px 8px', fontWeight: 700, letterSpacing: '0.06em' }}></th>
-              <th style={{ color: 'var(--t4)', textAlign: 'center', padding: '4px 8px', fontWeight: 700 }}>Pred Low</th>
-              <th style={{ color: 'var(--t4)', textAlign: 'center', padding: '4px 8px', fontWeight: 700 }}>Pred Mod</th>
-              <th style={{ color: 'var(--t4)', textAlign: 'center', padding: '4px 8px', fontWeight: 700 }}>Pred High</th>
-            </tr>
-          </thead>
-          <tbody>
-            {confMatrix.map((row, ri) => (
-              <tr key={ri}>
-                <td style={{ color: 'var(--t3)', padding: '5px 8px', whiteSpace: 'nowrap', fontWeight: 600 }}>
-                  True {row.label}
-                </td>
-                {row.cells.map((val, ci) => {
-                  const isDiag = ri === ci
-                  return (
-                    <td key={ci} style={{
-                      textAlign: 'center', padding: '5px 8px',
-                      background: isDiag ? a(GREEN, 14) : 'transparent',
-                      borderRadius: isDiag ? 6 : 0,
-                      color: isDiag ? GREEN : 'var(--t3)',
-                      fontWeight: isDiag ? 700 : 400,
-                      fontVariantNumeric: 'tabular-nums',
-                    }}>
-                      {val.toLocaleString()}
-                    </td>
-                  )
-                })}
+        {matrix ? (
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', fontFamily: 'var(--font-display)' }}>
+            <thead>
+              <tr>
+                <th style={{ color: 'var(--t4)', textAlign: 'left', padding: '4px 8px', fontWeight: 700, letterSpacing: '0.06em' }}></th>
+                <th style={{ color: 'var(--t4)', textAlign: 'center', padding: '4px 8px', fontWeight: 700 }}>Pred Low</th>
+                <th style={{ color: 'var(--t4)', textAlign: 'center', padding: '4px 8px', fontWeight: 700 }}>Pred Mod</th>
+                <th style={{ color: 'var(--t4)', textAlign: 'center', padding: '4px 8px', fontWeight: 700 }}>Pred High</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {matrix.slice(0, 3).map((cells, ri) => (
+                <tr key={ri}>
+                  <td style={{ color: 'var(--t3)', padding: '5px 8px', whiteSpace: 'nowrap', fontWeight: 600 }}>
+                    True {rowLabels[ri]}
+                  </td>
+                  {cells.slice(0, 3).map((val, ci) => {
+                    const isDiag = ri === ci
+                    return (
+                      <td key={ci} style={{
+                        textAlign: 'center', padding: '5px 8px',
+                        background: isDiag ? a(GREEN, 14) : 'transparent',
+                        borderRadius: isDiag ? 6 : 0,
+                        color: isDiag ? GREEN : 'var(--t3)',
+                        fontWeight: isDiag ? 700 : 400,
+                        fontVariantNumeric: 'tabular-nums',
+                      }}>
+                        {int(val)}
+                      </td>
+                    )
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <p style={{ fontSize: '11px', color: 'var(--t3)', fontFamily: 'var(--font-display)', margin: 0 }}>
+            Confusion matrix not available — run train_federated.py to generate training_metadata.json.
+          </p>
+        )}
         <p style={{ fontSize: '11px', color: 'var(--t3)', marginTop: 10, lineHeight: 1.5, fontFamily: 'var(--font-display)' }}>
-          High-Risk recall (3-class, SOFA ≥ 10): <strong style={{ color: AMBER }}>19.8%</strong> ·
-          Alert recall (SOFA ≥ 8 threshold): <strong style={{ color: AMBER }}>56.9%</strong> ·
-          Alert threshold compensates for 9.7% minority class
+          High-Risk recall (3-class, SOFA ≥ 10): <strong style={{ color: AMBER }}>{pct(highRecall)}</strong> ·
+          Alert recall (predicted SOFA ≥ {thrText}): <strong style={{ color: AMBER }}>{pct(alert.recall)}</strong> ·
+          The lower alert threshold makes up for the model under-predicting severe patients
         </p>
       </div>
 
       <InfoBox>
         <strong style={{ color: CYAN }}>What this means for you:</strong>{' '}
-        The model ranks high-risk patients above low-risk ones in 94.6% of pairwise comparisons (AUROC).
-        3-class band accuracy (Low / Moderate / High) is 70.2% — limited by missing lab values such as
-        bilirubin, creatinine, and platelet count, which require blood draws and are unavailable as
-        real-time vitals. Note: this is a row-level train/test split on MIMIC-III, not independent
-        clinical validation; patient stay IDs were not available to prevent leakage.
+        The model ranks a high-risk patient above a non-high-risk one in {pct(alert.auroc)} of
+        pairwise comparisons (AUROC). 3-class band accuracy (Low / Moderate / High) is {pct(bandAcc)} —
+        limited by missing lab values such as bilirubin, creatinine and platelet count, which need
+        blood draws and are not available as real-time vitals.
+        {meta.evaluation_limitation ? <> Note: {meta.evaluation_limitation}</> : null}
       </InfoBox>
     </div>
   )
@@ -218,7 +253,7 @@ function Layer2({ predictData }) {
   if (SpO2_val < 90) floor += 1
   if (GCS_val === 2) floor += 2
   if (GCS_val === 1) floor += 3
-  const floorPass = sofa >= floor - 1
+  const floorPass = sofa >= floor
 
   /* Vital consistency flags */
   const shockFlag    = HR_val > 130 && SBP_val < 90 && sofa < 4
@@ -251,7 +286,7 @@ function Layer2({ predictData }) {
         bg={floorPass ? a(GREEN, 14) : a(AMBER, 14)}
         detail={
           floorDetail.length > 0
-            ? `${floorDetail.join(' · ')} · Computed floor = ${floor} · Predicted ${sofa?.toFixed(1)} ${floorPass ? '≥' : '<'} floor − 1 ${floorPass ? '✓' : '⚠'}`
+            ? `${floorDetail.join(' · ')} · Computed floor = ${floor} · Predicted ${sofa?.toFixed(1)} ${floorPass ? '≥' : '<'} floor ${floorPass ? '✓' : '⚠'}`
             : `All direct vitals within normal ranges → physiological floor = 0. Predicted SOFA ${sofa?.toFixed(1)} is physiologically consistent.`
         }
       />
@@ -390,12 +425,12 @@ function Layer3({ predictData }) {
         <MetricTile label="Predicted SOFA" value={sofa.toFixed(1)} accent={CYAN}
           sub="Model output for this reading" />
         <MetricTile label="Margin (q̂)" value={`± ${q.toFixed(1)}`} accent={AMBER}
-          sub="90th percentile error from 48,150-patient calibration" />
+          sub={`90th percentile error on ${int(predictData?._training_meta?.train_samples)} training stays`} />
       </div>
 
       <InfoBox>
         <strong style={{ color: CYAN }}>Why this is stronger than ±MAE:</strong>{' '}
-        The ±MAE band (±{(predictData?._training_meta?.final_mae ?? 1.76).toFixed(2)}) shows the <em>average</em> error across all patients.
+        The ±MAE band (±{fmt(predictData?._training_meta?.final_mae, 2)}) shows the <em>average</em> error across all patients.
         Conformal prediction adapts to the actual error distribution and gives a{' '}
         <strong>mathematical guarantee</strong> — not an approximation — that the true SOFA will
         fall inside [{lo.toFixed(1)}, {hi.toFixed(1)}] at least 90% of the time.

@@ -199,9 +199,9 @@ def test_weight_stats_all_three_clients_recorded(one_round):
 
 @pytest.mark.slow
 def test_layer1_weights_correct_shape(one_round):
-    """layer1_weights (first-layer matrix) has shape (128, INPUT_DIM)."""
+    """layer1_weights (first-layer matrix) has shape (256, INPUT_DIM)."""
     l1 = one_round["layer1_weights"]
-    assert l1.shape == (128, INPUT_DIM), f"got shape {l1.shape}"
+    assert l1.shape == (256, INPUT_DIM), f"got shape {l1.shape}"
 
 
 @pytest.mark.slow

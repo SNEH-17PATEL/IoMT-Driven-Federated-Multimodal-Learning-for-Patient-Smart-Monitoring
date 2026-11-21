@@ -30,8 +30,8 @@
 **What it does:**
 
 - Simulates continuous ICU monitoring — fetches a new patient vitals reading every **90 seconds**, cycling through 30 pre-loaded MIMIC-III readings per patient
-- Predicts the **SOFA score** (Sequential Organ Failure Assessment, 0–24) using a Federated DNN trained across 3 simulated hospital nodes
-- Classifies risk as **Low** (SOFA < 5) / **Moderate** (5–9) / **High** (≥ 10) and fires a clinical alert when SOFA ≥ 8
+- Predicts the **SOFA score** (Sequential Organ Failure Assessment, 0–24) using a Federated DNN (108 → 256 → 128 → 64 → 1, FedAvg + FedProx) trained across 3 simulated hospital nodes on 41,798 MIMIC-III ICU stays
+- Classifies risk as **Low** (SOFA < 5) / **Moderate** (5–9) / **High** (≥ 10) and fires a clinical alert when predicted SOFA ≥ 7
 - Shows **SHAP feature attribution** — top 5 clinical drivers of each prediction with animated bar chart
 - Generates a 4-section **AI clinical assessment** (Condition → Cause → Forecast → Actions) using `openai/gpt-oss-120b` via Groq, validated by a judge LLM for reliability
 - Visualises **vital sign trends** over the last 20 readings with interactive charts
@@ -45,7 +45,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  React 19 + Vite Frontend  (port 5174)                          │
+│  React 19 + Vite Frontend  (port 5173)                          │
 │  SelectPatient → MonitorDashboard                                │
 │  Framer Motion · anime.js · Recharts · TanStack Query           │
 └────────────────────────┬────────────────────────────────────────┘
@@ -62,7 +62,7 @@
 ┌─────────────────────┐     ┌──────────────────────────────────┐
 │  ML Service          │     │  LLM Service                      │
 │  PyTorch DNN         │     │  openai/gpt-oss-120b (main)       │
-│  108 features        │     │  openai/gpt-oss-20b  (judge)      │
+│  108 features        │     │  openai/gpt-oss-120b (judge)      │
 │  SOFA prediction     │     │  90s TTL in-process cache         │
 │  SHAP DeepExplainer  │     │  Threading timeout (12s judge)    │
 └──────────┬──────────┘     └──────────────────────────────────┘
@@ -71,7 +71,7 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │  SQLite Database  (models/icu_monitor.db)                        │
 │  sample_patients · patient_vitals · prediction_history           │
-│  fl_training (48,150 rows — MIMIC-III derived)                  │
+│  fl_training (MIMIC-III derived FL training splits)             │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -80,15 +80,15 @@
 ```
 sample_patients row  →  Sliding window (20 readings)
   →  Trend features (9)  +  Latest vitals (7)  +  CV features (2)  +  TF-IDF (90)
-  →  108-feature vector  →  Federated DNN  →  SOFA score
-  →  Risk classification  +  SHAP top-5  +  Conformal interval
+  →  108-feature vector  →  Federated DNN (108 → 256 → 128 → 64 → 1)  →  SOFA score
+  →  Risk classification  +  alert if SOFA ≥ 7  +  SHAP top-5  +  Conformal interval
 ```
 
 **LLM report pipeline (triggered on new vitals or care-mode switch):**
 
 ```
-SOFA + vitals + SHAP top-5  →  openai/gpt-oss-120b  (main assessment, 3500 tokens)
-                             →  openai/gpt-oss-20b   (judge: G-Eval + RAGAS, 300 tokens)
+SOFA + vitals + SHAP top-5  →  openai/gpt-oss-120b  (main assessment, up to 6000 tokens)
+                             →  openai/gpt-oss-120b  (judge: G-Eval + RAGAS, 12 s timeout)
                              →  9-method reliability score  →  ReliabilityBadge
 ```
 
@@ -105,7 +105,7 @@ SOFA + vitals + SHAP top-5  →  openai/gpt-oss-120b  (main assessment, 3500 tok
 | FastAPI + uvicorn | 0.115+ / 0.30+ | API server |
 | Groq API Key | — | LLM clinical report |
 | Flower | 1.8+ | FL training (optional) |
-| Webcam | — | CV Monitor (optional) |
+| Webcam | — | Live CV Monitor in the dashboard (optional) |
 
 ---
 
@@ -180,7 +180,10 @@ icu_monitor/
 │   │   │   ├── overview/         ← SOFAGauge, VitalsGrid, VitalCard
 │   │   │   ├── report/           ← ReportContainer, ReportSection,
 │   │   │   │                        ReliabilityBadge, SHAPPanel, ReportToggle
-│   │   │   └── trends/           ← TrendsSection, TrendChart
+│   │   │   ├── trends/           ← TrendsSection, TrendChart
+│   │   │   ├── history/          ← HistoryDrawer, HistoryFAB
+│   │   │   ├── cv/               ← CVMonitorModal (in-browser webcam), CVMonitorFAB
+│   │   │   └── validation/       ← SOFA + LLM validation drawers and FABs
 │   │   ├── hooks/
 │   │   │   └── useMonitor.js     ← 90s polling loop + countdown timer
 │   │   ├── contexts/
@@ -207,14 +210,13 @@ icu_monitor/
 │   └── training_metadata.json    ← Training config + performance metrics
 │
 ├── data/
-│   ├── sample_patients/          ← Source CSVs for migrate_to_db.py
-│   └── fl_training/              ← MIMIC-III FL training CSVs (gitignored)
+│   └── sample_patients/          ← Source CSVs for migrate_to_db.py
 │
-├── tests/                        ← Full test suite (701 tests)
-│   ├── fl/                       ← 287 FL tests (unit + integration + system)
+├── tests/                        ← Full test suite
+│   ├── fl/                       ← FL tests (unit + integration + system)
 │   └── cliniq/
-│       ├── backend/              ← 207 FastAPI backend tests
-│       └── frontend/             ← 207 Vitest frontend tests
+│       ├── backend/              ← FastAPI backend tests
+│       └── frontend/             ← Vitest unit/integration + Playwright e2e
 │
 ├── docs/                         ← Technical documentation
 │
@@ -223,10 +225,9 @@ icu_monitor/
 ├── migrate_to_db.py              ← One-time CSV → SQLite migration
 ├── train_federated.py            ← FL training script (simulation mode)
 ├── fl_dashboard.py               ← Streamlit FL Simulation Dashboard
-├── app.py                        ← Streamlit Legacy ICU Monitor
 ├── server.py                     ← Flower FL server (real FL demo)
 ├── client.py                     ← Flower FL client (real FL demo)
-├── cv_monitor.py                 ← Computer Vision Monitor (standalone)
+├── setup.py                      ← One-command project setup
 │
 ├── requirements.txt
 ├── pytest.ini
@@ -239,7 +240,7 @@ icu_monitor/
 
 ## COMPLETE DEMO GUIDE
 
-This guide starts from a **brand-new machine** — it covers installing every tool, setting up the project, and running all 11 demo components. Follow the steps in order on a fresh system.
+This guide starts from a **brand-new machine** — it covers installing every tool, setting up the project, and running all 7 demo components. Follow the steps in order on a fresh system.
 
 **Recommended demo order:**
 1. ClinIQ Main Dashboard (most impressive — full-stack AI application)
@@ -247,12 +248,10 @@ This guide starts from a **brand-new machine** — it covers installing every to
 3. FL Simulation Dashboard (Streamlit visualisation of Federated Learning)
 4. FL Training in Terminal (shows real training logs)
 5. Real Flower FL Demo (4 terminals — actual federated clients connecting to server)
-6. Computer Vision Monitor (webcam-based stress detection)
-7. Legacy Streamlit ICU Monitor (original prototype)
-8. Trial ICU Inference App (early research prototype)
-9. Federated Learning Prototype App (early FL prototype)
-10. SQLite Database Inspection (shows raw data and model outputs)
-11. Full Test Suite (demonstrates 701 passing tests)
+6. SQLite Database Inspection (shows raw data and model outputs)
+7. Full Test Suite
+
+The webcam CV monitor (Stress Score + GCS Eye) is part of Demo 1 — open it from the eye button on the monitor dashboard.
 
 ---
 
@@ -314,11 +313,11 @@ node --version    # v18.x or later
 npm  --version    # 9.x or later
 ```
 
-> **Note:** Node.js is only needed for the React frontend (Demo 1). All other demos (backend, FL, CV, tests) work with Python only.
+> **Note:** Node.js is only needed for the React frontend (Demo 1). All other demos (backend, FL, tests) work with Python only.
 
 ---
 
-#### SQLite3 CLI (for Demo 10 — database inspection)
+#### SQLite3 CLI (for Demo 6 — database inspection)
 
 **macOS:** Already installed. Verify:
 ```bash
@@ -461,7 +460,7 @@ cd frontend
 npm run dev
 ```
 
-**Open in browser:** http://localhost:5174  
+**Open in browser:** http://localhost:5173  
 **API docs:** http://localhost:8000/docs
 
 **What to show:**
@@ -575,23 +574,25 @@ python train_federated.py
 
 **What you see in the terminal:**
 ```
-Phase 0: Loading FL training data from SQLite...
-  Client 0: 16,050 rows loaded
-  Client 1: 16,050 rows loaded
-  Client 2: 16,050 rows loaded
+[1/6] Loading hospital datasets from database (fl_training table)...
+  Hospital 0 (General ICU): 13,932 samples — Low 67% | Mod 27% | High 6%
+  Hospital 1 (Mixed ICU): 13,933 samples — ...
+  Hospital 2 (Cardiac/Trauma ICU): 13,933 samples — ...
 
-Phase 1: Initialising global model (108 features, 3 clients)...
-Phase 2: FL Training — FedYogi server, FedProx clients
-  Round   1/100 | Global Loss: 47.23 | MAE: 6.21 | R²: -0.12
-  Round   2/100 | Global Loss: 43.81 | MAE: 5.98 | R²:  0.05
+[2/6] Saving SHAP background samples...
+[3/6] Starting FL simulation...
+  Model              : 108 → 256 → 128 → 64 → 1  (ReLU, Dropout 0.3)
+  Server aggregation : FedAvg + FedProx (μ=0.5)
+  Loss               : Plain MSE (no SOFA weighting)
+  [Server] Round 01 — lr=0.00100 | avg_loss=...  ← best ✓
   ...
-  Round 100/100 | Global Loss: 12.44 | MAE: 1.90 | R²:  0.60
-
-Phase 3: Saving model artifacts...
-  federated_model.pth  · scaler.pkl  · tfidf_vectorizer.pkl
-  feature_columns.pkl  · shap_background.npy  · training_metadata.json
-
-Training complete. MAE: 1.8968 | R²: 0.5995 | AUROC: 0.9461
+[4/6] Saving model (best was round 26)...
+[5/6] Evaluating on held-out test set (10,450 ICU stays)...
+  MAE  : 1.8247 SOFA points
+  R²   : 0.4725
+  High-risk alert  AUROC      : 0.9254
+  High-risk alert  PR-AUC     : 0.6456
+[6/6] Saving training metadata...
 ```
 
 > Full training takes ~40–60 minutes. For a quick demo, press Ctrl+C after a few rounds to show the live logs, then explain the full run produces the model that powers the dashboard.
@@ -656,122 +657,7 @@ taskkill /PID <pid> /F
 
 ---
 
-### Demo 6 — Computer Vision Monitor (Webcam Stress Detection)
-
-Standalone OpenCV + MediaPipe application — tracks 468 facial landmarks in real-time and computes a stress score used as a feature in the ICU prediction model.
-
-> Requires a webcam. macOS: grant camera access to Terminal in System Preferences → Privacy & Security → Camera.
-
-macOS / Linux:
-```bash
-source venv/bin/activate
-python cv_monitor.py
-```
-
-Windows:
-```cmd
-venv\Scripts\activate
-python cv_monitor.py
-```
-
-**What to show:**
-- Webcam feed opens in a window with MediaPipe face mesh overlay (468 landmarks)
-- Blink rate counter — blinks per minute
-- Eye Aspect Ratio (EAR) — dips sharply on each blink
-- Gaze deviation score — measures how far the gaze drifts from center
-- Stress score composite (0–1) — combines blink rate, EAR, and gaze deviation
-- Explain: this `stress_score` feeds into the 108-feature vector for the DNN alongside vitals
-
-Press **Q** to quit.
-
----
-
-### Demo 7 — Legacy Streamlit ICU Monitor
-
-The original Streamlit prototype that preceded the full-stack React/FastAPI version — shows the project's evolution.
-
-macOS / Linux:
-```bash
-source venv/bin/activate
-streamlit run app.py --server.port 8502
-```
-
-Windows:
-```cmd
-venv\Scripts\activate
-streamlit run app.py --server.port 8502
-```
-
-**Open in browser:** http://localhost:8502
-
-**What to show:**
-- Patient selector sidebar
-- Real-time vitals display with color-coded risk level
-- SOFA score prediction using the same DNN model
-- Prediction history chart
-- Compare with Demo 1 to illustrate how the project evolved from a single-file Streamlit app to a full React/FastAPI system
-
----
-
-### Demo 8 — Trial ICU Inference App (Research Prototype)
-
-Early ensemble model prototype from the `trial/` folder — built before federated learning was introduced.
-
-> This app lives one level up from the main project folder. Navigate there from the parent directory.
-
-macOS / Linux:
-```bash
-# From the parent directory (one level above the project folder)
-cd ../trial
-streamlit run ICU_Inference.py --server.port 8503
-```
-
-Windows:
-```cmd
-cd ..\trial
-streamlit run ICU_Inference.py --server.port 8503
-```
-
-**Open in browser:** http://localhost:8503
-
-**What to show:**
-- Manual vital sign input sliders (HR, RR, SpO₂, Temp, SBP, MAP, GCS)
-- Ensemble model inference — Random Forest + XGBoost + LightGBM weighted average
-- SHAP waterfall plot — visual breakdown of each feature's contribution to the SOFA prediction
-- Risk classification output (Low / Moderate / High)
-- Compare with Demo 1: this uses hand-crafted features and ensemble models; the final system uses a Federated DNN with 108 features and TF-IDF
-
----
-
-### Demo 9 — Federated Learning Prototype App
-
-Early Streamlit FL prototype from the `federated learning/` folder — the concept that became the full FL simulation dashboard.
-
-> Also lives one level up from the main project folder.
-
-macOS / Linux:
-```bash
-# From the parent directory
-cd "../federated learning"
-streamlit run app.py --server.port 8504
-```
-
-Windows:
-```cmd
-cd "..\federated learning"
-streamlit run app.py --server.port 8504
-```
-
-**Open in browser:** http://localhost:8504
-
-**What to show:**
-- Simulated FL training across 3 hospital nodes
-- Per-round loss and accuracy charts
-- Compare with Demo 3: this is the early prototype; the full FL dashboard (Demo 3) adds real algorithms (FedYogi, FedProx), weight statistics heatmaps, and live visualisation
-
----
-
-### Demo 10 — SQLite Database Inspection
+### Demo 6 — SQLite Database Inspection
 
 Live inspection of the production database — shows MIMIC-III-derived data, prediction history, and FL training splits.
 
@@ -819,7 +705,7 @@ SELECT * FROM prediction_history LIMIT 10;
 SELECT * FROM sample_patients LIMIT 10;
 
 -- ── Step 7: First 10 rows — fl_training ──────────────────────────────────
--- 48,150 rows (MIMIC-III derived). The training data for federated learning.
+-- 41,798 rows (one per ICU stay, MIMIC-III derived). The training data for federated learning.
 SELECT * FROM fl_training LIMIT 10;
 
 -- ── Step 8: Per-patient row counts ───────────────────────────────────────
@@ -846,15 +732,15 @@ FROM pragma_page_count(), pragma_page_size();
 
 **What to show:**
 - `.tables` — 4 tables: `patient_vitals`, `prediction_history`, `sample_patients`, `fl_training`
-- Row counts — 48,150 FL training rows + 90 simulation rows + 60 vitals rows
+- Row counts — 41,798 FL training rows + 90 simulation rows + 60 vitals rows
 - `sample_patients` schema — 108-feature rows including `stress_score`, `GCS_eye_opening`, `clinical_note`
 - `fl_training` schema — `client_id` column + all features + `sofa_score` target
-- FL split — exactly 16,050 rows per hospital client (0, 1, 2)
+- FL split — 13,932 / 13,933 / 13,933 rows for hospital clients 0, 1, 2
 - `prediction_history` — SOFA, Risk, and all vitals written by the live backend
 
 ---
 
-### Demo 11 — Full Test Suite (701 Tests)
+### Demo 7 — Full Test Suite
 
 Shows the complete automated test coverage across all layers of the system.
 
@@ -885,40 +771,43 @@ python -m pytest tests/fl/integration/ -v
 python -m pytest tests/fl/system/ -v -m slow
 ```
 
-**All FL tests at once (287 tests):**
+**All FL tests at once:**
 ```bash
 python -m pytest tests/fl/ -v
 ```
 
-**ClinIQ backend API tests (207 tests):**
+**ClinIQ backend API tests:**
 ```bash
 python -m pytest tests/cliniq/backend/ -v
 ```
 
-**All Python tests at once (494 tests):**
+**All Python tests at once (513 tests; add `-m "not slow"` to skip the 41 slow ones):**
 ```bash
 python -m pytest tests/ -v
 ```
 
-**React frontend tests — Vitest (207 tests):**
+**React frontend tests — Vitest (232 tests):**
 ```bash
 cd frontend
 npx vitest run
 cd ..
 ```
 
+**Browser end-to-end tests — Playwright (21 tests; backend must be running on :8000):**
+```bash
+cd frontend
+npx playwright install chromium   # one-time
+npm run test:e2e
+cd ..
+```
+
 **Expected results:**
 ```
-tests/fl/unit/           ~256 passed
-tests/fl/integration/     ~14 passed
-tests/fl/system/          ~17 passed  (slow mark)
-tests/cliniq/backend/    207 passed
+Python (pytest)          513 passed   (41 of them marked slow; 10 call the Groq API)
+Frontend (Vitest)        232 passed
+Browser (Playwright)      21 passed   (6 need the Groq API)
 ──────────────────────────────────────
-Python total             494 passed
-
-frontend Vitest          207 passed
-──────────────────────────────────────
-Grand total              701 passed
+Grand total              766 passed
 ```
 
 ---
@@ -935,7 +824,7 @@ Grand total              701 passed
 
 **Header bar** — ClinIQ brand, LIVE chip with ECG animation, 90s countdown timer, patient info pill, risk-color reactive accent strip.
 
-**Patient Context Strip** — risk level badge (color-coded), SOFA score, AI confidence — dims during refresh.
+**Patient Context Strip** — risk level badge (color-coded), SOFA score, AI Reliability (same score as the report) — dims during refresh.
 
 **Current Status section**
 - `SOFAGauge` — circular radial gauge, risk-colored, animated on new data
@@ -965,8 +854,8 @@ Grand total              701 passed
 
 | Role | Model | Tokens | Purpose |
 |---|---|---|---|
-| Main | `openai/gpt-oss-120b` | 3500 | Generate 4-section clinical assessment |
-| Judge | `openai/gpt-oss-20b` | 300 | G-Eval + RAGAS reliability evaluation |
+| Main | `openai/gpt-oss-120b` | up to 6000 | Generate 4-section clinical assessment |
+| Judge | `openai/gpt-oss-120b` | up to 1200 | G-Eval + RAGAS reliability evaluation (12 s timeout) |
 
 ### 9-method reliability score
 
@@ -984,13 +873,16 @@ Grand total              701 passed
 
 | Score | Label |
 |---|---|
-| ≥ 80% | High Reliability |
-| 60–79% | Moderate Reliability |
-| < 60% | Low Reliability |
+| ≥ 75% | High Reliability |
+| 55–74% | Moderate Reliability |
+| < 55% | Low Reliability |
+
+Full explanation of every method: `docs/VALIDATION.md`.
 
 ### Caching
 
-Reports are cached in-process with a 90-second TTL keyed by `care_mode|sofa_score|HR|SpO2`. If the same patient with the same vitals is re-queried within 90 seconds, the cached report is returned instantly.
+- **Backend:** reports are cached for 90 seconds, keyed by care mode + patient + SOFA + every vital quoted in the prompt. Identical concurrent requests share one LLM call; failed reports are not cached.
+- **Frontend:** once the current mode's report loads, the other care mode is generated in the background, so switching Hospital ↔ Home Care is instant. A new reading clears both.
 
 ---
 
@@ -1007,33 +899,66 @@ Input: 108 features
   ├─ 2 CV features     (GCS_eye_opening, stress_score)
   └─ 90 TF-IDF         (SOFA vocabulary whitelist, 6 organ components)
 
-DNN:  108 → Linear(128) → ReLU
-           → Linear(64)  → ReLU
-           → Linear(32)  → ReLU
+DNN:  108 → Linear(256) → ReLU → Dropout(0.3)
+           → Linear(128) → ReLU → Dropout(0.3)
+           → Linear(64)  → ReLU → Dropout(0.3)
            → Linear(1)
            → SOFA Score (0–24)
 
-Total parameters: ~23,000
+Total parameters: 69,121
 ```
 
-### Performance (held-out test set, 2,559 patients)
+Dropout randomly switches off 30% of neurons during training only, so the model cannot rely on a few neurons and overfit. At prediction time (`model.eval()` — backend, SHAP, evaluation) dropout is off, so the same input always gives the same SOFA score.
+
+*(Earlier versions used 108 → 128 → 64 → 32 → 1 with no dropout and 24,321 parameters.)*
+
+### Performance (held-out test set — 10,450 ICU stays)
 
 | Metric | Value |
 |---|---|
-| MAE | 1.8968 SOFA points |
-| R² | 0.5995 |
-| AUROC | 0.9461 |
-| PR-AUC | 0.6840 |
+| MAE | 1.8247 SOFA points |
+| R² | 0.4725 |
+| Prediction range | 1.72 – 23.45 |
+| AUROC (high-risk alert) | 0.9254 |
+| PR-AUC (high-risk alert) | 0.6456 |
 
-> AUROC 0.9461 exceeds the published ICU ML benchmark of 0.82–0.84 (Lancet Digital Health 2025).
+**MAE per risk band:** Low 1.331 (n=6,929) · Moderate 2.481 (n=2,919) · High 4.328 (n=602). Per-band R² is negative by design (there is little variance inside one band), so only the overall R² is meaningful.
+
+**High-risk alert** — fires when predicted SOFA ≥ 7 (`ALERT_THRESHOLD = 7.0` in `model_utils.py`), scored against actual SOFA ≥ 10:
+
+| Metric | Value |
+|---|---|
+| Recall (sensitivity) | 67.1% (404 of 602 high-risk stays caught) |
+| Specificity | 96.3% |
+| Precision | 52.9% |
+| F1 | 0.5915 |
+| Missed (false negatives) | 198 |
+| False alarms (false positives) | 360 |
+
+Why 7 and not 10 (or the earlier 8)? The model under-predicts severe patients (its mean prediction for truly high-risk stays is about 9.7), so a threshold of 10 would miss many of them. Moving from 8 to 7 catches 36 more high-risk patients (198 missed instead of 234) for 140 more false alarms (360 instead of 220). AUROC and MAE do not change.
+
+| Threshold | Recall | Specificity |
+|---|---|---|
+| SOFA ≥ 8 | 61.1% | 97.8% |
+| SOFA ≥ 7.5 | 64.3% | 97.1% |
+| **SOFA ≥ 7 (current)** | **67.1%** | **96.3%** |
+| SOFA ≥ 6.5 | 69.9% | 95.3% |
+| SOFA ≥ 6 | 73.1% | 93.9% |
+
+**3-class risk band** (Low / Moderate / High) accuracy is 72.5%; High-band recall 47.7%, High-band precision 74.5%. The 90% conformal interval shown on the dashboard is ± 3.34 SOFA points.
+
+> **Limitation:** one row per ICU stay, split 80/20 by ICU stay — a patient with several stays can appear in both train and test. These are retrospective MIMIC-III results, not independent clinical validation. Most SOFA points come from labs (bilirubin, creatinine, platelets, PaO2/FiO2) and vasopressor doses, which are deliberately not model inputs (non-invasive design), and this limits accuracy.
 
 ### Training
 
-- **Server optimizer:** FedYogi (η=0.01, β1=0.9, β2=0.99)
+- **Server aggregation:** FedAvg (`USE_FEDYOGI = False` in `train_federated.py`; earlier versions used FedYogi)
 - **Client regularisation:** FedProx (μ=0.5)
-- **Loss:** Linear weighted MSE — `weight = 1 + SOFA × 0.5`
-- **Optimizer:** AdamW (lr=0.001, weight_decay=1e-4)
-- **Rounds:** 100 FL rounds × 3 local epochs × 3 hospital nodes
+- **Loss:** plain MSE (earlier versions used a SOFA-weighted MSE; `train_model(..., weighted_loss=True)` restores it)
+- **Optimizer:** AdamW (lr=0.001, decaying ×0.99 per round, floor 1e-4; weight_decay=1e-4), gradient clip 1.0
+- **Rounds:** 100 FL rounds × 3 local epochs × 3 hospital nodes, batch size 64
+- **Data:** 41,798 training ICU stays split IID across 3 hospitals (13,932 / 13,933 / 13,933); 10,450 held-out test stays
+- **Model selection:** the round with the lowest average server validation MSE is kept (round 26 in the current run)
+- No oversampling; differential privacy off
 
 ---
 
@@ -1045,25 +970,23 @@ Total parameters: ~23,000
 python train_federated.py
 ```
 
-Takes ~40–60 minutes (Phase 0: data loading, Phase 1–6: FL training, Phase 7: evaluation + artifact saving).
+Phase 0 (BigQuery download + note processing) runs only if the `fl_training` table is empty; Phases 1–6 train, evaluate and save the model. Full explanation: `docs/TRAIN_FEDERATED.md`.
 
 **Force Phase 0 re-run:**
 
 macOS / Linux:
 ```bash
 sqlite3 models/icu_monitor.db "DELETE FROM fl_training;"
-rm models/scaler.pkl models/tfidf_vectorizer.pkl models/feature_columns.pkl
 python train_federated.py
 ```
 
 Windows:
 ```cmd
 sqlite3 models\icu_monitor.db "DELETE FROM fl_training;"
-del models\scaler.pkl models\tfidf_vectorizer.pkl models\feature_columns.pkl
 python train_federated.py
 ```
 
-After retraining, restart the backend to load the new model weights.
+After retraining, restart the backend (`uvicorn backend.main:app --port 8000 --reload`) to load the new model weights.
 
 ### Real FL Demo (4 terminals)
 
@@ -1084,11 +1007,12 @@ python client.py --client_id 2
 **Source:** MIMIC-III (Medical Information Mart for Intensive Care III), accessed via Google BigQuery.
 
 **BigQuery project:** `mimic-project-2`  
-**Processed table:** `mimic-project-2.Dataset.ml_dataset_final`
+**BigQuery dataset:** `mimic-project-2.dataset_v2` (rebuilt; see `docs/SQL_COMMANDS.md`)  
+**Processed view:** `mimic-project-2.dataset_v2.ml_dataset_final` (5,089,857 hourly rows; cohort of 52,248 adult ICU stays ≥ 6 h from 38,304 patients)
 
 The `sample_patients` table (90 rows, 3 patients × 30 readings) is the data source for the dashboard's live simulation. These are pre-processed MIMIC-III ICU windows with realistic vital sign progressions.
 
-The `fl_training` table holds the full 48,150 training rows used by `train_federated.py` — StandardScaler-normalised, clipped to ±10, split across 3 hospital clients.
+The `fl_training` table holds the training rows used by `train_federated.py` — one row per ICU stay (the newest hour), labelled with the SOFA score at that hour, StandardScaler-normalised, clipped to ±10, and split across 3 hospital clients (41,798 rows). The other 10,450 stays form the held-out test set (80/20 split, stratified by SOFA ≥ 10).
 
 ---
 
@@ -1102,12 +1026,12 @@ The `fl_training` table holds the full 48,150 training rows used by `train_feder
 | **Data fetching** | TanStack Query 5, Axios |
 | **Backend** | FastAPI 0.115, uvicorn |
 | **ML framework** | PyTorch 2.x |
-| **Federated Learning** | Flower (flwr) 1.8 — FedYogi + FedProx |
+| **Federated Learning** | Flower (flwr) — FedAvg + FedProx |
 | **Explainability** | SHAP 0.44 — DeepExplainer, top-5 features |
 | **FL Dashboard** | Streamlit (fl_dashboard.py) |
-| **Computer Vision** | OpenCV + MediaPipe (cv_monitor.py) |
+| **Computer Vision** | MediaPipe Tasks Vision (in-browser, `CVMonitorModal`) |
 | **LLM (main)** | Groq `openai/gpt-oss-120b` — clinical assessment |
-| **LLM (judge)** | Groq `openai/gpt-oss-20b` — G-Eval + RAGAS reliability |
+| **LLM (judge)** | Groq `openai/gpt-oss-120b` — G-Eval + RAGAS reliability |
 | **Database** | SQLite 3 (stdlib) |
 | **Environment** | python-dotenv |
 | **Dataset** | MIMIC-III (Google BigQuery) |
@@ -1152,7 +1076,7 @@ SELECT client_id, COUNT(*) AS rows FROM fl_training GROUP BY client_id;
 
 > Activate your venv first (`source venv/bin/activate` on macOS/Linux, `venv\Scripts\activate` on Windows), then run all commands from the project root.
 
-### FL Tests — 287 tests across 10 phases
+### FL Tests
 
 ```bash
 # All FL tests
@@ -1164,13 +1088,13 @@ python -m pytest tests/fl/integration/ -v          # Phases 7–9 (integration)
 python -m pytest tests/fl/system/      -v -m slow  # Phase 10 (end-to-end system)
 ```
 
-### ClinIQ Backend Tests — 207 tests
+### ClinIQ Backend Tests
 
 ```bash
 python -m pytest tests/cliniq/backend/ -v
 ```
 
-### React Frontend Tests — 207 Vitest tests
+### React Frontend Tests — 232 Vitest tests
 
 ```bash
 cd frontend
@@ -1181,14 +1105,17 @@ cd ..
 ### Run everything
 
 ```bash
-# All Python tests (494 total)
+# All Python tests (513 total; -m "not slow" skips the 41 slow ones)
 python -m pytest tests/ -v
 
-# Frontend tests (207 total)
+# Frontend tests (232 total)
 cd frontend && npx vitest run && cd ..
+
+# Browser e2e tests (21 total; backend must be running)
+cd frontend && npm run test:e2e && cd ..
 ```
 
-**Grand total: 701 passing tests.**
+**Grand total: 766 passing tests.**
 
 ---
 
@@ -1199,7 +1126,7 @@ cd frontend && npx vitest run && cd ..
 pip install -r requirements.txt
 ```
 
-**Port already in use (8000 / 8080 / 8501 / 8502 / 8503 / 8504)**
+**Port already in use (5173 / 8000 / 8080 / 8501)**
 
 macOS / Linux:
 ```bash
@@ -1296,7 +1223,7 @@ uvicorn backend.main:app --port 8000 --reload
 # 7. Start the frontend (Terminal 2)
 cd frontend && npm run dev
 
-# Dashboard → http://localhost:5174
+# Dashboard → http://localhost:5173
 # API docs  → http://localhost:8000/docs
 ```
 

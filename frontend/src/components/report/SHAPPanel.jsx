@@ -1,10 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
 import { animate } from 'animejs'
 
-export default function SHAPPanel({ factors }) {
-  /* Keep the last non-empty factors so the panel never vanishes during a
-     refresh where SHAP computation temporarily returns []. */
+export default function SHAPPanel({ factors, patientId }) {
   const [displayFactors, setDisplayFactors] = useState(factors)
+  const lastPatientRef = useRef(null)
+
+  // Clear stale data immediately on patient switch — never show previous patient's drivers
+  useEffect(() => {
+    if (patientId == null) return
+    if (lastPatientRef.current !== null && lastPatientRef.current !== patientId) {
+      setDisplayFactors(null)
+    }
+    lastPatientRef.current = patientId
+  }, [patientId])
+
+  // Keep the last non-empty factors so the panel doesn't vanish mid-refresh
   useEffect(() => {
     if (factors?.length) setDisplayFactors(factors)
   }, [factors])
@@ -14,9 +24,8 @@ export default function SHAPPanel({ factors }) {
   const animated = useRef(false)
 
   useEffect(() => {
-    /* Reset guard on every new batch so bars re-animate when vitals refresh */
+    // Reset animation guard — bars are already mounted by React's commit phase
     animated.current = false
-    barsRef.current  = []
 
     const el = panelRef.current
     if (!el) return

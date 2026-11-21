@@ -51,7 +51,7 @@ A clinician is monitoring a patient in the ICU. They enter the patient's current
 3. **Generates** a structured clinical report using a large language model (LLM)
 4. **Verifies** the LLM report's reliability by running it three times and measuring consistency
 
-The system is not replacing clinical judgment. It is giving the clinician a second opinion in real time — grounded in patterns learned from 48,150 MIMIC-III ICU patient records, with clear explanations of its reasoning.
+The system is not replacing clinical judgment. It is giving the clinician a second opinion in real time — grounded in patterns learned from 41,798 MIMIC-III ICU stays, with clear explanations of its reasoning.
 
 **Running example throughout this document:**
 
@@ -189,8 +189,8 @@ These are not entered by the clinician. They are the products of the federated t
 
 | Artifact | What it contains | Why it is needed |
 |---|---|---|
-| `models/federated_model.pth` | Trained DNN weights (108→128→64→32→1) | The model that makes predictions |
-| `models/scaler.pkl` | StandardScaler fitted on 48,150 training patients | Normalises new inputs to the same scale as training data |
+| `models/federated_model.pth` | Trained DNN weights (108→256→128→64→1, Dropout 0.3) | The model that makes predictions |
+| `models/scaler.pkl` | StandardScaler fitted on 41,798 training ICU stays | Normalises new inputs to the same scale as training data |
 | `models/tfidf_vectorizer.pkl` | TF-IDF with 90-term SOFA vocabulary whitelist | Converts clinical notes to numeric features |
 | `models/feature_columns.pkl` | Ordered list of 108 column names | Ensures features are presented to the model in the correct order |
 | `models/shap_background.npy` | 300 representative training patients | Reference distribution for SHAP feature attribution |
@@ -469,7 +469,7 @@ Example: "creatinine" appears 2 times in a 500-word note
     count=10 → log(11)  = 2.40  (3.5× the single-mention weight, not 10×)
 ```
 
-**IDF (Inverse Document Frequency):** How rare is this term across ALL training notes?
+**IDF (Inverse Document Frequency):** How rare is this term across ALL training notes? (The document counts below are illustrative round numbers to show the arithmetic.)
 ```
 IDF = log(total_documents / documents_containing_this_term)
 
@@ -667,7 +667,7 @@ Wrong order (position 0 = "creatinine" TF-IDF, value = 0.42):
 ```
 Input:
   final_df — DataFrame (1, 108) with raw clinical values
-  scaler   — sklearn StandardScaler fitted on 48,150 training patients
+  scaler   — sklearn StandardScaler fitted on 41,798 training ICU stays
 
 Process:
   For each of the 108 features:
@@ -742,7 +742,7 @@ Some TF-IDF terms are very rare in the training corpus:
     But the value cannot become catastrophically large
 ```
 
-**Critical rule:** The scaler is fitted ONLY on the training data (the 48,150 MIMIC-III patients). It is never updated at inference time. Using the training set's mean and std ensures that new patient data is interpreted relative to the same reference distribution the model was trained on.
+**Critical rule:** The scaler is fitted ONLY on the training data (the 41,798 MIMIC-III training ICU stays). It is never updated at inference time. Using the training set's mean and std ensures that new patient data is interpreted relative to the same reference distribution the model was trained on.
 
 ---
 
@@ -754,16 +754,22 @@ Some TF-IDF terms are very rare in the training corpus:
 
 ```
 Input layer:    108 neurons  (one per scaled feature)
-Hidden layer 1: 128 neurons  + ReLU
-Hidden layer 2:  64 neurons  + ReLU
-Hidden layer 3:  32 neurons  + ReLU
+Hidden layer 1: 256 neurons  + ReLU + Dropout(0.3)
+Hidden layer 2: 128 neurons  + ReLU + Dropout(0.3)
+Hidden layer 3:  64 neurons  + ReLU + Dropout(0.3)
 Output layer:     1 neuron   (no activation — raw regression output)
+
+Total trainable parameters: 69,121
 ```
+
+**What Dropout(0.3) means:** during training, each hidden layer randomly switches off 30% of its neurons on every batch. The network cannot lean on a few neurons, so it learns patterns that generalise instead of memorising the training stays. At prediction time dropout is **off** — every neuron is used, so the same patient always gets the same SOFA score.
+
+*(Earlier versions used 108 → 128 → 64 → 32 → 1 with no dropout.)*
 
 ### The Forward Pass — Step by Step With Our Patient
 
 ```python
-model.eval()           # disable training-mode behaviour
+model.eval()           # prediction mode — switches Dropout off
 with torch.no_grad():  # do not track gradients — saves memory and computation
     X_tensor = torch.tensor(final_scaled, dtype=torch.float32)
     raw_pred = model(X_tensor).numpy().flatten()[0]
@@ -771,14 +777,16 @@ with torch.no_grad():  # do not track gradients — saves memory and computation
 
 **What happens inside the model:**
 
+(The neuron weights and activation numbers below are illustrative, to show the idea — they are not read from the trained model.)
+
 ```
-Layer 1 computation (108 → 128):
+Layer 1 computation (108 → 256):
   h1 = ReLU(W1 @ x + b1)
   
-  W1 is a 128×108 weight matrix. For each of the 128 neurons, this computes
+  W1 is a 256×108 weight matrix. For each of the 256 neurons, this computes
   a different weighted combination of the 108 input features.
   
-  Example — one neuron in Layer 1:
+  Example — one neuron in Layer 1 (illustrative numbers):
     This neuron might have learned:
       Large weight on SpO2_mean (−0.71): "fires when SpO2 is very low"
       Large weight on "vasopressor" TF-IDF (+0.62): "fires when vasopressors mentioned"
@@ -791,37 +799,38 @@ Layer 1 computation (108 → 128):
     After ReLU: max(0, 2.8) = 2.8  (neuron is ACTIVE — pattern found)
     
     This neuron is detecting something like "hypoxic cardiovascular failure"
-    All 128 neurons detect different patterns simultaneously.
+    All 256 neurons detect different patterns simultaneously.
+    (Dropout would zero 30% of them during training; at prediction time all are used.)
 
-Layer 2 computation (128 → 64):
+Layer 2 computation (256 → 128):
   h2 = ReLU(W2 @ h1 + b2)
   
-  Takes the 128 pattern activations from Layer 1 and combines them into 64
+  Takes the 256 pattern activations from Layer 1 and combines them into 128
   higher-level clinical syndrome representations.
   
   Example: a Layer 2 neuron might combine Layer 1's "hypoxic failure" detector
   with Layer 1's "renal stress" detector and Layer 1's "tachycardia" detector
   to produce a "multi-organ failure" syndrome signal.
 
-Layer 3 computation (64 → 32):
+Layer 3 computation (128 → 64):
   h3 = ReLU(W3 @ h2 + b3)
   
-  Further compression — 32 final severity representations.
+  Further compression — 64 final severity representations.
 
-Output layer (32 → 1):
+Output layer (64 → 1):
   y = W4 @ h3 + b4
   
-  Linear combination of 32 severity signals → single SOFA prediction.
+  Linear combination of 64 severity signals → single SOFA prediction.
   No activation function — the output is an unrestricted real number.
   
 Output:
   raw_pred = 8.37  (for our septic shock patient)
-             (model predicts SOFA ≈ 8.4 — High Risk territory)
+             (model predicts SOFA ≈ 8.4 — above the alert threshold of 7)
 ```
 
 **Why `model.eval()` matters:**
 
-In training mode, some model behaviours are active that should not be active at inference. Even though we have no Dropout or BatchNorm, calling `model.eval()` is a best practice that signals all components (including any that might exist in future versions) to behave deterministically.
+The model has Dropout layers. In training mode they randomly switch off 30% of neurons, which would make predictions jump around. `model.eval()` turns dropout off, so every prediction uses the full network and is deterministic. The backend, SHAP and test-set evaluation all run the model in `eval()` mode.
 
 **Why `torch.no_grad()` matters:**
 
@@ -863,9 +872,9 @@ else:                  risk = "High Risk"       → red indicator
 Our patient: sofa_score = 8.37 → "Moderate Risk" (amber)
 ```
 
-Note: 8.37 falls in the Moderate Risk band (5–10), even though the alert threshold fires at 8.0. This is intentional — the risk classification uses the standard clinical SOFA bands, while the alert threshold is calibrated separately for optimal sensitivity.
+Note: 8.37 falls in the Moderate Risk band (5–10), even though the alert fires (threshold 7.0). This is intentional — the risk classification uses the standard clinical SOFA bands, while the alert threshold is calibrated separately for optimal sensitivity.
 
-### The Alert Banner — Why Threshold 8.0 and Not 10?
+### The Alert Banner — Why Threshold 7 and Not 10?
 
 The SOFA score is divided into standard clinical bands (Low: <5, Moderate: 5–10, High: ≥10). Naively, one might expect the alert to fire at SOFA ≥ 10 — the clinical High Risk boundary.
 
@@ -873,37 +882,43 @@ The SOFA score is divided into standard clinical bands (Low: <5, Moderate: 5–1
 
 ```
 Why the model under-predicts:
-  Training data: SOFA 0–4 = 63% of patients
-                 SOFA 5–9 = 30% of patients
-                 SOFA ≥10 = 6% of patients
+  Training data (each hospital): Low (SOFA < 5)  = 67% of ICU stays
+                                 Moderate (5–9)  = 27% of ICU stays
+                                 High (≥ 10)     =  6% of ICU stays
   
-  The model sees many more low-SOFA examples during training.
-  Even with weighted loss, the model's predictions are pulled toward the majority.
+  The model sees many more low-SOFA examples during training,
+  so its predictions are pulled toward the majority.
   
-  Observed pattern:
-    Patient with actual SOFA = 12 → model predicts ~9.5 (under by 2.5)
-    Patient with actual SOFA = 15 → model predicts ~11.2 (under by 3.8)
+  Observed pattern on the held-out test set:
+    Patients whose actual SOFA is ≥ 10 get a mean predicted SOFA of only ≈ 9.7
 ```
 
-If the alert threshold were set at 10, the model would fail to alert for a patient with actual SOFA=12 (predicted=9.5 → below threshold → no alert → dangerous miss).
+If the alert threshold were set at 10, the model would stay silent for many truly high-risk patients whose prediction lands just below 10 — dangerous misses.
 
-**Calibration at threshold 8.0:**
+**Calibration at threshold 7** (`ALERT_THRESHOLD = 7.0`, defined once in `model_utils.py` and imported by `backend/services/ml_service.py`):
 
 ```
-Alert threshold = 8.0:
-  True Positive Rate (recall) for High-Risk patients = 52.5%
-  (52.5% of true SOFA≥10 patients get alerts — a meaningful improvement)
-  False alarm rate on Low-Risk patients = 1.4%
-  (only 1.4% of Low-Risk patients trigger unnecessary alerts — acceptable)
+Held-out test set: 10,450 ICU stays, 602 of them truly High (SOFA ≥ 10)
 
-Alert threshold = 10 (clinical boundary):
-  True Positive Rate = 28.4%  (catches barely a quarter of High-Risk patients)
-  
-Alert threshold = 8.0 catches 24.1 percentage points more true critical patients
-at the cost of only 1.4 percentage points more false alarms on stable patients.
+Alert threshold = 7 (current):
+  Recall (sensitivity)  = 67.1%  (404 of 602 high-risk stays get an alert)
+  Specificity           = 96.3%  (non-high-risk stays that correctly get no alert)
+  Precision             = 52.9%  (about half of alerts are true high-risk stays)
+  Missed (FN) = 198   False alarms (FP) = 360
+  AUROC = 0.9254   PR-AUC = 0.6456
+
+Threshold sweep (same model):
+  ≥ 8.0 : recall 61.1%  specificity 97.8%   (earlier setting)
+  ≥ 7.5 : recall 64.3%  specificity 97.1%
+  ≥ 7.0 : recall 67.1%  specificity 96.3%   ← current
+  ≥ 6.5 : recall 69.9%  specificity 95.3%
+  ≥ 6.0 : recall 73.1%  specificity 93.9%
+
+Moving from 8 to 7: 36 fewer missed high-risk patients (234 → 198)
+for 140 more false alarms (220 → 360). AUROC and MAE do not change.
 ```
 
-For our patient: sofa_score = 8.37 ≥ 8.0 → **RED ALERT BANNER fires**.
+For our patient: sofa_score = 8.37 ≥ 7 → **RED ALERT BANNER fires**.
 
 ### Prediction History
 
@@ -939,7 +954,7 @@ Transposed to ML: if the model's output deviates from the baseline prediction by
 
 Where baseline_SOFA is the model's average prediction across the 300 background patients.
 
-Our example:
+Our example (illustrative baseline — the real value depends on the trained model and background set):
   baseline_SOFA ≈ 3.80  (average SOFA prediction for "typical" training patients)
   predicted_SOFA = 8.37
   
@@ -979,7 +994,7 @@ DeepExplainer uses a technique related to Integrated Gradients. It:
 
 This is mathematically rigorous: the attributions satisfy the Shapley axioms (efficiency, symmetry, linearity, nullity) which together guarantee a fair and complete attribution.
 
-**Output — SHAP values for our patient:**
+**Output — SHAP values for our patient (illustrative numbers — they show the shape of the output, not values computed with the current trained network):**
 
 ```
 Feature              | Original value | SHAP value | Interpretation
@@ -1081,23 +1096,23 @@ The LLM (accessed via Groq's API) receives a single text prompt containing 7 com
 ### Component 1 — Risk-Adaptive Urgency Prefix (Conditional)
 
 ```
-IF sofa_score ≥ ALERT_THRESHOLD (8.0):
+IF sofa_score ≥ ALERT_THRESHOLD (7.0):
   Add at the very beginning of the prompt:
   
-  "⚠️ CLINICAL ALERT — Predicted SOFA 8.4 (alert threshold ≥ 8)
+  "⚠️ CLINICAL ALERT — Predicted SOFA 8.4 (alert threshold ≥ 7)
    This patient shows signs of significant organ dysfunction.
    Structure your response for IMMEDIATE clinical action."
    
-IF sofa_score < 8.0:
+IF sofa_score < 7.0:
   No prefix — the prompt begins with the standard assessment request.
 ```
 
-**Why this matters:** The LLM's instructions tell it to structure its response differently for high-risk patients. For SOFA ≥ 8, the "Immediate Actions" section appears first in the output — the clinician sees what to do right now before reading any background. For lower-risk patients, the "Condition" section appears first to give context before recommendations.
+**Why this matters:** The LLM's instructions tell it to structure its response differently for high-risk patients. For SOFA ≥ 7, the "Immediate Actions" section appears first in the output — the clinician sees what to do right now before reading any background. For lower-risk patients, the "Condition" section appears first to give context before recommendations.
 
 ### Component 2 — Section Structure Instructions
 
 ```
-For SOFA ≥ 8 (urgent — our patient):
+For SOFA ≥ 7 (urgent — our patient):
   "Provide your assessment in this EXACT format:
    ## IMMEDIATE ACTIONS
    ## CURRENT CONDITION
@@ -1105,7 +1120,7 @@ For SOFA ≥ 8 (urgent — our patient):
    ## RECOMMENDED MONITORING"
    (Actions first — urgency communicated immediately)
 
-For SOFA < 8 (monitoring):
+For SOFA < 7 (monitoring):
   "Provide your assessment in this EXACT format:
    ## CURRENT CONDITION
    ## LIKELY CAUSES
@@ -1119,7 +1134,7 @@ For SOFA < 8 (monitoring):
 ```
 "SOFA Score: 8.4 / 24   (higher = worse organ failure)
  Risk Level: Moderate Risk
- Alert: SOFA ≥ 8.0 threshold exceeded"
+ Alert: SOFA ≥ 7.0 threshold exceeded"
 ```
 
 ### Component 4 — Clinical Notes (verbatim)
@@ -1338,7 +1353,7 @@ Combined = 0.20 × 0.55 + 0.50 × 0.80 + 0.30 × 0.92
 ```
 ┌─────────────────────────────────────────────────┐
 │  ⚠️ ALERT: Predicted SOFA = 8.4 ≥ threshold    │
-│  (red banner when SOFA ≥ 8.0)                   │
+│  (red banner when SOFA ≥ 7.0)                   │
 ├────────────────────────────────────────────────-┤
 │  SOFA Score: 8.4 / 24   [Moderate Risk] 🟡      │
 ├─────────────────────────────────────────────────┤
@@ -1367,7 +1382,7 @@ The vital trends chart gives the clinician immediate visual context for whether 
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  SHAP FEATURE IMPORTANCE TABLE:                 │
+│  SHAP FEATURE IMPORTANCE TABLE (illustrative):  │
 │  Feature        | Value  | Impact | Direction   │
 │  latest_SpO2    | 84.0%  | +0.82  | ↑ worsening│
 │  SpO2_mean      | 88.5%  | +0.71  | ↑ worsening│
@@ -1442,26 +1457,28 @@ If the consistency score is Moderate or Low, the clinician may want to see where
 ┌─────────────────────────────────────────────────┐
 │  FL ARCHITECTURE DIAGRAM:                       │
 │  Hospital 0 ─┐                                  │
-│  Hospital 1 ─┼──► Central Server (FedYogi) ──►  │
+│  Hospital 1 ─┼──► Central Server (FedAvg)  ──►  │
 │  Hospital 2 ─┘   [Aggregation + Best Round]     │
 │  ↑ Only model weights travel — never patient    │
 │    data                                         │
 ├─────────────────────────────────────────────────┤
 │  TRAINING CONFIGURATION:                        │
-│  Aggregation: FedYogi (η=0.01, β1=0.9, β2=0.99)│
+│  Aggregation: FedAvg                           │
 │  Client reg.: FedProx (μ=0.5)                  │
+│  Loss: plain MSE                               │
 │  Rounds: 100  |  Epochs/round: 3               │
-│  Patients: 48,150 across 3 hospitals            │
+│  ICU stays: 41,798 across 3 hospitals          │
 ├─────────────────────────────────────────────────┤
-│  PERFORMANCE METRICS:                           │
-│  MAE = 1.76 SOFA points                        │
-│  R² = 0.4724                                   │
-│  Best round: 24 of 100                         │
+│  PERFORMANCE METRICS (10,450 test stays):       │
+│  MAE = 1.8247 SOFA points                      │
+│  R² = 0.4725   |  AUROC = 0.9254               │
+│  Alert (≥ 7): recall 67.1%, specificity 96.3%  │
+│  Best round: 26 of 100                         │
 ├─────────────────────────────────────────────────┤
 │  MODEL ARCHITECTURE:                            │
-│  108 → 128 → 64 → 32 → 1                       │
-│  ~23,000 parameters, ReLU activations          │
-│  No Dropout (FL incompatible)                  │
+│  108 → 256 → 128 → 64 → 1                      │
+│  69,121 parameters, ReLU activations           │
+│  Dropout 0.3 (training only)                   │
 │                                                 │
 │  PRIVACY: Differential Privacy OFF (can enable) │
 └─────────────────────────────────────────────────┘
@@ -1528,10 +1545,11 @@ This tab contextualises the entire prediction: the clinician can see exactly how
                     ▼
            ┌─────────────────┐
            │ FEDERATED DNN   │
-           │ 108→128→64      │
-           │     →32→1       │
-           │ (ReLU, no       │
-           │  Dropout)       │
+           │ 108→256→128     │
+           │     →64→1       │
+           │ (ReLU, Dropout  │
+           │  0.3, off at    │
+           │  prediction)    │
            └────────┬────────┘
                     │ raw float
                     ▼
@@ -1602,7 +1620,7 @@ All model artifacts are loaded once when the application starts, using `@st.cach
 
 | Artifact | File size | How loaded | What it provides |
 |---|---|---|---|
-| `models/federated_model.pth` | ~0.3 MB | `torch.load()` | The DNN weights (108→128→64→32→1) — the core prediction model |
+| `models/federated_model.pth` | ~0.3 MB | `torch.load()` | The DNN weights (108→256→128→64→1) — the core prediction model |
 | `models/scaler.pkl` | ~8 KB | `joblib.load()` | Training set mean and std for all 108 features — normalises inference inputs |
 | `models/tfidf_vectorizer.pkl` | ~2 MB | `joblib.load()` | 90-term SOFA vocabulary with IDF weights — converts clinical text to features |
 | `models/feature_columns.pkl` | ~40 KB | `joblib.load()` | Ordered list of 108 column names — enforces consistent feature ordering |
@@ -1644,5 +1662,5 @@ All model artifacts are loaded once when the application starts, using `@st.cach
 
 *Documentation for ICU CDSS Capstone Project*
 *Pipeline: 7 vitals + 2 CV scores + clinical text → 108 features → SOFA → SHAP + LLM*
-*Model: PyTorch DNN trained via Flower Federated Learning (FedYogi + FedProx)*
+*Model: PyTorch DNN (108→256→128→64→1, Dropout 0.3) trained via Flower Federated Learning (FedAvg + FedProx, plain MSE)*
 *LLM: gpt-oss-120b via Groq API with 3-call self-consistency verification*

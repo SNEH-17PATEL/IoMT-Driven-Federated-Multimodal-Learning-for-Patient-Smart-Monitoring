@@ -554,23 +554,34 @@ def _is_clinical(name):
     return name in CLINICAL_KEYWORDS
 ```
 
+**Alert threshold tests:**
+
+```
+ALERT_THRESHOLD == 7.0
+ALERT_THRESHOLD == model_utils.ALERT_THRESHOLD
+```
+
+`ALERT_THRESHOLD` is now defined once in `model_utils.py` (the training code) and `backend/services/ml_service.py` imports it. The first test locks in the value 7.0 (it was 8.0 in an earlier version). The second test checks that the backend and the training code share the same value, so the red alert banner in the dashboard and the alert metrics written to `training_metadata.json` can never drift apart.
+
 **Training metadata tests (#10–12):**
 
 ```
-load_training_metadata()['final_mae']       == 1.8968
-load_training_metadata()['final_r2']        == 0.5995
-load_training_metadata()['test_samples']    == 2559
+0.0 < load_training_metadata()['final_mae'] < 5.0
+0.0 < load_training_metadata()['final_r2'] <= 1.0
+load_training_metadata()['test_samples'] is a positive int
+load_training_metadata()['train_samples'] ≈ 4 × test_samples   (80/20 split, ±5%)
+'best_round' in load_training_metadata()                      (an int)
 ```
 
-These specific numbers come from the actual federated training run. The tests lock in these values so that:
-1. If anyone accidentally overwrites `training_metadata.json` with wrong values, the test fails immediately
-2. The values displayed in the SOFA Validation Drawer are guaranteed to match what the model actually achieved
-3. The test documents the model's verified performance for the capstone panel
+These tests read the live `models/training_metadata.json`. That file changes on every retrain, so the tests check that the values are **sane** (inside a sensible range) instead of equal to one exact run. This means:
+1. If anyone overwrites `training_metadata.json` with broken values (MAE of 0, negative R², missing sample counts), the test fails immediately
+2. Retraining the model does not break the test suite
+3. The SOFA Validation Drawer reads its numbers from the same file, so whatever the tests accept is what the panel sees
 
-**What these numbers mean clinically:**
-- `final_mae = 1.8968`: On average, the model's SOFA predictions are off by 1.90 points. Since SOFA is scored 0–24, this is a 7.9% average error — acceptable for a decision-support tool.
-- `final_r2 = 0.5995`: The model explains 60% of the variance in SOFA scores. This means patient-to-patient variation in SOFA is 60% predictable from the input features.
-- `test_samples = 2559`: The performance metrics were computed on 2,559 patients held out from training — this is the validation set size that gives confidence the metrics are not inflated.
+**What the current numbers mean clinically (current model, from `training_metadata.json`):**
+- `final_mae = 1.8247`: On average, the model's SOFA predictions are off by about 1.8 points. Since SOFA is scored 0–24, this is a small average error — acceptable for a decision-support tool.
+- `final_r2 = 0.4725`: The model explains about 47% of the variance in SOFA scores from non-invasive inputs only (SOFA itself is mostly computed from labs and vasopressor doses, which are deliberately not inputs).
+- `test_samples = 10450`: The performance metrics were computed on 10,450 ICU stays held out from training (train = 41,798, an 80/20 split).
 
 **Seed timestamp test (#13):**
 
@@ -755,7 +766,7 @@ Large row_idx wraps correctly          — modulo cycling must stay in bounds
 Consecutive row_idx increments cur_idx — 90-second polling advances through data
 ```
 
-The system cycles through 48,150 MIMIC-III patient rows, using each row's vitals as a simulated real-time reading. The modulo cycling test checks that row_idx=48,200 correctly wraps to a valid row index (48,200 mod 48,150 = 50). Without this test, a row_idx larger than the dataset would cause an array-out-of-bounds error.
+The system cycles through the stored MIMIC-III patient rows (`total_rows` in the response), using each row's vitals as a simulated real-time reading. The modulo cycling test sends a very large row_idx and checks that it wraps to a valid row index (for example, with 1,000 rows, row_idx=1,050 → 1,050 mod 1,000 = 50). The tests read `total_rows` from the response instead of hard-coding a row count, so they keep working when the dataset changes. Without this test, a row_idx larger than the dataset would cause an array-out-of-bounds error.
 
 **Patient validation tests:**
 ```
@@ -884,7 +895,7 @@ But a system test might reveal:
 |---|---|---|
 | Full predict → vitals → history flow | The complete dashboard initialisation sequence | Verifies the app works correctly from first load |
 | All 3 patients predict independently | Clinician switches between patient views | Verifies no cross-contamination between concurrent sessions |
-| Row cycling stays in bounds | The 90-second automatic data refresh loop over the full 48,150-row dataset | Cycling must never crash regardless of row count or wrap-around point |
+| Row cycling stays in bounds | The 90-second automatic data refresh loop over the full patient-row dataset | Cycling must never crash regardless of row count or wrap-around point |
 | Vitals table grows after predict | Each predict call should add one row to the vitals history | Verifies the sliding window write is actually happening |
 | Cross-patient history isolation | Patient 2's predictions must not appear in Patient 1's history table | Critical patient safety test — wrong patient data in history is dangerous |
 | Health endpoint stays 200 | Backend uptime during an active monitoring session | Verifies that predict/vitals/history calls don't put the backend into a broken state |
@@ -1052,30 +1063,48 @@ expect(screen.getByText('SpO₂ (%)')).toBeInTheDocument()  // SpO2 chart now sh
 
 **`SOFAValidationDrawer.test.jsx` — Model Performance Values**
 
-The SOFA Validation Drawer shows the model's validated performance metrics:
+The SOFA Validation Drawer shows the model's validated performance metrics. In an earlier version these numbers were hard-coded in the component (0.9461 / 0.6840 / 1.8968 / 0.5995 / 2,559 rows / 19.8%). Now the drawer reads **every** number from `predictData._training_meta` — the contents of `models/training_metadata.json`, which the backend sends with each prediction. The tests therefore feed the drawer a metadata object shaped like `training_metadata.json` and check that the live values appear:
+
 ```
-MAE = 1.8968
-R² = 0.5995
-AUROC = 0.9461
-PR-AUC = 0.6840
-3-class accuracy = 70.2%
-Test split: 2,559 patients
-High-risk recall: 19.8%
+predictData = { patient_id: 'P1', sofa_score: 6.2, _training_meta: META }
+
+META (mirrors the current training_metadata.json):
+  final_mae = 1.8247, final_r2 = 0.4725
+  train_samples = 41,798, test_samples = 10,450
+  high_risk_alert: threshold 7.0, AUROC 0.9254, PR-AUC 0.6456,
+                   recall 0.6711, specificity 0.9634, FN 198, FP 360
+  risk_bands.confusion_matrix = [[6617, 305, 7], [2159, 669, 91], [112, 203, 287]]
+  per_class['High (>=10)'].recall = 0.4767
 ```
 
-**Why these specific values?**
+**What the 13 tests check:**
 
-These are the actual metrics from the final federated model evaluation:
+| Test | Expected on screen |
+|---|---|
+| Closed drawer | No content rendered |
+| Open drawer | Renders |
+| MAE / R² / AUROC / PR-AUC from metadata | `1.8247`, `0.4725`, `0.9254`, `0.6456` |
+| 3-class accuracy computed from the confusion matrix | `72.5%` — (6617 + 669 + 287) / 10,450 |
+| Test and total sample counts | "10,450 ICU stays of 52,248 total" |
+| Live alert threshold and alert recall/specificity | "predicted SOFA ≥ 7", `67.1%`, `96.3%` |
+| 3-class High-risk recall from `per_class` | `47.7%` |
+| Confusion matrix rows from metadata | "True Low Risk", "True High Risk", `6,617` |
+| Metadata missing | Shows "—" placeholders and "Confusion matrix not available" instead of crashing |
+| Close button | Calls `onClose` |
 
-- **AUROC = 0.9461:** The model correctly ranks 94.6% of random (High Risk, non-High Risk) patient pairs. This means if you pick any two patients — one critical and one stable — the model gives the critical patient a higher predicted SOFA 94.6% of the time. This is excellent discrimination.
+**What these values mean (current model):**
 
-- **PR-AUC = 0.6840:** The area under the Precision-Recall curve, which is more informative than AUROC when the positive class (High Risk) is rare (about 6% of patients). A random classifier achieves PR-AUC ≈ 0.06 (the base rate). At 0.684, the model is 11× better than random for identifying critical patients.
+- **AUROC = 0.9254:** If you pick two patients — one truly High Risk (SOFA ≥ 10) and one not — the model gives the critical patient a higher predicted SOFA about 92.5% of the time. This is strong discrimination.
 
-- **High-risk recall = 19.8%:** At the default SOFA threshold (≥10 for High Risk), the model correctly identifies 19.8% of true critical patients. This seems low, but is consistent with the DNN's known systematic under-prediction. The practical workaround is the ALERT_THRESHOLD=8.0 (explained in INPUT_OUTPUT.md), which improves recall to 52.5%.
+- **PR-AUC = 0.6456:** The area under the Precision-Recall curve, which is more informative than AUROC when the positive class (High Risk) is rare (602 of 10,450 test stays, about 6%). A random classifier achieves PR-AUC ≈ 0.06 (the base rate), so 0.646 is roughly 10× better than random.
 
-- **Confusion matrix renders 3 rows:** The 3×3 confusion matrix (Low/Moderate/High Risk actual vs predicted) has exactly 3 rows. The test verifies the rendering because a wrong row count would indicate the matrix data structure is malformed.
+- **Alert recall = 67.1% at predicted SOFA ≥ 7:** The model under-predicts severe patients, so the alert fires at predicted SOFA ≥ 7 (`ALERT_THRESHOLD = 7.0`, explained in INPUT_OUTPUT.md) instead of waiting for ≥ 10. At this threshold it catches 404 of 602 truly High-Risk patients, with 96.3% specificity (198 missed, 360 false alarms).
 
-The tests lock these values in so the Drawer always shows verified metrics, not placeholder zeros or accidentally overwritten values.
+- **3-class High-band recall = 47.7%:** Using the plain risk bands (predicted ≥ 10 = High), fewer critical patients are caught — which is exactly why the separate, lower alert threshold exists.
+
+- **Confusion matrix renders 3 rows:** The 3×3 confusion matrix (Low/Moderate/High Risk actual vs predicted) has exactly 3 rows, taken straight from the metadata.
+
+Because the numbers come from metadata, the tests check that the drawer **shows whatever the loaded model achieved** — after a retrain the drawer updates automatically, and the "—" test guarantees it never crashes or shows fake zeros when metadata is missing.
 
 **`LLMValidationDrawer.test.jsx`**
 
@@ -1150,7 +1179,7 @@ React's Strict Mode (enabled in development) intentionally renders components tw
 rowIdx increments after each successful fetch
 ```
 
-This verifies the 48,150-row cycling mechanism. Each prediction call uses a different row of MIMIC-III data. If `rowIdx` never incremented, the same patient row would be used for every prediction — the dashboard would appear "stuck" showing the same vitals indefinitely.
+This verifies the row cycling mechanism. Each prediction call uses a different row of MIMIC-III data. If `rowIdx` never incremented, the same patient row would be used for every prediction — the dashboard would appear "stuck" showing the same vitals indefinitely.
 
 ---
 
@@ -1370,6 +1399,9 @@ npx playwright install chromium   # Install the browser Playwright will drive
 cd icu_monitor
 pytest tests/cliniq/backend/ -v
 
+# Whole Python suite (ClinIQ backend + FL tests) — currently 513 passed
+pytest tests
+
 # Unit tests only (fast — no database or ML load needed)
 pytest tests/cliniq/backend/unit/ -v
 
@@ -1390,7 +1422,13 @@ pytest tests/cliniq/backend/api/test_api_predict.py::test_sofa_in_valid_range -v
 
 # ── FRONTEND TESTS ─────────────────────────────────────────────────
 
-# All frontend unit + integration tests
+# One-time setup: the test files live in icu_monitor/tests/, outside frontend/,
+# so they need this symlink to resolve packages like react and vitest
+# (the symlink is gitignored):
+cd icu_monitor
+ln -s frontend/node_modules node_modules
+
+# All frontend unit + integration tests (currently 232 tests in 27 files)
 cd icu_monitor/frontend
 npx vitest run
 
@@ -1496,10 +1534,10 @@ Think of coverage as a **floor** (below 70% means significant untested areas), n
 | 4 — Frontend unit tests | ✅ Implemented | `tests/cliniq/frontend/unit/**/*.test.{js,jsx}` |
 | 5 — Frontend integration tests | ✅ Implemented | `tests/cliniq/frontend/integration/*.test.jsx` |
 | 6 — E2E tests (Playwright) | ✅ Implemented | `tests/cliniq/frontend/e2e/*.spec.js` |
-| FL tests | 🔜 Future | `tests/fl/` (placeholder only) |
+| FL tests | ✅ Implemented | `tests/fl/` (see FL_SERVER_CLIENT_DB_TESTING.md) |
 
 ---
 
 *Documentation for ICU CDSS Capstone Project*
-*Test suite: 14 database tests + 60+ API tests + 7 system tests + 80+ frontend unit tests + 17 integration tests + 20 E2E tests*
+*Test suite (current run): 513 Python tests passed (`pytest tests`, ClinIQ backend + FL) · 232 frontend Vitest tests passed (27 files) · plus Playwright E2E tests*
 *Tools: pytest + httpx (backend) · Vitest + RTL + MSW (frontend) · Playwright (E2E)*
