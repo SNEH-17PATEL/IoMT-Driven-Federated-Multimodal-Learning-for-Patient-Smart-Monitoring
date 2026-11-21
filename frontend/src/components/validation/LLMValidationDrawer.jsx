@@ -256,7 +256,7 @@ function MethodsTab({ reportData }) {
         </div>
       ))}
 
-      <SectionRule>2 Judge LLM checks · 1 extra API call · qwen/qwen3.8-27b</SectionRule>
+      <SectionRule>2 Judge LLM checks · 1 extra API call · openai/gpt-oss-120b</SectionRule>
 
       {JUDGE_METHODS.map((m, i) => (
         <div key={i} style={{

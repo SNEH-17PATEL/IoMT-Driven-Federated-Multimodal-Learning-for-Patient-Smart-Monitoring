@@ -5,11 +5,11 @@ Tests every public function in model_utils.py.
 No DB access. No file I/O. Uses mini_model/synthetic_client_data from conftest.
 
 87 tests across 11 groups:
-  2A  ICUModel                    —  9 tests
+  2A  ICUModel                    — 11 tests
   2B  ICUDataset                  —  4 tests
   2C  weighted_mse_loss           —  5 tests
   2D  get_sample_weights          —  5 tests
-  2E  train_model                 — 11 tests
+  2E  train_model                 — 13 tests
   2F  evaluate_model              —  8 tests
   2G  compute_sofa_risk_metrics   — 16 tests
   2H  get_weights / set_weights   —  6 tests
@@ -63,40 +63,64 @@ def test_icu_model_production_input_dim():
 
 
 def test_icu_model_layer_count(mini_model):
-    """Architecture: exactly 4 Linear layers and 3 ReLU in .net."""
-    linears = [m for m in mini_model.net if isinstance(m, torch.nn.Linear)]
-    relus   = [m for m in mini_model.net if isinstance(m, torch.nn.ReLU)]
-    assert len(linears) == 4
-    assert len(relus)   == 3
+    """Architecture: 4 Linear, 3 ReLU and 3 Dropout layers in .net."""
+    linears  = [m for m in mini_model.net if isinstance(m, torch.nn.Linear)]
+    relus    = [m for m in mini_model.net if isinstance(m, torch.nn.ReLU)]
+    dropouts = [m for m in mini_model.net if isinstance(m, torch.nn.Dropout)]
+    assert len(linears)  == 4
+    assert len(relus)    == 3
+    assert len(dropouts) == 3
+    assert all(d.p == pytest.approx(0.3) for d in dropouts)
 
 
 def test_icu_model_first_layer_dims():
-    """First Linear layer: (input_dim → 128)."""
+    """First Linear layer: (input_dim → 256)."""
     model  = ICUModel(10)
     first  = [m for m in model.net if isinstance(m, torch.nn.Linear)][0]
     assert first.in_features  == 10
-    assert first.out_features == 128
+    assert first.out_features == 256
 
 
 def test_icu_model_second_layer_dims(mini_model):
-    """Second Linear layer: (128 → 64)."""
+    """Second Linear layer: (256 → 128)."""
     linears = [m for m in mini_model.net if isinstance(m, torch.nn.Linear)]
-    assert linears[1].in_features  == 128
-    assert linears[1].out_features == 64
+    assert linears[1].in_features  == 256
+    assert linears[1].out_features == 128
 
 
 def test_icu_model_third_layer_dims(mini_model):
-    """Third Linear layer: (64 → 32)."""
+    """Third Linear layer: (128 → 64)."""
     linears = [m for m in mini_model.net if isinstance(m, torch.nn.Linear)]
-    assert linears[2].in_features  == 64
-    assert linears[2].out_features == 32
+    assert linears[2].in_features  == 128
+    assert linears[2].out_features == 64
 
 
 def test_icu_model_output_layer_dims(mini_model):
-    """Output Linear layer: (32 → 1)."""
+    """Output Linear layer: (64 → 1)."""
     linears = [m for m in mini_model.net if isinstance(m, torch.nn.Linear)]
-    assert linears[3].in_features  == 32
+    assert linears[3].in_features  == 64
     assert linears[3].out_features == 1
+
+
+def test_icu_model_dropout_off_in_eval_on_in_train():
+    """Dropout makes train-mode outputs random but eval-mode outputs fixed."""
+    torch.manual_seed(0)
+    model = ICUModel(10)
+    x = torch.randn(16, 10)
+    model.train()
+    with torch.no_grad():
+        assert not torch.equal(model(x), model(x))
+    model.eval()
+    with torch.no_grad():
+        assert torch.equal(model(x), model(x))
+
+
+def test_icu_model_custom_hidden_and_no_dropout():
+    """hidden= and dropout= arguments are respected."""
+    model = ICUModel(10, hidden=(8, 4), dropout=0.0)
+    linears = [m for m in model.net if isinstance(m, torch.nn.Linear)]
+    assert [l.out_features for l in linears] == [8, 4, 1]
+    assert not any(isinstance(m, torch.nn.Dropout) for m in model.net)
 
 
 def test_icu_model_eval_mode_deterministic(mini_model):
@@ -111,10 +135,9 @@ def test_icu_model_eval_mode_deterministic(mini_model):
 
 def test_icu_model_parameter_count():
     """Total parameter count matches the architecture formula."""
-    # Linear(10,128): 10*128+128=1408   Linear(128,64): 128*64+64=8256
-    # Linear(64,32):   64*32+32=2080    Linear(32,1):    32*1+1 =   33
+    # Linear(10,256) + Linear(256,128) + Linear(128,64) + Linear(64,1)
     model    = ICUModel(10)
-    expected = 10*128 + 128 + 128*64 + 64 + 64*32 + 32 + 32*1 + 1
+    expected = 10*256 + 256 + 256*128 + 128 + 128*64 + 64 + 64*1 + 1
     actual   = sum(p.numel() for p in model.parameters())
     assert actual == expected
 
@@ -296,6 +319,26 @@ def test_train_model_oversample_false(mini_model, synthetic_client_data):
     assert math.isfinite(loss)
 
 
+def test_train_model_weighted_loss_true(mini_model, synthetic_client_data):
+    """Works with weighted_loss=True (weighted_mse_loss branch)."""
+    X, y = synthetic_client_data
+    loss = train_model(mini_model, X, y, epochs=1, oversample=False, weighted_loss=True)
+    assert math.isfinite(loss)
+
+
+def test_train_model_default_is_plain_mse(synthetic_client_data):
+    """Default loss is plain MSE: one epoch at lr=0 reports exactly the batch-mean MSE."""
+    import torch
+    X, y = synthetic_client_data
+    torch.manual_seed(0)
+    m = ICUModel(X.shape[1], dropout=0.0)   # no dropout → train/eval outputs match
+    loss = train_model(m, X, y, epochs=1, lr=0.0, batch_size=len(X), oversample=False)
+    with torch.no_grad():
+        p = m(torch.tensor(X, dtype=torch.float32))
+        expected = torch.mean((p - torch.tensor(y, dtype=torch.float32).view(-1, 1)) ** 2).item()
+    assert loss == pytest.approx(expected, rel=1e-4)
+
+
 def test_train_model_grad_clip(mini_model, synthetic_client_data):
     """Works with grad_clip=1.0 (gradient norm clipping branch)."""
     X, y = synthetic_client_data
@@ -460,11 +503,11 @@ def test_csrm_sensitivity_equals_recall():
 
 
 def test_csrm_default_alert_threshold():
-    """high_risk_alert.predicted_sofa_threshold defaults to 8.0."""
+    """high_risk_alert.predicted_sofa_threshold defaults to ALERT_THRESHOLD (7.0)."""
     thr = compute_sofa_risk_metrics(*_risk_data())["high_risk_alert"][
         "predicted_sofa_threshold"
     ]
-    assert thr == 8.0
+    assert thr == 7.0
 
 
 def test_csrm_auroc_float_when_both_classes():
@@ -588,9 +631,9 @@ def test_get_set_weights_identity(mini_model):
 
 
 def test_set_weights_wrong_count_raises(mini_model):
-    """Fewer weight arrays than expected → RuntimeError from load_state_dict."""
+    """Fewer weight arrays than expected → clear ValueError before load_state_dict."""
     truncated = get_weights(mini_model)[:2]   # only 2 of 8 tensors
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ValueError, match="expected 8 weight arrays, got 2"):
         set_weights(mini_model, truncated)
 
 

@@ -352,7 +352,7 @@ def test_fedprox_produces_smaller_weight_delta_than_fedavg():
 def test_pre_post_agg_flat_and_layer1_weights_shapes():
     """After 1 round of fl_thread:
       • pre_agg_flat and post_agg_flat are 1-D arrays of equal length.
-      • layer1_weights has shape (128, INPUT_DIM) — the first layer matrix.
+      • layer1_weights has shape (256, INPUT_DIM) — the first layer matrix.
     """
     clients = _make_clients()
     fld.fl_thread(1, 0.0, "FedAvg", clients, INPUT_DIM)
@@ -365,4 +365,4 @@ def test_pre_post_agg_flat_and_layer1_weights_shapes():
     assert pre.ndim  == 1
     assert post.ndim == 1
     assert len(pre)  == len(post)
-    assert l1.shape  == (128, INPUT_DIM)
+    assert l1.shape  == (256, INPUT_DIM)

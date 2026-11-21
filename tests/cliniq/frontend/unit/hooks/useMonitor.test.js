@@ -21,12 +21,14 @@ const mockResponse = {
 describe('useMonitor', () => {
   beforeEach(() => {
     runPredict.mockReset()
+    // useMonitor resumes rowIdx from sessionStorage; isolate each test
+    sessionStorage.clear()
   })
 
   it('calls runPredict on mount with patient_id and rowIdx=0', async () => {
     runPredict.mockResolvedValue(mockResponse)
     renderHook(() => useMonitor(1))
-    await waitFor(() => expect(runPredict).toHaveBeenCalledWith(1, 0))
+    await waitFor(() => expect(runPredict).toHaveBeenCalledWith(1, 0, null))
   })
 
   it('sets predictData after successful fetch', async () => {
@@ -67,7 +69,7 @@ describe('useMonitor', () => {
 
     runPredict.mockResolvedValue({ data: { ...mockResponse.data, patient_id: 2 } })
     act(() => rerender({ pid: 2 }))
-    await waitFor(() => expect(runPredict).toHaveBeenCalledWith(2, 0))
+    await waitFor(() => expect(runPredict).toHaveBeenCalledWith(2, 0, null))
   })
 
   it('lastUpdated is set after successful fetch', async () => {
@@ -116,7 +118,7 @@ describe('useMonitor', () => {
         await Promise.resolve()
       })
 
-      expect(runPredict).toHaveBeenCalledWith(1, 0)
+      expect(runPredict).toHaveBeenCalledWith(1, 0, null)
 
       // Advance countdown from 90 → 1 to trigger second fetch
       act(() => { vi.advanceTimersByTime(90000) })

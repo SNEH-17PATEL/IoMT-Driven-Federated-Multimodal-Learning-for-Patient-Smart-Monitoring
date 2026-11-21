@@ -67,7 +67,7 @@ function renderLine(line, idx, accentColor) {
         >
           {trimmed.slice(0, -1)}
         </span>
-        <div style={{ flex: 1, height: 1, background: `linear-gradient(to right, ${accentColor}30, transparent)` }} />
+        <div style={{ flex: 1, height: 1, background: `linear-gradient(to right, color-mix(in srgb, ${accentColor} 19%, transparent), transparent)` }} />
       </div>
     )
   }
@@ -81,7 +81,7 @@ function renderLine(line, idx, accentColor) {
         className="flex gap-2.5 px-3 py-2 mb-2 rounded-lg text-xs"
         style={{
           borderLeft: `2.5px solid ${accentColor}`,
-          background: `${accentColor}08`,
+          background: `color-mix(in srgb, ${accentColor} 3%, transparent)`,
           color: 'var(--t1)',
         }}
       >
@@ -112,17 +112,17 @@ export default function ReportSection({ name, content, color, subtitle }) {
       className="flex flex-col overflow-hidden"
       style={{
         background: 'var(--s1)',
-        border: `1px solid ${color}1e`,
+        border: `1px solid color-mix(in srgb, ${color} 12%, transparent)`,
         borderRadius: 'var(--r-xl)',
-        boxShadow: `var(--sh-sm), 0 0 0 1px ${color}06`,
+        boxShadow: `var(--sh-sm), 0 0 0 1px color-mix(in srgb, ${color} 2%, transparent)`,
         transition: 'box-shadow 0.28s var(--ease-out-smooth), transform 0.32s var(--ease-spring-soft)',
       }}
       onMouseEnter={e => {
-        e.currentTarget.style.boxShadow = `var(--sh-md), 0 0 0 2px ${color}14`
+        e.currentTarget.style.boxShadow = `var(--sh-md), 0 0 0 2px color-mix(in srgb, ${color} 8%, transparent)`
         e.currentTarget.style.transform = 'translateY(-2px)'
       }}
       onMouseLeave={e => {
-        e.currentTarget.style.boxShadow = `var(--sh-sm), 0 0 0 1px ${color}06`
+        e.currentTarget.style.boxShadow = `var(--sh-sm), 0 0 0 1px color-mix(in srgb, ${color} 2%, transparent)`
         e.currentTarget.style.transform = 'translateY(0)'
       }}
     >
@@ -134,14 +134,14 @@ export default function ReportSection({ name, content, color, subtitle }) {
           display: 'flex',
           alignItems: 'center',
           gap: 9,
-          borderBottom: `1.5px solid ${color}48`,
+          borderBottom: `1.5px solid color-mix(in srgb, ${color} 28%, transparent)`,
           flexShrink: 0,
         }}
       >
         {/* Glowing dot */}
         <div style={{
           width: 7, height: 7, borderRadius: '50%', background: color, flexShrink: 0,
-          boxShadow: `0 0 7px ${color}90, 0 0 14px ${color}35`,
+          boxShadow: `0 0 7px color-mix(in srgb, ${color} 57%, transparent), 0 0 14px color-mix(in srgb, ${color} 21%, transparent)`,
         }} />
 
         {/* Icon badge */}
@@ -149,8 +149,8 @@ export default function ReportSection({ name, content, color, subtitle }) {
           <div
             style={{
               width: 24, height: 24, borderRadius: 6,
-              background: `${color}1e`,
-              border: `1px solid ${color}30`,
+              background: `color-mix(in srgb, ${color} 12%, transparent)`,
+              border: `1px solid color-mix(in srgb, ${color} 19%, transparent)`,
               color: color,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
               flexShrink: 0,

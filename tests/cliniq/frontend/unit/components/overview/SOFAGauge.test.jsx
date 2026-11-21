@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react'
+import { animate } from 'animejs'
 import SOFAGauge from '@/components/overview/SOFAGauge.jsx'
 
 // Component expects { predictData: {...}, isRefreshing }
@@ -19,6 +20,12 @@ describe('SOFAGauge', () => {
   })
 
   it('displays SOFA score', () => {
+    // animejs is mocked globally; jump the count-up straight to its final value
+    animate.mockImplementationOnce((obj, { val, onUpdate }) => {
+      obj.val = val
+      onUpdate?.()
+      return { pause: vi.fn() }
+    })
     render(<SOFAGauge {...defaultProps} />)
     expect(screen.getByText(/6\.5|6,5/)).toBeInTheDocument()
   })

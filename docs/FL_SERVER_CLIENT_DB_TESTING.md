@@ -52,7 +52,7 @@ FL training is stochastic — gradient descent uses random mini-batch sampling, 
 
 **Solution:** Test mathematical invariants and ordering, not exact values:
 - "Loss after 5 epochs < loss after 1 epoch" (learning happens)
-- "FedYogi loss < FedAvg loss after 5 rounds" (better algorithm wins)
+- "FedYogi and FedAvg both converge over 5 rounds and give different final losses" (the dashboard's optional FedYogi mode really is a different algorithm)
 - "FedProx delta_mean < FedAvg delta_mean" (drift is reduced)
 
 These relationships must hold regardless of random seed, hardware, or library version.
@@ -64,11 +64,11 @@ These relationships must hold regardless of random seed, hardware, or library ve
 | File | Role | What it contains |
 |---|---|---|
 | `db.py` | SQLite data layer | Functions for reading and writing all database tables — both ClinIQ dashboard tables AND the FL training data table (`fl_training`) |
-| `model_utils.py` | ML core utilities | The DNN architecture (`ICUModel`), dataset class (`ICUDataset`), loss function, training loop, evaluation, SHAP preparation, weight serialisation for Flower, trend analysis, differential privacy |
-| `fl_dashboard.py` | Streamlit FL simulator | The interactive FL simulation UI — implements `_fedavg` and `_fedyogi` in Python, manages simulation state (`_blank_state`, `_reset_state`, `_read_state`), builds Plotly charts |
+| `model_utils.py` | ML core utilities | The DNN architecture (`ICUModel`), dataset class (`ICUDataset`), `ALERT_THRESHOLD = 7.0`, the optional weighted loss (`weighted_mse_loss`, off by default), training loop, evaluation, SHAP preparation, weight serialisation for Flower, trend analysis, differential privacy |
+| `fl_dashboard.py` | Streamlit FL simulator | The interactive FL simulation UI — implements `_fedavg` and `_fedyogi` in Python (the user can pick either algorithm in the simulator), manages simulation state (`_blank_state`, `_reset_state`, `_read_state`), builds Plotly charts |
 | `client.py` | Flower client | The `HospitalClient` class — each hospital runs one instance. Implements `get_parameters`, `fit`, `evaluate` per Flower's protocol. Handles LR decay, FedProx regularisation, differential privacy |
-| `server.py` | Flower server | The `SaveBestStrategy` class — extends Flower's `FedYogi` strategy. Aggregates weights from 3 hospitals, tracks the best model, saves checkpoints, writes `training_metadata.json` |
-| `train_federated.py` | Unified FL script | Standalone script that runs the full 100-round federated training. Contains `make_noniid_split` for non-IID data distribution, its own `HospitalClient` variant, and its own `SaveBestStrategy` (FedYogi variant) |
+| `server.py` | Flower server | The `SaveBestStrategy` class — extends a Flower strategy (FedAvg in the current setup; FedYogi in an earlier version). Aggregates weights from 3 hospitals, tracks the best model, saves checkpoints, writes `training_metadata.json` |
+| `train_federated.py` | Unified FL script | Standalone script that runs the full 100-round federated training. Contains `make_noniid_split` for non-IID data distribution, its own `HospitalClient` variant, and its own `SaveBestStrategy`, which extends **FedAvg** by default (`USE_FEDYOGI = False`; set it to True to switch back to FedYogi with `SERVER_ETA = 0.001`). Clients use FedProx (μ=0.5) |
 | `migrate_to_db.py` | CSV → SQLite import | One-time migration that converts all CSV data files (patient vitals, prediction history, FL training data from 3 hospitals) into the SQLite database |
 
 **Why are there two `HospitalClient` implementations and two `SaveBestStrategy` implementations?**
@@ -273,7 +273,7 @@ This mirrors the real MIMIC-III distribution: most ICU patients are stable (Low 
 
 **Why `input_dim=10` instead of 108?**
 
-The full production model has 108 input features. Using 108 in every test would require 200×108 = 21,600 float32 values per test, and a 10×(108→128→64→32→1) DNN which is much slower to train than 10→128→64→32→1. The `mini_model` and `synthetic_client_data` use `input_dim=10` to make tests run in milliseconds instead of seconds. The architecture logic (layer counts, activations, weight shapes) is identical regardless of input dimension.
+The full production model has 108 input features. Using 108 in every test would require 200×108 = 21,600 float32 values per test, and the full 108→256→128→64→1 DNN (69,121 parameters) is much slower to train than 10→256→128→64→1. The `mini_model` and `synthetic_client_data` use `input_dim=10` to make tests run in milliseconds instead of seconds. The architecture logic (layer counts, activations, weight shapes) is identical regardless of input dimension.
 
 ### `mini_model(input_dim=10)` — Tiny DNN for Fast Testing
 
@@ -284,7 +284,7 @@ def mini_model():
     return model
 ```
 
-This is an `ICUModel` with input dimension 10 instead of 108. The architecture is identical — same 4 layers (10→128→64→32→1), same ReLU activations, same output layer. Using this in tests means training completes in a fraction of a second.
+This is an `ICUModel` with input dimension 10 instead of 108. The architecture is identical — same 4 Linear layers (10→256→128→64→1), same ReLU activations, same 3 Dropout(0.3) layers, same output layer. Using this in tests means training completes in a fraction of a second.
 
 ### `mini_weights(model)` — Serialised Weight List
 
@@ -323,7 +323,7 @@ This fixture is a "factory" — it returns a function `_insert()` rather than th
 
 ## 6. Phase 1 — Database FL Helpers (`test_db_fl.py`)
 
-**Goal:** Test every `db.py` function related to the FL training table that is NOT already covered by `test_db_unit.py`. The ClinIQ DB tests cover `patient_vitals`, `prediction_history`, and `sample_patients`. This file covers `fl_training`, the table that stores the 48,150 MIMIC-III patient rows used for federated training.
+**Goal:** Test every `db.py` function related to the FL training table that is NOT already covered by `test_db_unit.py`. The ClinIQ DB tests cover `patient_vitals`, `prediction_history`, and `sample_patients`. This file covers `fl_training`, the table that stores the MIMIC-III patient rows used for federated training (tens of thousands of rows, split across the 3 hospitals).
 
 **No ML model load. No real database touched.**
 
@@ -399,7 +399,7 @@ Unlike the ClinIQ tables (`patient_vitals`, etc.), the `fl_training` table is cr
 | # | Test | Why it matters |
 |---|---|---|
 | 16 | `fl_training` table created when populated via pandas `to_sql` | Verifies that the migration's `df.to_sql('fl_training', conn)` call actually creates the table with the right columns |
-| 17 | `client_id` index (`idx_ft_client`) exists after first insert | `get_fl_client_data` uses `WHERE client_id = ?`. Without an index, this query scans ALL 48,150 rows for every client data load — 3× per training round × 100 rounds = 300 full table scans. The index makes this query ~100× faster |
+| 17 | `client_id` index (`idx_ft_client`) exists after first insert | `get_fl_client_data` uses `WHERE client_id = ?`. Without an index, this query scans ALL rows (tens of thousands) for every client data load — 3× per training round × 100 rounds = 300 full table scans. The index makes this query ~100× faster |
 | 18 | `created_at` timestamp auto-set on INSERT (trigger) | The `trg_ft_created_at` trigger automatically sets the timestamp. Without it, every insert would need to manually include the current time |
 | 19 | `init_db()` safely skips `fl_training` trigger if table absent | `init_db()` is called before migration. If the trigger creation references the `fl_training` table and the table doesn't exist yet, SQLite would throw an error. The `IF NOT EXISTS` guard prevents this |
 
@@ -416,22 +416,25 @@ Unlike the ClinIQ tables (`patient_vitals`, etc.), the `fl_training` table is cr
 
 **Goal:** Test every function in `model_utils.py` as pure Python with small synthetic data. No database, no file I/O. Uses the `mini_model` fixture (10-dimensional input instead of 108).
 
-This is the largest single test file — 87 tests across 11 sub-sections.
+This is the largest single test file — 91 tests across 11 sub-sections.
 
-### 2A — `ICUModel` Architecture Tests (Tests 1–9)
+### 2A — `ICUModel` Architecture Tests (Tests 1–9, plus 7a and 7b)
 
-`ICUModel` is the PyTorch DNN. These tests verify its architecture is exactly correct.
+`ICUModel` is the PyTorch DNN. These tests verify its architecture is exactly correct. The current network is **108 → 256 → 128 → 64 → 1** with ReLU and Dropout 0.3 after each hidden layer (69,121 trainable parameters). In an earlier version it was 108 → 128 → 64 → 32 → 1 with no Dropout.
 
 ```python
 class ICUModel(nn.Module):
-    def __init__(self, input_dim):
+    def __init__(self, input_dim, hidden=(256, 128, 64), dropout=0.3):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, 128), nn.ReLU(),
-            nn.Linear(128, 64),        nn.ReLU(),
-            nn.Linear(64, 32),         nn.ReLU(),
-            nn.Linear(32, 1),
-        )
+        layers = []
+        prev = input_dim
+        for width in hidden:
+            layers += [nn.Linear(prev, width), nn.ReLU()]
+            if dropout > 0:
+                layers.append(nn.Dropout(dropout))
+            prev = width
+        layers.append(nn.Linear(prev, 1))
+        self.net = nn.Sequential(*layers)
     
     def forward(self, x):
         return self.net(x)
@@ -441,10 +444,12 @@ class ICUModel(nn.Module):
 |---|---|---|
 | 1 | `ICUModel(10).forward(x)` returns tensor of shape `(n, 1)` | The output shape `(n, 1)` not `(n,)` is critical — the loss function expects `(batch_size, 1)` predictions and `(batch_size, 1)` targets. A shape mismatch causes a broadcasting error during loss computation |
 | 2 | `ICUModel(108).forward(x)` works with real input dim | Verifies that the production 108-dimensional model can do a forward pass without shape errors |
-| 3 | Architecture: 4 Linear layers + 3 ReLU in `.net` | Documents the intended architecture. If someone accidentally adds a Dropout or LayerNorm (which we know are incompatible with FL — explained in MODEL_DISCUSSION.md), this test fails |
-| 4–7 | Layer dimensions: `(input→128)`, `(128→64)`, `(64→32)`, `(32→1)` | Each dimension is load-bearing. If anyone changes `128` to `64` to "speed up training," the model's weights become incompatible with the saved `federated_model.pth`, causing a shape mismatch when loading |
-| 8 | Eval mode outputs deterministic values | `model.eval()` ensures no stochastic behaviour (e.g., Dropout — though we have none). Verifies that the same input always produces the same output in inference mode |
-| 9 | Parameter count matches architecture formula | For `input_dim=10`: `(10×128+128) + (128×64+64) + (64×32+32) + (32×1+1) = 1408 + 8256 + 2080 + 33 = 11,777`. For `input_dim=108`: `(108×128+128) + ... ≈ 22,833`. This locks in the exact model size |
+| 3 | Architecture: 4 Linear layers + 3 ReLU + 3 Dropout layers (p = 0.3) in `.net` | Documents the intended architecture. If someone removes Dropout, changes its rate, or adds an extra layer (e.g., LayerNorm, which collapsed the prediction range in an earlier experiment), this test fails |
+| 4–7 | Layer dimensions: `(input→256)`, `(256→128)`, `(128→64)`, `(64→1)` | Each dimension is load-bearing. If anyone changes `256` to `128` to "speed up training," the model's weights become incompatible with the saved `federated_model.pth`, causing a shape mismatch when loading |
+| 7a | Dropout is ON in train mode and OFF in eval mode | In `model.train()` two forward passes on the same input give different outputs (random dropout masks); in `model.eval()` they are identical. Training uses dropout, while evaluation, SHAP and the backend all call `model.eval()` so predictions are repeatable |
+| 7b | Custom `hidden=` and `dropout=` arguments are respected | `ICUModel(10, hidden=(8, 4), dropout=0.0)` builds Linear layers of width 8 → 4 → 1 and no Dropout layers. This keeps the class usable for experiments (e.g., the earlier no-dropout network) without editing code |
+| 8 | Eval mode outputs deterministic values | `model.eval()` turns Dropout off, so there is no stochastic behaviour. Verifies that the same input always produces the same output in inference mode |
+| 9 | Parameter count matches architecture formula | For `input_dim=10`: `(10×256+256) + (256×128+128) + (128×64+64) + (64×1+1) = 2,816 + 32,896 + 8,256 + 65 = 44,033`. For `input_dim=108`: `(108×256+256) + 32,896 + 8,256 + 65 = 69,121`. Dropout has no parameters. This locks in the exact model size |
 
 **Why the parameter count test matters:**
 
@@ -498,7 +503,7 @@ With .view(-1, 1):
 
 ### 2C — `weighted_mse_loss()` (Tests 14–18)
 
-The custom loss function that gives more training weight to high-SOFA patients:
+An **optional** loss function that gives more training weight to high-SOFA patients. In an earlier version this was the training loss. The current model trains with **plain MSE**; `weighted_mse_loss` is only used when `train_model(..., weighted_loss=True)` is passed (on the dataset_v2 data the weighted loss pushed every prediction upward and raised MAE without catching more high-risk patients). The function is still tested so that option keeps working:
 
 ```python
 def weighted_mse_loss(predictions, targets):
@@ -516,7 +521,7 @@ def weighted_mse_loss(predictions, targets):
 | 17 | Loss is positive for non-zero error | Positivity | Negative loss would cause the optimizer to minimise in the wrong direction |
 | 18 | Loss is batch-mean normalized | Normalization check | Without normalization, a batch of high-SOFA patients would have ~13× higher loss than a low-SOFA batch, causing wildly variable gradient magnitudes across rounds |
 
-**Worked example — why weighting helps:**
+**Worked example — what weighting does (used only with `weighted_loss=True`):**
 
 ```
 Without weighting (plain MSE):
@@ -574,12 +579,13 @@ This dramatically increases the High-Risk representation in each batch without r
 This is the core training function — it runs one epoch of gradient descent on a hospital's local data.
 
 ```python
-def train_model(model, X, y, optimizer, global_params=None, mu=0.0,
-                oversample=False, grad_clip=None):
+def train_model(model, X, y, epochs=10, lr=0.001, batch_size=64,
+                grad_clip=None, oversample=False, global_params=None, mu=0.0,
+                weighted_loss=False):
     # Setup DataLoader (with or without WeightedRandomSampler)
     # For each batch:
     #   Forward pass → predictions
-    #   Compute weighted MSE loss
+    #   Compute loss: plain MSE by default, weighted_mse_loss if weighted_loss=True
     #   If FedProx (mu > 0): add proximal term
     #   Backward pass → gradients
     #   If gradient clipping: clip
@@ -594,6 +600,8 @@ def train_model(model, X, y, optimizer, global_params=None, mu=0.0,
 | 26 | Loss decreases from epoch 1 to epoch 5 on same data | Verifies that gradient descent is actually working. If this fails, the optimizer, loss function, or model forward pass is broken |
 | 27–28 | Works with `global_params=None, mu=0` AND with `global_params=weights, mu=0.5` | Tests both code paths — FedAvg (no proximal term) and FedProx (with proximal term). Both must work |
 | 29–30 | Works with `oversample=True` AND `oversample=False` | Tests both DataLoader configurations |
+| 30a | Works with `weighted_loss=True` (returns a finite loss) | Keeps the optional weighted-loss branch working, so the earlier loss can be restored with one argument |
+| 30b | Default loss is plain MSE | Trains one epoch with `lr=0`, one full-size batch and `dropout=0.0`, then checks the returned loss equals the batch-mean `(pred − y)²` exactly. If someone silently switches the default back to the weighted loss, this test fails |
 | 31–32 | Works with `grad_clip=1.0` AND `grad_clip=None` | Tests both gradient clipping configurations |
 | 33 | `lr=1e-5` still trains without NaN | The LR decay formula can reduce LR to very small values over 100 rounds. At `lr=1e-5`, gradient updates are tiny but must not underflow to NaN |
 | 34 | FedProx proximal term is added to loss when `mu > 0` | The FedProx term `(mu/2) × ||w - w_global||²` must visibly increase the loss compared to no proximal term on the same data. This verifies the term is actually being added, not silently skipped |
@@ -678,7 +686,7 @@ risk_bands:
   macro: {precision, recall, f1, ...}
 
 high_risk_alert:
-  predicted_sofa_threshold: 8.0
+  predicted_sofa_threshold: 7.0      # = ALERT_THRESHOLD (default argument)
   sensitivity: ...
   specificity: ...
 ```
@@ -690,7 +698,7 @@ high_risk_alert:
 | 45 | `confusion_matrix` is 3×3 list | Three classes = 3×3 matrix. Wrong dimensions mean a class was merged or added |
 | 46 | Per-class dict has all 5 keys: `precision`, `recall`, `sensitivity`, `specificity`, `f1` | All 5 are displayed in the SOFA Validation Drawer |
 | 47 | `sensitivity == recall` for all classes | `sensitivity` and `recall` are the same metric (TP / (TP + FN)). They are aliased in the return value — the test verifies the alias is consistent |
-| 48 | `high_risk_alert.predicted_sofa_threshold == 8.0` | Locks in the ALERT_THRESHOLD=8.0 value. If anyone changes this threshold without understanding why it was chosen (explained in INPUT_OUTPUT.md), this test fails immediately |
+| 48 | `high_risk_alert.predicted_sofa_threshold == 7.0` by default | `compute_sofa_risk_metrics()` defaults to `ALERT_THRESHOLD` from `model_utils.py`, now 7.0 (it was 8.0 in an earlier version). Locks in the value: if anyone changes this threshold without understanding why it was chosen (explained in INPUT_OUTPUT.md), this test fails immediately. The ClinIQ backend tests separately check that `ml_service.py` imports the same value |
 
 **Mathematical invariant tests (49–51, 55–58):**
 
@@ -954,7 +962,7 @@ def test_fedavg_weighted_by_sample_count():
 
 ### 3C — `_fedyogi()` (Tests 18–25)
 
-`_fedyogi` is more complex than `_fedavg`. It implements the FedYogi adaptive optimisation strategy:
+`_fedyogi` is more complex than `_fedavg`. It implements the FedYogi adaptive optimisation strategy. Note: FedYogi is now an **optional** algorithm in the Streamlit simulator — the real training run (`train_federated.py`) uses FedAvg + FedProx by default (`USE_FEDYOGI = False`). These tests keep the optional mode correct:
 
 ```
 delta    = global_weights - averaged_client_weights   (pseudo-gradient)
@@ -1005,14 +1013,14 @@ def load_training_metadata():
     except FileNotFoundError:
         return {
             "num_rounds": 100,
-            "final_mae": 1.8968,
-            "final_r2": 0.5995,
+            "final_mae": 1.8968,   # historical fallback (earlier model)
+            "final_r2": 0.5995,    # historical fallback (earlier model)
             "hospitals": 3,
             ...
         }
 ```
 
-Tests 27–30 lock in the fallback values. If someone runs the FL training again and the new model has worse performance, they might update `training_metadata.json` — but the fallback values (shown when no file exists) should remain as the documented best model performance. The tests prevent silently changing these reference values.
+Tests 27–30 lock in the fallback values. **Historical note:** the fallback numbers (`final_mae 1.8968`, `final_r2 0.5995`) are from an earlier model on the old dataset; they are only shown if `training_metadata.json` is missing. The current model's real numbers (MAE 1.8247, R² 0.4725) always come from `training_metadata.json`, and the file-override tests (31–32) check that the file wins over the fallback. The fallback tests just stop these placeholder values from changing silently.
 
 ### 3E — Chart Builder Tests (Tests 33–41)
 
@@ -1034,7 +1042,7 @@ def test_training_chart_returns_none_for_empty_data():
 _heatmap_chart slices: weights.T[:40, :64]
 ```
 
-The weight heatmap shows the first layer's weight matrix as a colour grid. The full first layer matrix is `128 × 108`. Plotting all 13,824 pixels would be slow — the slice takes the first 40 neurons × first 64 features as a representative sample. The test verifies the correct slice is used — if the dimensions are wrong, the heatmap shows data from the wrong layer or wrong neurons.
+The weight heatmap shows the first layer's weight matrix as a colour grid. The full first layer matrix is `256 × 108`. Plotting all 27,648 pixels would be slow — the slice takes the first 40 neurons × first 64 features as a representative sample. The test verifies the correct slice is used — if the dimensions are wrong, the heatmap shows data from the wrong layer or wrong neurons.
 
 ### 3F — `_network_diagram()` (Tests 42–50)
 
@@ -1133,7 +1141,7 @@ These tests document and lock in the finalized hyperparameters. Each value was c
 
 **The key responsibility of `SaveBestStrategy`:**
 
-1. After each round: call the parent `FedYogi` aggregation (`super().aggregate_fit`)
+1. After each round: call the parent `FedAvg` aggregation (`super().aggregate_fit`) — in an earlier version the parent was FedYogi
 2. Set the aggregated weights into the global model
 3. Save the aggregated model as `federated_model.pth` (latest checkpoint)
 4. After evaluating: if this round's loss < best loss seen so far, save `federated_model_best.pth`
@@ -1175,6 +1183,7 @@ Without this test, a bug could cause the server to save the round-2 (worse) mode
 ```python
 def test_metadata_merge_with_existing_file(mocker, tmp_path):
     # Existing metadata.json already has final_mae and final_r2 from real training
+    # (the test uses fixed example values — historical numbers from an earlier model)
     existing_metadata = {"final_mae": 1.8968, "final_r2": 0.5995, "best_round": 10}
     
     # Write existing file
@@ -1231,7 +1240,7 @@ def make_noniid_split(X, y, seed=42):
 
 ### 6B and 6C — HospitalClient and SaveBestStrategy (train variant)
 
-These are nearly identical to the tests in Phases 4 and 5, but for the variants in `train_federated.py`. The key additional test:
+These are nearly identical to the tests in Phases 4 and 5, but for the variants in `train_federated.py`. In this script `SaveBestStrategy` extends `_BaseStrategy`, which is **FedAvg by default** and FedYogi only if `USE_FEDYOGI = True`. The strategy tests patch `_BaseStrategy` so they work for either parent, and `test_strategy_aggregate_evaluate_calls_super` checks the call goes to the parent strategy (FedAvg by default). The key additional test:
 
 **Test 16 — `configure_fit` adds `server_round` to config:**
 
@@ -1255,7 +1264,8 @@ NUM_ROUNDS == 100
 EPOCHS_PER_ROUND == 3
 BATCH_SIZE == 64
 MU_FEDPROX == 0.5
-SERVER_ETA == 0.01
+SERVER_ETA == 0.001      # only used if USE_FEDYOGI is True
+USE_FEDYOGI is False     # → strategy is FedAvg, not FedYogi
 SERVER_BETA1 == 0.9
 SERVER_BETA2 == 0.99
 USE_DP == False
@@ -1265,9 +1275,10 @@ LR_DECAY == 0.99
 
 Every one of these constants was determined through the optimization journey documented in `TRAIN_FEDERATED.md`. The full rationale:
 
-- `SERVER_ETA=0.01`: FedYogi's global learning rate. Too high → the explosion/recovery cycle becomes unrecoverable. Too low → convergence stalls.
-- `SERVER_BETA1=0.9`: Momentum decay. Standard Adam value, tuned for the clinical data distribution.
-- `SERVER_BETA2=0.99`: Adaptive variance decay. The `0.99` (not `0.999` as in standard Adam) causes faster adaptation to changing gradient statistics between rounds.
+- `USE_FEDYOGI=False`: The server aggregates with plain **FedAvg** (FedProx stays on at the clients). `test_use_fedyogi_default_is_false` checks the flag, and `test_strategy_is_fedavg_by_default` checks the built strategy is a `FedAvg` and not a `FedYogi`. In an earlier version FedYogi (η=0.01) was the aggregator; on dataset_v2 it made the server loss explode, and FedAvg + plain MSE gave better results.
+- `SERVER_ETA=0.001`: FedYogi's global learning rate — only used if `USE_FEDYOGI` is set back to True. It was 0.01 in an earlier version, which made the server loss explode.
+- `SERVER_BETA1=0.9`: FedYogi momentum decay (only used if `USE_FEDYOGI` is True). Standard Adam value.
+- `SERVER_BETA2=0.99`: FedYogi adaptive variance decay (only used if `USE_FEDYOGI` is True). The `0.99` (not `0.999` as in standard Adam) causes faster adaptation to changing gradient statistics between rounds.
 - `MU_FEDPROX=0.5`: Proximal weight. At 0.5, drift is reduced by 23% compared to FedAvg without significantly slowing convergence. Values above 1.0 over-constrain learning.
 
 These tests are "configuration documentation" — they fail if anyone "tries" a different value, forcing them to understand the optimization history before making changes.
@@ -1336,7 +1347,7 @@ The complete test list:
 | 1 | 3 hospitals each train → produce 3 weight lists | All 3 training runs complete successfully |
 | 2 | `_fedavg` on 3 weight sets → correct layer shapes | Aggregation preserves all layer dimensions |
 | 3 | After `_fedavg`, forward pass produces valid output | The aggregated model is a working DNN — not corrupted |
-| 4 | `_fedyogi` on 3 weight sets → bounded weights | FedYogi numerical stability holds in practice |
+| 4 | `_fedyogi` on 3 weight sets → bounded weights | Numerical stability of the simulator's optional FedYogi mode holds in practice |
 | 5 | Round 2 loss < Round 1 loss | Convergence — the aggregated model improves with each round |
 | 6 | `fl_thread` state transitions: idle→running→distributing→training→done | The simulation state machine progresses correctly through all phases |
 | 7 | `_read_state()["current_round"]` == 1 after 1 round | State is updated after each round |
@@ -1345,7 +1356,7 @@ The complete test list:
 | 10 | `_STOP.set()` → status becomes "stopped" | The stop signal is respected — simulation can be halted |
 | 11 | FedProx (μ=0.5) → smaller weight delta vs FedAvg (μ=0) | FedProx reduces client drift — the key clinical property it was chosen for |
 | 12 | `_read_state()["best_round"]` == 1 after single round | The only round is always the best round |
-| 13 | `layer1_weights` shape is `(128, input_dim)` | The heatmap visualization gets the first layer's weight matrix in the correct shape |
+| 13 | `layer1_weights` shape is `(256, input_dim)` | The heatmap visualization gets the first layer's weight matrix in the correct shape |
 | 14 | `pre_agg_flat` and `post_agg_flat` have same length | Before/after aggregation histograms must have compatible shapes for comparison |
 
 **The FedProx drift reduction test (Test 11) explained:**
@@ -1486,11 +1497,11 @@ def run_simulation(n_rounds, algorithm="FedAvg", mu=0.0, use_dp=False):
 | 5 | Global R² recorded (can be negative on round 1) | R² is computed and stored — can be negative on the first round (model hasn't learned enough yet) |
 | 6 | All 3 hospitals have `mae`, `r2`, `loss` in client metrics | Per-hospital metrics are tracked for all 3 hospitals |
 | 7 | Weight stats recorded for all 3 hospitals | Mean, std, and delta_mean of weights are recorded per hospital |
-| 8 | `layer1_weights` has shape `(128, input_dim)` | The first layer's weights (used for the heatmap) have the expected dimensions |
+| 8 | `layer1_weights` has shape `(256, input_dim)` | The first layer's weights (used for the heatmap) have the expected dimensions |
 | 9 | `pre_agg_flat` and `post_agg_flat` are 1D arrays of same length | Histogram data arrays are compatible for before/after comparison |
 | 10 | 3-round sim → `global_losses` has length 3 | One loss value per completed round |
 | 11 | 3-round sim: global loss trend is non-increasing | Convergence is occurring — the simulation learns over multiple rounds |
-| 12 | FedYogi sim outperforms FedAvg on same data after 5 rounds | FedYogi's adaptive optimisation produces lower final loss than plain averaging |
+| 12 | 5-round FedYogi sim converges and differs from FedAvg | The simulator's optional FedYogi mode lowers the loss from round 1 to round 5, and gives a different final loss than FedAvg (so the two modes are really different algorithms) |
 | 13 | FedProx (μ=0.5): each client's `delta_mean` < FedAvg delta_mean | FedProx reduces client drift — verified at the system level, not just the unit level |
 | 14 | `_STOP.set()` before round 1 → status="stopped", no rounds run | The stop signal is checked at the start of each round — stopping before round 1 prevents any training |
 | 15–17 | `round_log` has 1 entry with correct structure | The round log (used by the training chart) has one entry per round with the correct field names |
@@ -1506,28 +1517,27 @@ def test_global_loss_non_increasing_over_3_rounds(synthetic_data):
     assert len(losses) == 3
     
     # Overall trend should be downward (allow one non-improvement round)
-    # Not every round must improve — the FedYogi explosion phase can cause a brief spike
+    # Not every round must improve — local noise (and, in FedYogi mode, its warm-start) can cause a brief spike
     n_improvements = sum(1 for i in range(1, len(losses)) if losses[i] < losses[i-1])
     assert n_improvements >= len(losses) // 2   # majority of rounds must improve
 ```
 
-The test allows for one non-improving round because, as documented in `TRAIN_FEDERATED.md`, the FedYogi warm-start causes a brief exploration-explosion phase. Requiring strict monotone decrease would cause the test to fail on the first round of a 2-round sim if that round happened to land in the exploration phase.
+The test allows for one non-improving round because training is stochastic, and (as documented in `TRAIN_FEDERATED.md` for the earlier FedYogi setup) an adaptive server optimiser can cause a brief exploration-explosion phase. Requiring strict monotone decrease would cause the test to fail on the first round of a 2-round sim if that round happened to land in the exploration phase.
 
-**The FedYogi vs FedAvg comparison (Test 12) in detail:**
+**The FedYogi simulation test (Test 12) in detail:**
 
 ```python
-@pytest.mark.slow
-def test_fedyogi_outperforms_fedavg(synthetic_data):
-    fedavg_state = run_simulation(n_rounds=5, algorithm="FedAvg")
-    fedyogi_state = run_simulation(n_rounds=5, algorithm="FedYogi")
-    
-    fedavg_final_loss  = fedavg_state["global_losses"][-1]
-    fedyogi_final_loss = fedyogi_state["global_losses"][-1]
-    
-    assert fedyogi_final_loss < fedavg_final_loss
+def test_fedyogi_5round_simulation_converges():
+    # FedYogi — 5 rounds, then FedAvg — 5 rounds, on the same synthetic clients
+    losses_yogi = state_yogi["global_losses"]
+    losses_avg  = state_avg["global_losses"]
+
+    assert len(losses_yogi) == 5
+    assert losses_yogi[-1] < losses_yogi[0]      # FedYogi converges
+    assert losses_yogi[-1] != losses_avg[-1]     # the two algorithms really differ
 ```
 
-This is a high-value test that verifies the algorithm choice is justified. In the real training run, FedYogi achieved R²=0.2229 compared to FedAvg's R²=0.2148 — a measurable improvement. The system test verifies this relationship holds on synthetic data too. If a bug in `_fedyogi` caused it to perform worse than `_fedavg`, this test would catch it immediately.
+FedYogi is an **optional** algorithm in the Streamlit simulator; the real training run uses FedAvg + FedProx (`USE_FEDYOGI = False`). This test checks that the optional mode still trains and is not secretly the same as FedAvg. It does **not** claim FedYogi is better: on 5 rounds of synthetic data a fair "which is better" comparison is not possible, and on the real dataset_v2 data FedAvg did better (FedYogi with η=0.01 made the server loss explode). *Historical note:* an earlier version of this test asserted "FedYogi beats FedAvg", based on an old training run (R² 0.2229 vs 0.2148).
 
 ---
 
@@ -1592,6 +1602,14 @@ pytest tests/ -v -m "not slow"
 
 # Full suite including all slow tests (for final submission/demo)
 pytest tests/ -v
+# Current result: 513 passed (ClinIQ backend + FL)
+
+# ── FRONTEND (ClinIQ dashboard, Vitest) ────────────────────────────
+# The frontend test files live in icu_monitor/tests/, outside frontend/,
+# so they need a symlink to find packages (gitignored, create once):
+cd icu_monitor
+ln -s frontend/node_modules node_modules
+cd frontend && npx vitest run    # current result: 232 passed (27 files)
 ```
 
 **Recommended development workflow:**
@@ -1636,19 +1654,20 @@ Before a demo or presentation:
 
 | Phase | Status | File |
 |---|---|---|
-| 1 — DB FL helpers | 🔲 Not started | `tests/fl/unit/test_db_fl.py` |
-| 2 — model_utils unit | 🔲 Not started | `tests/fl/unit/test_model_utils.py` |
-| 3 — FL dashboard fns | 🔲 Not started | `tests/fl/unit/test_fl_dashboard_fns.py` |
-| 4 — Client logic | 🔲 Not started | `tests/fl/unit/test_client_logic.py` |
-| 5 — Server strategy | 🔲 Not started | `tests/fl/unit/test_server_strategy.py` |
-| 6 — Train federated fns | 🔲 Not started | `tests/fl/unit/test_train_federated_fns.py` |
-| 7 — DB ↔ Model integration | 🔲 Not started | `tests/fl/integration/test_db_model_integration.py` |
-| 8 — FL round integration | 🔲 Not started | `tests/fl/integration/test_fl_round_integration.py` |
-| 9 — Migration integration | 🔲 Not started | `tests/fl/integration/test_migrate_to_db.py` |
-| 10 — System tests | 🔲 Not started | `tests/fl/system/test_fl_system.py` |
+| 1 — DB FL helpers | ✅ Implemented | `tests/fl/unit/test_db_fl.py` |
+| 2 — model_utils unit | ✅ Implemented | `tests/fl/unit/test_model_utils.py` |
+| 3 — FL dashboard fns | ✅ Implemented | `tests/fl/unit/test_fl_dashboard_fns.py` |
+| 4 — Client logic | ✅ Implemented | `tests/fl/unit/test_client_logic.py` |
+| 5 — Server strategy | ✅ Implemented | `tests/fl/unit/test_server_strategy.py` |
+| 6 — Train federated fns | ✅ Implemented | `tests/fl/unit/test_train_federated_fns.py` |
+| 7 — DB ↔ Model integration | ✅ Implemented | `tests/fl/integration/test_db_model_integration.py` |
+| 8 — FL round integration | ✅ Implemented | `tests/fl/integration/test_fl_round_integration.py` |
+| 9 — Migration integration | ✅ Implemented | `tests/fl/integration/test_migrate_to_db.py` |
+| 10 — System tests | ✅ Implemented | `tests/fl/system/test_fl_system.py` |
 
 ---
 
 *Documentation for ICU CDSS Capstone Project*
-*FL test suite: 21 DB tests + 87 model_utils tests + 50 dashboard tests + 19 client tests + 19 server tests + 30 train_federated tests + 10 DB↔model integration tests + 14 FL round integration tests + 17 migration tests + 17 system tests*
+*FL test suite: 21 DB tests + 91 model_utils tests + 50 dashboard tests + 22 client tests + 19 server tests + 32 train_federated tests + 10 DB↔model integration tests + 14 FL round integration tests + 19 migration tests + 17 system tests*
+*Whole Python suite (`pytest tests`, ClinIQ backend + FL): 513 passed · Frontend Vitest: 232 passed (27 files)*
 *Tools: pytest + pytest-mock + monkeypatch + numpy.testing (all phases)*

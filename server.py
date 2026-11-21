@@ -1,14 +1,13 @@
 """
 Flower Federated Learning — Server
 ====================================
-Run this FIRST in a terminal:
-    cd icu_monitor
-    python server.py
+Run this FIRST in a terminal from the repo root (where models/ lives):
+    python icu_monitor/server.py
 
 Then launch 3 clients in 3 separate terminals:
-    python client.py --client_id 0
-    python client.py --client_id 1
-    python client.py --client_id 2
+    python icu_monitor/client.py --client_id 0
+    python icu_monitor/client.py --client_id 1
+    python icu_monitor/client.py --client_id 2
 
 The server waits for all 3 clients before starting each round.
 Best model is saved after every improvement round.
@@ -43,6 +42,11 @@ _best_round = 0
 # =============================================================
 # CUSTOM STRATEGY
 # =============================================================
+def _fit_config(server_round: int) -> dict:
+    """Pass current round number to clients so they can decay the learning rate."""
+    return {"server_round": server_round}
+
+
 class SaveBestStrategy(fl.server.strategy.FedAvg):
 
     def aggregate_fit(self, server_round, results, failures):
@@ -52,12 +56,14 @@ class SaveBestStrategy(fl.server.strategy.FedAvg):
         if aggregated_params is not None:
             weights = parameters_to_ndarrays(aggregated_params)
             set_weights(global_model, weights)
-            # Always save latest model
+            # Save every round to a rolling file for crash-recovery only.
+            # The production model (federated_model.pth) is only updated
+            # in aggregate_evaluate when a new best loss is found (T6 fix).
             torch.save(
                 global_model.state_dict(),
-                MODEL_PATH + "federated_model.pth"
+                MODEL_PATH + "federated_model_latest.pth"
             )
-            print(f"[Server] Round {server_round:02d} — model updated")
+            print(f"[Server] Round {server_round:02d} — aggregated")
         return aggregated_params, metrics
 
     def aggregate_evaluate(self, server_round, results, failures):
@@ -72,11 +78,12 @@ class SaveBestStrategy(fl.server.strategy.FedAvg):
             if avg_loss < _best_loss:
                 _best_loss  = avg_loss
                 _best_round = server_round
+                # Save best round to the production path the dashboard loads.
                 torch.save(
                     global_model.state_dict(),
-                    MODEL_PATH + "federated_model_best.pth"
+                    MODEL_PATH + "federated_model.pth"
                 )
-                print(f"  ← best model saved ✓", end="")
+                print(f"  ← new best! Saved to federated_model.pth ✓", end="")
             print()
         return super().aggregate_evaluate(server_round, results, failures)
 
@@ -87,6 +94,7 @@ strategy = SaveBestStrategy(
     min_fit_clients=3,
     min_evaluate_clients=3,
     min_available_clients=3,
+    on_fit_config_fn=_fit_config,
 )
 
 # =============================================================
@@ -109,8 +117,8 @@ fl.server.start_server(
 print()
 print(f"[Server] Training complete.")
 print(f"[Server] Best round: {_best_round} (loss: {_best_loss:.5f})")
-print(f"[Server] Best model → {MODEL_PATH}federated_model_best.pth")
-print(f"[Server] Latest model → {MODEL_PATH}federated_model.pth")
+print(f"[Server] Best model (production) → {MODEL_PATH}federated_model.pth")
+print(f"[Server] Latest round (backup)   → {MODEL_PATH}federated_model_latest.pth")
 
 # Save partial training metadata so the app's FL info panel shows up-to-date
 # configuration. MAE/R² are NOT included here (server has no test data) —
@@ -121,7 +129,7 @@ _meta = {
     "aggregation":        "FedAvg",
     "best_round":         int(_best_round),
     "best_eval_loss":     round(_best_loss, 5),
-    "model_architecture": "108 → 128 → 64 → 32 → 1  (ReLU, no Dropout, FedProx)",
+    "model_architecture": "108 → 256 → 128 → 64 → 1  (ReLU, Dropout 0.3, FedProx)",
     "input_features":     int(input_dim),
     "source":             "server.py (real FL — MAE/R² not available here)",
     "completed_at":       datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

@@ -201,8 +201,14 @@ def test_normal_ranges_spo2_bounds():
 # ── ALERT_THRESHOLD ───────────────────────────────────────────────────────────
 
 @pytest.mark.unit
-def test_alert_threshold_is_8():
-    assert ALERT_THRESHOLD == 8.0
+def test_alert_threshold_is_7():
+    assert ALERT_THRESHOLD == 7.0
+
+
+@pytest.mark.unit
+def test_alert_threshold_matches_training_constant():
+    import model_utils
+    assert ALERT_THRESHOLD == model_utils.ALERT_THRESHOLD
 
 
 # ── load_training_metadata ────────────────────────────────────────────────────
@@ -213,28 +219,33 @@ def test_load_training_metadata_returns_dict():
     assert isinstance(meta, dict)
 
 
+# These read the live models/training_metadata.json, which changes on every
+# retrain — so check that the values are sane, not that they equal one run.
+
 @pytest.mark.unit
 def test_load_training_metadata_final_mae():
     meta = load_training_metadata()
-    assert meta["final_mae"] == pytest.approx(1.8968, rel=1e-3)
+    assert 0.0 < meta["final_mae"] < 5.0
 
 
 @pytest.mark.unit
 def test_load_training_metadata_final_r2():
     meta = load_training_metadata()
-    assert meta["final_r2"] == pytest.approx(0.5995, rel=1e-3)
+    assert 0.0 < meta["final_r2"] <= 1.0
 
 
 @pytest.mark.unit
 def test_load_training_metadata_test_samples():
     meta = load_training_metadata()
-    assert meta["test_samples"] == 2559
+    assert isinstance(meta["test_samples"], int) and meta["test_samples"] > 0
 
 
 @pytest.mark.unit
 def test_load_training_metadata_train_samples():
     meta = load_training_metadata()
-    assert meta["train_samples"] == 12795
+    assert isinstance(meta["train_samples"], int)
+    # Phase 0 uses an 80/20 split, so train ≈ 4 × test
+    assert meta["train_samples"] == pytest.approx(4 * meta["test_samples"], rel=0.05)
 
 
 @pytest.mark.unit

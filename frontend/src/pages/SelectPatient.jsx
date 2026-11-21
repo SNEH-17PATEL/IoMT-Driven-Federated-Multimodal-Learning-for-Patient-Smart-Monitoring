@@ -606,7 +606,7 @@ export default function SelectPatient() {
           {/* Footer */}
           <p className="text-center text-[11px] mt-16"
             style={{ color: footerCl, fontFamily: 'var(--font-display)', letterSpacing: '0.04em' }}>
-            Research prototype · MIMIC-III dataset · Not for clinical use
+            Research prototype · Clinical simulation data · Not for clinical use
           </p>
         </div>
       </div>

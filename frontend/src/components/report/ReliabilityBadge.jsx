@@ -1,5 +1,5 @@
 const VERDICTS = {
-  High:     { blurb: 'Validated across all quality checks' },
+  High:     { blurb: 'Passed all reliability checks'       },
   Moderate: { blurb: 'Passed most validation checks'       },
   Low:      { blurb: 'Failed multiple validation checks'   },
 }

@@ -126,7 +126,7 @@ This makes centralized collaborative ML ethically and legally impossible.
 
 **Dataset Name:** MIMIC-III (Medical Information Mart for Intensive Care III)
 
-**Access Method:** Google BigQuery (project: `mimic-project-2`, dataset: `Dataset`)
+**Access Method:** Google BigQuery (project: `mimic-project-2`, dataset: `dataset_v2` — rebuilt from scratch, see `docs/SQL_COMMANDS.md`; the old dataset `Dataset` was deleted)
 
 **Why MIMIC-III and not MIMIC-IV:**
 MIMIC-III is more stable for preprocessing and experimentation. MIMIC-III has
@@ -139,21 +139,30 @@ well-documented derived tables including pre-computed SOFA scores in
 |---|---|
 | `physionet-data.mimiciii_clinical.chartevents` | Vital signs, GCS, Stress Score |
 | `physionet-data.mimiciii_notes.noteevents` | Clinical notes (nursing, physician) |
-| `physionet-data.mimiciii_derived.sofa` | Pre-computed SOFA scores (target label) |
+| `physionet-data.mimiciii_derived.pivoted_sofa` | Hourly SOFA — `SOFA_24hours` at the matching hour is the target label |
 
-**Final Processed Table:**
-`mimic-project-2.Dataset.ml_dataset_final`
+**dataset_v2 tables:** `cohort`, `vitals_clean`, `vitals_hourly`, `vital_trends`, `latest_vitals`, `gcs_hourly`, `stress_hourly`, `labels`; VIEWs `ml_dataset_final` (5,089,857 hourly rows) and `clinical_notes` (35,799 admissions).
 
-**Dataset Size:**
-- Total ICU samples: 60,188 (one per ICU stay — latest window selected)
-- Clinical notes: 283,208 raw notes (all used for TF-IDF)
-- After TF-IDF merge: 60,188 rows × 109 columns (108 features + sofa_score)
-- Train/test split: 80/20 → 48,150 train, 12,038 test
-- Federated split: 3 hospitals of ~15,889 / 15,890 / 16,371 rows each
+**Final Processed View:**
+`mimic-project-2.dataset_v2.ml_dataset_final`
+
+**Dataset Size (current):**
+- Cohort: adults (age ≥ 16), ICU stay ≥ 6 h → 52,248 ICU stays / 38,304 patients
+- Label: `SOFA_24hours` at the matching hour (from `pivoted_sofa`), not a stay-level value
+- Phase 0 takes the newest row per ICU stay → 52,248 rows × 109 columns (108 features + sofa_score)
+- Train/test split: 80/20 stratified by High Risk (SOFA ≥ 10) → 41,798 train, 10,450 test
+- Test set: 602 High, 2,919 Moderate, 6,929 Low
+- Federated split: 3 IID hospitals of 13,932 / 13,933 / 13,933 rows (each Low 67%, Moderate 27%, High 6%)
+- Missing values filled with 0 before scaling; StandardScaler clipped to ±10
 
 ---
 
 ## 6. BIGQUERY SQL PIPELINE — ALL 12 QUERIES
+
+> **Historical:** the 12 queries below describe the original `Dataset` build. The
+> current data is `dataset_v2`, rebuilt with the commands in `docs/SQL_COMMANDS.md`
+> (hourly vitals on the SOFA timeline, time-matched SOFA label). The 108 input
+> columns are unchanged.
 
 All 12 queries were executed sequentially in Google BigQuery to produce the
 final ML-ready dataset.
@@ -415,7 +424,7 @@ severity scoring system used worldwide by clinicians.
 5. Central Nervous System (GCS score)
 6. Renal (Creatinine and urine output)
 
-**Source in MIMIC-III:** `physionet-data.mimiciii_derived.sofa` (pre-computed)
+**Source in MIMIC-III:** `SOFA_24hours` from `physionet-data.mimiciii_derived.pivoted_sofa`, at the matching hour (dataset_v2). (Earlier build: `mimiciii_derived.sofa`.)
 
 **Risk Classification Thresholds (finalized):**
 
@@ -425,7 +434,7 @@ severity scoring system used worldwide by clinicians.
 | 5 – 9 | 🟡 Moderate Risk |
 | 10 – 24 | 🔴 High Risk |
 
-**Alert threshold:** SOFA ≥ 8 (lower than clinical ≥ 10 to compensate for under-prediction)
+**Alert threshold:** predicted SOFA ≥ 7 (`ALERT_THRESHOLD = 7.0`; lower than clinical ≥ 10 to compensate for under-prediction; was ≥ 8 in an earlier version)
 
 **Model Output:**
 The model predicts raw SOFA directly (0–24). No normalisation. Clipped to [0, 24]
@@ -440,47 +449,55 @@ using np.clip at inference.
 ```
 Input: 108 features (scaled)
   ↓
-Linear(108 → 128) + ReLU
+Linear(108 → 256) + ReLU + Dropout(0.3)
   ↓
-Linear(128 → 64) + ReLU
+Linear(256 → 128) + ReLU + Dropout(0.3)
   ↓
-Linear(64 → 32) + ReLU
+Linear(128 → 64) + ReLU + Dropout(0.3)
   ↓
-Linear(32 → 1)
+Linear(64 → 1)
   ↓
 Output: SOFA score (0–24)
 ```
 
-Class definition: `ICUModel` in `model_utils.py`
-Total parameters: ~23,000 (vs 199,681 with the old 618→256→128→64→1 architecture)
+Class definition: `ICUModel` in `model_utils.py` (defaults `hidden=(256, 128, 64)`, `dropout=0.3`)
+Total parameters: 69,121
 Saved weights: `models/federated_model.pth`
+Dropout is only active during training; evaluation, SHAP and the backend use `model.eval()`.
 
-**Why this architecture (108→128→64→32→1):**
-With ~100 input features, the 2:1 samples-per-parameter ratio (48k samples / 23k params)
-is appropriate for tabular data generalisation. The old 618→256→128→64→1 gave only
-0.5:1, causing over-parameterisation.
+**Why this architecture (108→256→128→64→1 + Dropout):**
+On dataset_v2 with plain MSE and FedAvg, the earlier 108→128→64→32→1 network
+(no Dropout, 24,321 parameters — historical) peaked early and then overfit. Dropout 0.3
+stops the memorisation and the extra width gives room to use it: MAE 1.850 → 1.825,
+R² 0.457 → 0.473, AUROC 0.921 → 0.925 on the same test set. 512-256-128 gave no
+further gain. (An even older 618→256→128→64→1 model, from before the SOFA vocabulary
+whitelist, had 199,681 parameters.)
 
 ### Training Configuration
 
 | Parameter | Value | Notes |
 |---|---|---|
-| FL Rounds | 100 | FedYogi finds best at round ~24 |
+| FL Rounds | 100 | Best round kept by SaveBestStrategy — round 26 in the current run |
 | Epochs/round | 3 | Sweet spot — less drift than 5, more signal than 1 |
 | Batch size | 64 | Mini-batch gradient updates |
 | Base LR | 0.001 | AdamW starting learning rate |
-| LR decay | 0.99 | Per-round multiplier |
+| LR decay | 0.99 | Per-round multiplier (floor 1e-4) |
 | Grad clip | 1.0 | L2 norm clip |
-| Loss weight | 1 + SOFA × 0.5 | Mild high-SOFA emphasis (~2× at SOFA=10) |
+| Loss | Plain MSE | `weighted_loss=True` restores the old 1 + SOFA × 0.5 weighting |
+| Dropout | 0.3 | After each hidden layer, training only |
+| Server aggregation | FedAvg | `USE_FEDYOGI = False` (FedYogi was used earlier) |
+| Oversampling / DP | Off / Off | `OVERSAMPLE = False`, `USE_DP = False` |
 | Optimizer | AdamW | weight_decay=1e-4 |
 | FedProx μ | 0.5 | Client-side proximal regularisation |
 
-**Loss function (weighted MSE):**
+**Loss function (current: plain MSE):**
 ```python
-weight = 1 + target × 0.5
-loss = mean(weight * (pred - target)²) / weight.mean()
+loss = mean((pred - target)²)
 ```
-Gives low-SOFA patients ~33% of fair gradient signal (vs 7% with the old ×3 multiplier),
-aligning training more closely with the unweighted evaluation metric.
+Historical: earlier versions used a linear-weighted MSE (`weight = 1 + target × 0.5`,
+normalised by the batch mean). On dataset_v2 it pushed every prediction upward and raised
+MAE without catching more high-risk patients, so it was replaced by plain MSE. It is
+still available as `train_model(..., weighted_loss=True)`.
 
 **Why PyTorch DNN and not LightGBM/XGBoost:**
 FedAvg works by averaging model weight matrices. Tree-based models do not have weight
@@ -499,7 +516,7 @@ collaborative training without any raw patient data leaving any hospital.
 - The FL communication protocol is REAL (Flower server/client, TCP sockets)
 - Weights only are transmitted — no patient data
 - Each client trains on its own separate dataset
-- FedYogi server optimizer aggregates and applies adaptive server-side updates
+- The server aggregates the hospitals' weights with FedAvg (sample-size weighted average)
 
 ### What IS Simulated:
 - Hospital data is artificially split from one MIMIC-III dataset
@@ -507,9 +524,14 @@ collaborative training without any raw patient data leaving any hospital.
 
 ### Framework: Flower (flwr)
 
-### Server Optimizer: FedYogi
+### Server Aggregation: FedAvg (current)
 
-FedYogi applies the Yogi adaptive optimizer at the server after FedAvg aggregation:
+```
+w_global ← Σ n_i · w_i / Σ n_i      (sample-size weighted average of the 3 hospitals)
+```
+
+`USE_FEDYOGI = False` in `train_federated.py`. **Historical:** an earlier version applied
+FedYogi on the server after averaging (η = 0.01):
 
 ```
 Δ = FedAvg(local_models) − w_global         (pseudo-gradient)
@@ -518,8 +540,9 @@ v_t = v_{t-1} + (1-β2)·(Δ²-v_{t-1})·sign(Δ²-v_{t-1})  (Yogi adaptive)
 w_global ← w_global + η·m_t / (√v_t + τ)   (server update)
 ```
 
-Yogi's `v_t` only increases when the current gradient exceeds the running estimate
-— preventing the runaway step-size explosion that caused issues with FedAdam.
+On dataset_v2, FedYogi with η = 0.01 made the server loss explode in early rounds, and
+FedAvg + plain MSE did better (MAE 1.914 → 1.850, R² 0.426 → 0.457). Setting
+`USE_FEDYOGI = True` re-enables FedYogi, now with `SERVER_ETA = 0.001`.
 
 ### Client Regularisation: FedProx
 
@@ -540,7 +563,7 @@ Global Server (server.py)
 ┌──────────────────────────────────────────────┐
 │  Hospital 0       Hospital 1      Hospital 2 │
 │  (client_0.csv)   (client_1.csv)  (client_2.csv)│
-│  ~15,889 rows     ~15,890 rows    ~16,371 rows │
+│  13,932 rows      13,933 rows     13,933 rows  │
 │  Local Train      Local Train     Local Train  │
 │  3 epochs + FedProx                            │
 └──────────────────────────────────────────────┘
@@ -551,15 +574,12 @@ Global Server (server.py)
             FedAvg Aggregation
                     │
                     ▼
-            FedYogi Server Update
-                    │
-                    ▼
           Updated Global Model (w_global)
 ```
 
 **FL Rounds:** 100
 **Clients per round:** 3 (fraction_fit=1.0)
-**Aggregation:** FedYogi (Flower `FedYogi` strategy)
+**Aggregation:** FedAvg (Flower `FedAvg` strategy; `FedYogi` only if `USE_FEDYOGI = True`)
 **Server address:** 127.0.0.1:8080
 
 ### Two FL Modes:
@@ -573,7 +593,7 @@ True separate processes via TCP socket.
 Run: `python server.py` then `python client.py --client_id 0/1/2`
 
 ### SaveBestStrategy:
-Custom Flower strategy extending FedYogi. Tracks the lowest evaluation loss
+Custom Flower strategy extending FedAvg (FedYogi in an earlier version). Tracks the lowest evaluation loss
 across all rounds. Saves that round's model. Passes `server_round` to clients
 for per-round LR scheduling.
 
@@ -639,7 +659,7 @@ structured, and clinically accurate reasoning."
 4. Immediate Actions
 
 ### Risk-Adaptive Prompting:
-For High Risk (predicted SOFA ≥ 8): "IMMEDIATE ACTIONS" section is placed FIRST,
+For alert patients (predicted SOFA ≥ 7 = `ALERT_THRESHOLD`, in hospital and home-care modes): "IMMEDIATE ACTIONS" section is placed FIRST,
 with a 30-minute time horizon. For non-alert patients: standard order, 2–4 hour
 horizon.
 
@@ -679,16 +699,25 @@ internal reasoning, so only the final structured output is shown.
 
 ## 17. ALERT SYSTEM
 
-**Alert Trigger:** predicted SOFA ≥ 8 (ALERT_THRESHOLD = 8.0)
+**Alert Trigger:** predicted SOFA ≥ 7 (`ALERT_THRESHOLD = 7.0`, defined once in `model_utils.py`; `backend/services/ml_service.py` imports it and `compute_sofa_risk_metrics()` defaults to it. It was 8.0 in `ml_service.py` in an earlier version.)
 **Moderate Warning:** predicted SOFA ≥ 5
 
-**Why threshold 8.0 instead of clinical ≥ 10:**
-The model systematically under-predicts severe cases by ~2–3 SOFA points
-(class imbalance: 63% of training data is SOFA < 5).
+**Why threshold 7.0 instead of clinical ≥ 10:**
+The model under-predicts severe cases (mean prediction for truly High-Risk patients ≈ 9.7),
+because most of SOFA comes from labs and vasopressor doses that are not inputs.
 
-- At threshold ≥ 10: High Risk Recall ≈ 28%
-- At threshold ≥ 8: High Risk Recall ≈ 52% (doubles recall)
-- False alarm rate on Low Risk patients: only ~1.4%
+Sweep on the current model (test set, 602 truly High-Risk stays):
+- ≥ 8: recall 61.1%, specificity 97.8%
+- ≥ 7.5: recall 64.3%, specificity 97.1%
+- **≥ 7 (current): recall 67.1%, specificity 96.3%**
+- ≥ 6.5: recall 69.9%, specificity 95.3%
+- ≥ 6: recall 73.1%, specificity 93.9%
+
+Lowering 8 → 7 means 36 fewer missed high-risk patients (234 → 198) for 140 more false
+alarms (220 → 360). AUROC and MAE are unaffected.
+
+**What the alert drives:** red alert banner, `is_alert` flag, and the urgent
+("immediate actions first") LLM report format in hospital and home-care modes.
 
 **Display (ClinIQ React dashboard):**
 - High Risk → red AlertBanner at top of page + red SOFA gauge
@@ -726,11 +755,11 @@ The model systematically under-predicts severe cases by ~2–3 SOFA points
 
 **Step 8: Scaling** — `np.clip(scaler.transform(final_df), -10, 10)`.
 
-**Step 9: Model Inference** — `ICUModel(108→128→64→32→1)` in eval() with no_grad.
+**Step 9: Model Inference** — `ICUModel(108→256→128→64→1)` in eval() (Dropout off) with no_grad.
 
 **Step 10: Risk Classification** — SOFA < 5 / 5-9 / ≥ 10.
 
-**Step 11: Alert Flag** — `is_alert = sofa >= 8`.
+**Step 11: Alert Flag** — `is_alert = sofa >= ALERT_THRESHOLD` (7.0, imported from model_utils.py).
 
 **Step 12: Save Prediction** — append to prediction_history in SQLite.
 
@@ -830,7 +859,7 @@ icu_monitor/
 │   └── SKILL.md
 │
 ├── models/
-│   ├── federated_model.pth    ← DNN weights (~0.3 MB, 108→128→64→32→1)
+│   ├── federated_model.pth    ← DNN weights (108→256→128→64→1, 69,121 params)
 │   ├── scaler.pkl             ← StandardScaler (108 features, ~8 KB)
 │   ├── tfidf_vectorizer.pkl   ← TF-IDF (90-term SOFA vocab, ~2 MB)
 │   ├── feature_columns.pkl    ← Ordered list of 108 feature names
@@ -842,9 +871,9 @@ icu_monitor/
 │
 └── data/
     └── fl_training/
-        ├── client_0.csv       ← Hospital 0: ~15,889 × 109 cols (gitignored)
-        ├── client_1.csv       ← Hospital 1: ~15,890 × 109 cols (gitignored)
-        └── client_2.csv       ← Hospital 2: ~16,371 × 109 cols (gitignored)
+        ├── client_0.csv       ← Hospital 0: 13,932 × 109 cols (gitignored)
+        ├── client_1.csv       ← Hospital 1: 13,933 × 109 cols (gitignored)
+        └── client_2.csv       ← Hospital 2: 13,933 × 109 cols (gitignored)
 ```
 
 ---
@@ -897,11 +926,13 @@ Landing page with TopNav (72px), SystemStatusBar (34px), and 3 patient cards.
 
 ### `model_utils.py`
 Shared utility module imported by backend services, train_federated.py, server.py, client.py. Contains:
-- `ICUModel` class — 108→128→64→32→1 DNN architecture
+- `ALERT_THRESHOLD = 7.0` — single source of the alert threshold (imported by the backend)
+- `ICUModel` class — 108→256→128→64→1 DNN with Dropout 0.3 (configurable `hidden=`, `dropout=`)
 - `ICUDataset` class — PyTorch Dataset for DataLoader
-- `weighted_mse_loss` — weight = 1 + SOFA × 0.5
+- `weighted_mse_loss` — weight = 1 + SOFA × 0.5 (optional; only with `train_model(..., weighted_loss=True)`)
 - `get_sample_weights` — oversampling infrastructure (currently disabled)
-- `train_model` — AdamW training + FedProx proximal term
+- `train_model` — AdamW training, plain MSE by default, + FedProx proximal term
+- `compute_sofa_risk_metrics` — risk-band confusion matrix + alert metrics at `ALERT_THRESHOLD`
 - `evaluate_model` — MSE, MAE, R² metrics
 - `get_weights` / `set_weights` — FL weight serialisation
 - `get_trend` — trend direction from polyfit slope
@@ -915,15 +946,15 @@ Outputs: `federated_model.pth`, `shap_background.npy`, `training_metadata.json`
 
 ### `server.py`
 Real Flower FL server. Listens on 127.0.0.1:8080, runs 100 rounds.
-Uses FedAvg (the real-FL demo uses FedAvg for simplicity; the simulation uses FedYogi).
+Uses FedAvg — the same aggregation as the simulation (`train_federated.py`, `USE_FEDYOGI = False`).
 
 ### `client.py`
 Real Flower FL client. Takes `--client_id` (0, 1, 2).
 Loads from `data/fl_training/client_{id}.csv`. Trains with FedProx.
 
 ### `models/federated_model.pth`
-PyTorch state_dict. Keys: `net.0.weight`, `net.0.bias`, `net.2.weight`, `net.2.bias`,
-`net.4.weight`, `net.4.bias`, `net.6.weight`, `net.6.bias`.
+PyTorch state_dict. Keys: `net.0.weight`, `net.0.bias`, `net.3.weight`, `net.3.bias`,
+`net.6.weight`, `net.6.bias`, `net.9.weight`, `net.9.bias` (ReLU/Dropout layers in between have no weights).
 
 ### `models/scaler.pkl`
 sklearn StandardScaler fitted on 108 features from training data.
@@ -940,7 +971,7 @@ Python list of 108 column names in exact training order.
 Numpy array shape (300, 108) — 300 randomly selected training rows.
 
 ### `data/fl_training/client_0/1/2.csv`
-Each: ~15,889–16,371 rows × 109 columns (108 features already scaled + sofa_score).
+Each: 13,932–13,933 rows × 109 columns (108 features already scaled + sofa_score).
 Features are already StandardScaler-normalised and clipped to ±10.
 
 ---
@@ -966,8 +997,9 @@ Features are already StandardScaler-normalised and clipped to ±10.
 | SOFA Low threshold | < 5 | risk_label() in app.py |
 | SOFA Moderate threshold | 5–9 | risk_label() in app.py |
 | SOFA High threshold | ≥ 10 | risk_label() in app.py |
-| Alert threshold | SOFA ≥ 8 | ALERT_THRESHOLD in app.py |
-| DNN architecture | 108→128→64→32→1 | ICUModel in model_utils.py |
+| Alert threshold | SOFA ≥ 7 | ALERT_THRESHOLD in model_utils.py (imported by ml_service.py) |
+| DNN architecture | 108→256→128→64→1, Dropout 0.3 | ICUModel in model_utils.py |
+| Trainable parameters | 69,121 | ICUModel |
 | FL rounds | 100 | train_federated.py, server.py |
 | Epochs per round | 3 | train_federated.py, client.py |
 | Batch size | 64 | train_model() in model_utils.py |
@@ -975,11 +1007,11 @@ Features are already StandardScaler-normalised and clipped to ±10.
 | LR decay | 0.99 | train_federated.py, client.py |
 | Gradient clip | 1.0 | train_federated.py, client.py |
 | FedProx μ | 0.5 | train_federated.py, client.py |
-| FedYogi η (server) | 0.01 | train_federated.py |
-| FedYogi β1 | 0.9 | train_federated.py |
-| FedYogi β2 | 0.99 | train_federated.py |
-| FedYogi τ | 0.001 | train_federated.py |
-| Loss weight multiplier | 0.5 (weight=1+SOFA×0.5) | weighted_mse_loss() |
+| Server aggregation | FedAvg (`USE_FEDYOGI = False`) | train_federated.py |
+| FedYogi η (optional, only if USE_FEDYOGI) | 0.001 | train_federated.py |
+| FedYogi β1 / β2 / τ (optional) | 0.9 / 0.99 / 0.001 | train_federated.py |
+| Loss | plain MSE (`weighted_loss=True` → weight=1+SOFA×0.5, optional) | train_model() |
+| Conformal 90% interval q̂ | 3.34 (computed at backend start) | ml_service.py |
 | SHAP background size | 300 | shap_background.npy |
 | LLM main model | openai/gpt-oss-120b | backend/services/llm_service.py |
 | LLM judge model | openai/gpt-oss-20b | backend/services/llm_service.py |
@@ -1001,44 +1033,77 @@ Features are already StandardScaler-normalised and clipped to ±10.
 
 ## 22. MODEL PERFORMANCE METRICS
 
-### Current Federated DNN (federated_model.pth — best run)
+### Current Federated DNN (federated_model.pth — 2026-11-12)
 
 | Metric | Value |
 |---|---|
-| Overall MAE | **1.8968 SOFA points** |
-| Overall R² | **0.5995** |
-| Prediction range | −0.22 – 14.38 |
-| Training samples | 12,795 (48,150 when DB fully populated — see note) |
-| Test samples | 2,559 |
-| FL rounds | 100 (best was round 18) |
-| Server optimizer | FedYogi + FedProx |
+| Overall MAE | **1.8247 SOFA points** |
+| Overall R² | **0.4725** |
+| Prediction range | 1.72 – 23.45 |
+| Training samples | 41,798 ICU stays |
+| Test samples | 10,450 ICU stays |
+| FL rounds | 100 (best was round 26; server validation loss flat ~5.8–6.1) |
+| Server aggregation | FedAvg + FedProx (μ=0.5) |
+| Loss | plain MSE |
+| Architecture | 108→256→128→64→1, Dropout 0.3, 69,121 params |
+| Conformal 90% interval | ± 3.34 SOFA points |
 
-> **Note on training sample count:** The fl_training table currently has NULL sofa_score rows (a known migration issue). `train_federated.py` drops them and trains on 12,795 samples. Re-run `migrate_to_db.py` to restore the full 48,150.
+**Evaluation limitation:** one row per ICU stay, split 80/20 by ICU stay — a patient with
+several stays can appear in both train and test. Retrospective MIMIC-III results, not
+independent clinical validation.
 
 ### Per-Risk-Level Performance
 
-| Risk Level | n samples | MAE | R² |
-|---|---|---|---|
-| Low (<5) | 1,485 | 1.629 | -0.533 |
-| Moderate (5-9) | 826 | 1.795 | -2.084 |
-| High (≥10) | 248 | 3.839 | -2.818 |
+| Risk Level | n samples | MAE |
+|---|---|---|
+| Low (<5) | 6,929 | 1.331 |
+| Moderate (5-9) | 2,919 | 2.481 |
+| High (≥10) | 602 | 4.328 |
 
-**Note on negative per-class R²:** Global R²=0.5995 is positive because the model
-correctly discriminates between risk tiers. Within-segment R² is negative because
-the model cannot rank patients within the same SOFA range — this requires direct lab
-values (bilirubin, creatinine, platelets) not present in the feature set.
+**Note on per-class R²:** per-band R² is negative by design — there is little variance
+inside one band, so only the overall R² is meaningful. Ranking patients within the same
+band needs lab values (bilirubin, creatinine, platelets) that are not inputs.
+
+**3-class confusion matrix** (rows true Low/Mod/High, cols predicted Low/Mod/High):
+`[[6617, 305, 7], [2159, 669, 91], [112, 203, 287]]` → 3-class accuracy 72.5%;
+High-band recall 47.7%, High-band precision 74.5%.
+
+### High-Risk Alert (predicted SOFA ≥ 7 vs actual SOFA ≥ 10)
+
+| Metric | Value |
+|---|---|
+| AUROC | 0.9254 |
+| PR-AUC | 0.6456 |
+| Recall | 67.1% (404/602) |
+| Specificity | 96.3% |
+| Precision | 52.9% |
+| F1 | 0.5915 |
+| Missed (FN) / False alarms (FP) / TN | 198 / 360 / 9,488 |
+
+The SOFA Validation Drawer reads all of these numbers live from `training_metadata.json`
+(sent by the backend as `_training_meta`), so it always matches the loaded model.
 
 ### Comparison to Previous Versions
 
 | Version | R² | Key Change |
 |---|---|---|
-| Original FL notebook (10R, 3E, plain MSE) | 0.04 | Baseline |
-| After weighted MSE (1+y×3) | 0.11–0.13 | Loss improvement |
-| SOFA vocabulary whitelist (90 terms) | **0.1752** | Feature breakthrough |
-| FedAdam server optimizer | 0.2148 | Server optimization |
-| FedYogi server optimizer | 0.2229 | Better adaptive rate |
-| All notes (283k) + 10k chars + FedYogi | 0.4724 | Prior best (full DB) |
-| **DB subset (12,795 samples) + FedYogi** | **0.5995** | **Current run** |
+| Original FL notebook (10R, 3E, plain MSE) | 0.04 | Baseline (historical) |
+| After weighted MSE (1+y×3) | 0.11–0.13 | Loss improvement (historical) |
+| SOFA vocabulary whitelist (90 terms) | 0.1752 | Feature breakthrough (historical) |
+| FedAdam server optimizer | 0.2148 | Server optimization (historical) |
+| FedYogi server optimizer | 0.2229 | Adaptive rate (historical) |
+| Old dataset final (FedYogi, weighted MSE, 128-64-32), alert ≥ 8 — historical | 0.398 | Last old-dataset model (historical; recall 23%) |
+| dataset_v2, FedYogi η=0.01, weighted MSE, alert ≥ 8 — historical | 0.426 | New dataset (historical; AUROC 0.915) |
+| + FedAvg + plain MSE | 0.457 | Simpler server + loss (AUROC 0.921) |
+| + 256-128-64 + Dropout 0.3 | 0.473 | Wider network + Dropout (AUROC 0.925) |
+| **Same model, alert ≥ 7** | **0.4725** | **Current — alert recall 67.1%, specificity 96.3%** |
+
+(Old-dataset numbers are not directly comparable: the label definition changed.)
+
+**Experiments on dataset_v2 that did not help:** lower LR 5e-4, weight decay 1e-3, Huber
+loss, 512-256-128, averaging 8 models, isotonic recalibration, missing-value flags,
+several hourly rows per stay (+0.007 R² for 9× data). Reference ceiling (centralized
+gradient boosting, same 108 columns): MAE ~1.81, R² ~0.49, AUROC ~0.927.
 
 ---
 
@@ -1048,7 +1113,7 @@ values (bilirubin, creatinine, platelets) not present in the feature set.
 |---|---|
 | Language | Python 3.12 |
 | ML Framework | PyTorch ≥ 2.0 |
-| Federated Learning | Flower (flwr) ≥ 1.8 — FedYogi + FedProx |
+| Federated Learning | Flower (flwr) ≥ 1.8 — FedAvg + FedProx |
 | Explainability | SHAP ≥ 0.44 (DeepExplainer) |
 | Data Processing | Pandas, NumPy |
 | NLP | scikit-learn TfidfVectorizer (90-term SOFA vocabulary) |
@@ -1061,7 +1126,7 @@ values (bilirubin, creatinine, platelets) not present in the feature set.
 | Design System | "Modern Dark Cinema Mobile" glassmorphism, Figtree font, CSS tokens |
 | Database | SQLite via `models/icu_monitor.db` (~23 MB, gitignored) |
 | Dataset | MIMIC-III |
-| Data Access | Google BigQuery (mimic-project-2, Dataset) |
+| Data Access | Google BigQuery (mimic-project-2, dataset_v2) |
 | CV Monitor — Camera Capture | OpenCV ≥ 5.0 |
 | CV Monitor — Face AI | MediaPipe ≥ 0.10.35 (FaceLandmarker + 52 blendshapes) |
 | CV Stress Scoring | PSPI (Prkachin-Solomon Pain Intensity, 2008) |
@@ -1115,6 +1180,17 @@ python cv_monitor.py --cam 1 # USB webcam
 # Press Q or ESC to quit
 ```
 
+### Run the tests:
+```bash
+cd /Users/sneh.patel/Desktop/capstone/icu_monitor
+pytest tests                      # Python (ClinIQ backend + FL): 513 passed
+
+# Frontend tests live in tests/, outside frontend/, so they need this
+# symlink to resolve packages (gitignored, create once):
+ln -s frontend/node_modules node_modules
+cd frontend && npx vitest run     # Vitest: 232 passed (27 files)
+```
+
 ### Retrain the Federated Model (requires BigQuery access):
 ```bash
 python train_federated.py
@@ -1147,7 +1223,7 @@ Defined system architecture, chose MIMIC-III, Google BigQuery. Drew architecture
 
 **Phase 2 — BigQuery Preprocessing:**
 Ran all 12 SQL queries to extract and transform MIMIC-III data. Produced ml_dataset_final
-with 60,188 rows.
+with 60,188 rows (old `Dataset` build — historical; replaced by dataset_v2 in Phase 9).
 
 **Phase 3 — Ensemble ML (trial/):**
 LightGBM + XGBoost + Random Forest. SHAP TreeExplainer. Groq LLM with self-consistency.
@@ -1158,22 +1234,29 @@ Switched to PyTorch DNN for FL compatibility. Flower framework. First FL trainin
 Performance: R²=0.04–0.18 (undertrained).
 
 **Phase 5 — Training Improvements:**
-Added weighted MSE, AdamW, SaveBestStrategy, SHAP DeepExplainer.
+Added weighted MSE (later replaced by plain MSE in Phase 9), AdamW, SaveBestStrategy, SHAP DeepExplainer.
 Performance improved to R²=0.13–0.25.
 
 **Phase 6 — SOFA Vocabulary Whitelist Breakthrough:**
 Replaced 600 data-driven TF-IDF features with 90-term SOFA vocabulary whitelist.
-Reduced model from 618→256→128→64→1 to 108→128→64→32→1.
+Reduced model from 618→256→128→64→1 to 108→128→64→32→1 (later widened to 256-128-64 + Dropout in Phase 9).
 Performance: R²=0.1752 (biggest single jump — +94% relative improvement).
 
-**Phase 7 — FedAdam/FedYogi Server Optimization:**
+**Phase 7 — FedAdam/FedYogi Server Optimization (historical; FedYogi replaced by FedAvg in Phase 9):**
 Added server-side adaptive optimization. FedAdam → R²=0.2148. FedYogi → R²=0.2229.
 Added FedProx client regularisation. Tuned loss weight from 3.0 to 0.5.
 
 **Phase 8 — Notes Corpus Expansion:**
 Increased NOTES_SAMPLE_SIZE from 80k to all 283k notes.
 Increased NOTES_TEXT_LIMIT from 5k to 10k chars.
-Performance: **R²=0.4171** (50% relative improvement over FedYogi alone).
+Performance: R²=0.4171 (50% relative improvement over FedYogi alone; old dataset).
+
+**Phase 9 — dataset_v2 rebuild and model update (current, 2026-11-12):**
+Rebuilt the data in BigQuery as `dataset_v2` (time-matched hourly SOFA label, 52,248 ICU
+stays). Replaced FedYogi with FedAvg (FedYogi η=0.01 exploded on the new data), weighted
+MSE with plain MSE, and 128-64-32 with 256-128-64 + Dropout 0.3. Lowered the alert
+threshold from 8 to 7. Performance: **MAE 1.8247, R²=0.4725, AUROC 0.9254, alert recall
+67.1% at 96.3% specificity**.
 
 ---
 
@@ -1186,8 +1269,9 @@ Performance: **R²=0.4171** (50% relative improvement over FedYogi alone).
 
 3. **Trend-based temporal feature engineering with sliding window.**
 
-4. **FedYogi + FedProx Federated Learning:** FedYogi server-side adaptive optimization
-   combined with FedProx client proximal regularisation — stable FL with R²=0.4171.
+4. **FedAvg + FedProx Federated Learning:** FedAvg server aggregation combined with
+   FedProx client proximal regularisation (μ=0.5) and Dropout 0.3 — stable FL with
+   R²=0.4725, AUROC 0.9254 (FedYogi was used in earlier versions).
 
 5. **LLM Self-Consistency Check:** 3-component consistency metric (TF-IDF + clinical
    interventions + clinical conditions) for quantitative LLM reliability assessment.
@@ -1213,7 +1297,8 @@ Performance: **R²=0.4171** (50% relative improvement over FedYogi alone).
 - Federated nodes behave honestly (no adversarial clients)
 
 ### Limitations:
-- R² = 0.4171 — limited by missing direct lab values (bilirubin, creatinine, platelets)
+- R² = 0.4725 — limited by missing direct lab values (bilirubin, creatinine, platelets) and vasopressor doses
+- One row per ICU stay, split by ICU stay — a patient with several stays can appear in both train and test; retrospective MIMIC-III results only
 - The "hospitals" are artificial splits of one MIMIC-III dataset
 - The CV features (GCS, stress) are manually entered, not from a real camera
 - The model cannot retrain on new patient data automatically
@@ -1230,7 +1315,7 @@ sufficient for our requirements.
 ### Q: Why TF-IDF instead of ClinicalBERT?
 TF-IDF is simpler, faster, interpretable, and produces features directly usable
 by the ML model. With the SOFA vocabulary whitelist approach, TF-IDF achieves
-strong performance (contributes to R²=0.4171) because every feature has a
+strong performance (contributes to R²=0.4725) because every feature has a
 clinically grounded meaning.
 
 ### Q: Why PyTorch DNN instead of LightGBM for the federated model?
@@ -1240,22 +1325,29 @@ per hospital. Neural networks are natural candidates for FedAvg.
 
 ### Q: Is your Federated Learning real or simulated?
 The FL protocol is real: Flower server/client, TCP sockets, weight-only
-transmission, FedYogi aggregation. What is simulated is the hospital data
+transmission, FedAvg aggregation. What is simulated is the hospital data
 (artificially split from MIMIC-III). This is the standard approach in all
 published FL research.
 
-### Q: Why is R² 0.4171 and not higher? Is that acceptable?
+### Q: Why is R² 0.4725 and not higher? Is that acceptable?
 SOFA prediction from vital signs + clinical text alone is inherently limited
-because SOFA requires direct lab values (bilirubin, creatinine, platelets) not
-present in our feature set. R²=0.4171 is a strong result given this constraint —
-it represents 361% improvement from the initial R²=0.09 baseline. Published
-research on vital-sign-only SOFA prediction reports R²=0.15–0.35.
+because SOFA is mostly computed from lab values (bilirubin, creatinine, platelets,
+PaO2/FiO2) and vasopressor doses, which are deliberately not inputs (non-invasive
+design). R²=0.4725 is close to the ceiling for these inputs: centralized gradient
+boosting on the same 108 columns reaches only R² ~0.49. For the clinical decision
+that matters — flagging high-risk patients — the model has AUROC 0.9254.
 
-### Q: What is FedYogi and why did you use it instead of FedAvg?
-FedYogi applies the Yogi adaptive optimizer at the server after FedAvg aggregation.
-It accumulates server-side momentum and uses a conservative adaptive rate (v_t only
-increases when Δ² > v_{t-1}). This allows the server to consistently improve
-across FL rounds instead of oscillating — crucial for achieving R²=0.4171.
+### Q: Why FedAvg and not FedYogi?
+Earlier versions used FedYogi, which applies the Yogi adaptive optimizer at the server
+after averaging. On the rebuilt dataset_v2 data, FedYogi with η=0.01 made the server
+loss explode in early rounds, and plain FedAvg (with FedProx on the clients) gave
+better results (MAE 1.914 → 1.850, R² 0.426 → 0.457, together with switching to plain
+MSE). FedYogi is still available (`USE_FEDYOGI = True`, now with η=0.001).
+
+### Q: Why does the alert fire at predicted SOFA ≥ 7 instead of ≥ 10?
+The model under-predicts severe patients (mean prediction ≈ 9.7 for true SOFA ≥ 10).
+At ≥ 7 it catches 67.1% of truly high-risk patients at 96.3% specificity; moving
+from 8 to 7 catches 36 more of them for 140 more false alarms.
 
 ### Q: What is FedProx and why did you use it?
 FedProx adds a proximal term (μ/2)×||w_local - w_global||² to each hospital's
@@ -1285,4 +1377,4 @@ patient-identifiable information.
 ---
 
 *End of SKILL.md — Complete Project Context Document*
-*Last updated: October 2026 — updated to reflect ClinIQ React+FastAPI system*
+*Last updated: 2026-11-12 — current model: dataset_v2, FedAvg + FedProx, plain MSE, 256-128-64 + Dropout 0.3, alert ≥ 7*

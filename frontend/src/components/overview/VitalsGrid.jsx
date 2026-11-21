@@ -103,9 +103,12 @@ function gcsStatus(val) {
   if (val <= 2) return 'low'
   return 'normal'
 }
+// Stress bands: LOW < 3.5 ≤ MODERATE < 6.5 ≤ HIGH — same as the CV monitor
+// (CVMonitorModal stressLabel), ml_service explanations and the LLM rules.
 function stressStatus(val) {
   if (val == null) return 'normal'
-  if (val >= 4) return 'high'
+  if (val >= 6.5) return 'high'
+  if (val >= 3.5) return 'low'    // amber
   return 'normal'
 }
 
@@ -128,14 +131,14 @@ function StressCard({ value }) {
   const isAbnormal = st !== 'normal'
   const displayValue = value != null ? value : '—'
   const pct = value != null ? Math.min(100, (value / 10) * 100) : 0
-  const stressLabel = value == null ? '—' : value <= 3 ? 'Low Stress' : value <= 6 ? 'Elevated' : 'High Stress'
+  const stressLabel = value == null ? '—' : st === 'normal' ? 'Low Stress' : st === 'low' ? 'Elevated' : 'High Stress'
 
+  // Filled dots take the current band's colour, so the scale never disagrees
+  // with the badge (e.g. 3.7 is "Elevated" and must not show green dots only).
   const dotColors = Array.from({ length: 10 }, (_, i) => {
     const idx = i + 1
-    if (value == null || idx > value) return 'var(--b2)'
-    if (idx <= 3) return 'var(--ok-l)'
-    if (idx <= 6) return 'var(--warn-l)'
-    return 'var(--danger-l)'
+    if (value == null || idx > Math.round(value)) return 'var(--b2)'
+    return color
   })
 
   return (
@@ -391,7 +394,7 @@ function ClinicalNoteCard({ note }) {
               Clinical Note
             </span>
             <span style={{ fontSize: '9.5px', color: 'var(--t4)', fontFamily: 'var(--font-display)' }}>
-              nursing · physician · discharge summary
+              Simulated clinical note
             </span>
           </div>
         </div>

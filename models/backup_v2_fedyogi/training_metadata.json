@@ -1,0 +1,123 @@
+{
+  "num_rounds": 100,
+  "epochs_per_round": 3,
+  "batch_size": 64,
+  "base_lr": 0.001,
+  "lr_decay": 0.99,
+  "hospitals": 3,
+  "hospital_names": [
+    "General ICU",
+    "Mixed ICU",
+    "Cardiac/Trauma ICU"
+  ],
+  "aggregation": "FedYogi (\u03b7=0.01, \u03b21=0.9, \u03b22=0.99) + FedProx (\u03bc=0.5)",
+  "split_type": "IID",
+  "train_samples": 41798,
+  "test_samples": 10450,
+  "input_features": 108,
+  "model_architecture": "108 \u2192 128 \u2192 64 \u2192 32 \u2192 1  (ReLU, no Dropout, FedProx)",
+  "best_round": 23,
+  "final_mae": 1.9136,
+  "final_r2": 0.4255,
+  "pred_range_min": 0.34,
+  "pred_range_max": 22.2,
+  "oversample": false,
+  "loss_weights": "Linear (1 + SOFA\u00d70.5) \u2014 mild high-SOFA emphasis (~2\u00d7 at SOFA=10)",
+  "optimizer": "AdamW (weight_decay=1e-4)",
+  "differential_privacy": false,
+  "dp_sensitivity": null,
+  "dp_sigma": null,
+  "dp_epsilon": null,
+  "dp_delta": null,
+  "bigquery_project": "mimic-project-2",
+  "tfidf_features": 90,
+  "tfidf_ngram": [
+    1,
+    2
+  ],
+  "notes_sample_size": 283208,
+  "risk_classification_metrics": {
+    "risk_bands": {
+      "labels": [
+        "Low (<5)",
+        "Moderate (5-<10)",
+        "High (>=10)"
+      ],
+      "confusion_matrix": [
+        [
+          6487,
+          433,
+          9
+        ],
+        [
+          2115,
+          752,
+          52
+        ],
+        [
+          114,
+          276,
+          212
+        ]
+      ],
+      "per_class": {
+        "Low (<5)": {
+          "precision": 0.7442634235888022,
+          "recall": 0.9362101313320825,
+          "sensitivity": 0.9362101313320825,
+          "specificity": 0.36694120988355583,
+          "f1": 0.8292745286033877
+        },
+        "Moderate (5-<10)": {
+          "precision": 0.5147159479808351,
+          "recall": 0.2576224734498116,
+          "sensitivity": 0.2576224734498116,
+          "specificity": 0.9058557960430221,
+          "f1": 0.34337899543378997
+        },
+        "High (>=10)": {
+          "precision": 0.7765567765567766,
+          "recall": 0.3521594684385382,
+          "sensitivity": 0.3521594684385382,
+          "specificity": 0.9938058489033307,
+          "f1": 0.4845714285714286
+        }
+      },
+      "macro": {
+        "precision": 0.6785120493754713,
+        "recall": 0.5153306910734775,
+        "sensitivity": 0.5153306910734775,
+        "specificity": 0.755534284943303,
+        "f1": 0.5524083175362021
+      }
+    },
+    "high_risk_alert": {
+      "predicted_sofa_threshold": 8.0,
+      "actual_high_risk_threshold": 10.0,
+      "confusion_matrix": [
+        [
+          9647,
+          201
+        ],
+        [
+          278,
+          324
+        ]
+      ],
+      "true_negative": 9647,
+      "false_positive": 201,
+      "false_negative": 278,
+      "true_positive": 324,
+      "precision": 0.6171428571428571,
+      "recall": 0.5382059800664452,
+      "sensitivity": 0.5382059800664452,
+      "specificity": 0.9795897644191714,
+      "f1": 0.5749778172138419,
+      "auroc": 0.914892917191814,
+      "pr_auc": 0.599110466070726
+    }
+  },
+  "evaluation_limitation": "Row-level train/test split \u2014 patient/ICU-stay IDs unavailable. Treat as initial evaluation results, not independent clinical validation.",
+  "sklearn_version": "1.9.0",
+  "torch_version": "2.13.0"
+}

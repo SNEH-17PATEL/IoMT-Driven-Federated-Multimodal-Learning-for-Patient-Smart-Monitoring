@@ -5,13 +5,14 @@ Single source of truth for all operational data.
 
 Tables
 ------
-patient_vitals      — sliding-window vitals per patient (replaces patient_vitals_01/02/03.csv)
-prediction_history  — SOFA prediction log per patient  (replaces prediction_history_01/02/03.csv)
-sample_patients     — simulation rows per patient      (replaces sample_patient01/02/03_data.csv)
-fl_training         — pre-scaled FL client datasets    (replaces client_0/1/2.csv)
+patient_vitals      — sliding-window vitals per patient
+prediction_history  — SOFA prediction log per patient
+sample_patients     — simulation rows per patient
+fl_training         — pre-scaled FL client datasets (created by migrate_to_db.py)
 
 Database file: models/icu_monitor.db
 """
+from __future__ import annotations
 
 import os
 import sqlite3
@@ -19,15 +20,19 @@ import pandas as pd
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "models", "icu_monitor.db")
 
+# Sliding-window sizes — single source of truth; backend/api limits must match.
+_VITALS_WINDOW  = 20   # rows kept per patient in patient_vitals
+_HISTORY_WINDOW = 50   # rows kept per patient in prediction_history
+
 # ---------------------------------------------------------------------------
 # Connection
 # ---------------------------------------------------------------------------
 
 def get_conn() -> sqlite3.Connection:
-    """Return a new SQLite connection with WAL mode for better concurrency."""
+    """Return a new per-call SQLite connection with WAL journal mode."""
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 
@@ -36,7 +41,7 @@ def get_conn() -> sqlite3.Connection:
 # ---------------------------------------------------------------------------
 
 def init_db() -> None:
-    """Create all tables if they do not already exist."""
+    """Create all tables and indexes if they do not already exist. Safe to re-run."""
     conn = get_conn()
     cur  = conn.cursor()
 
@@ -57,8 +62,10 @@ def init_db() -> None:
             updated_at TEXT
         )
     """)
+    # Composite index serves both WHERE patient=? and ORDER BY id DESC
+    cur.execute("DROP INDEX IF EXISTS idx_pv_patient")
     cur.execute(
-        "CREATE INDEX IF NOT EXISTS idx_pv_patient ON patient_vitals(patient)"
+        "CREATE INDEX IF NOT EXISTS idx_pv_patient ON patient_vitals(patient, id)"
     )
 
     # ── Prediction history ────────────────────────────────────────────────
@@ -88,8 +95,9 @@ def init_db() -> None:
         cur.execute("ALTER TABLE prediction_history ADD COLUMN DBP REAL")
     except Exception:
         pass  # column already exists
+    cur.execute("DROP INDEX IF EXISTS idx_ph_patient")
     cur.execute(
-        "CREATE INDEX IF NOT EXISTS idx_ph_patient ON prediction_history(patient)"
+        "CREATE INDEX IF NOT EXISTS idx_ph_patient ON prediction_history(patient, id)"
     )
 
     # ── Sample patient simulation data ────────────────────────────────────
@@ -126,6 +134,9 @@ def init_db() -> None:
     # ── auto-update updated_at on UPDATE of data columns only.   ──────────
     # AFTER UPDATE OF <data cols> prevents infinite recursion — the trigger
     # won't re-fire when it writes updated_at itself.
+    # trg_ph_updated_at had DBP missing from its column list; drop and recreate it.
+    cur.execute("DROP TRIGGER IF EXISTS trg_ph_updated_at")
+
     cur.executescript("""
         CREATE TRIGGER IF NOT EXISTS trg_pv_created_at
         AFTER INSERT ON patient_vitals
@@ -155,7 +166,7 @@ def init_db() -> None:
         END;
 
         CREATE TRIGGER IF NOT EXISTS trg_ph_updated_at
-        AFTER UPDATE OF patient, Timestamp, Reading, SOFA, Risk, HR, RR, SpO2, Temp, SBP, MAP, GCS_Eye, Stress
+        AFTER UPDATE OF patient, Timestamp, Reading, SOFA, Risk, HR, RR, SpO2, Temp, SBP, DBP, MAP, GCS_Eye, Stress
         ON prediction_history
         BEGIN
             UPDATE prediction_history
@@ -183,22 +194,11 @@ def init_db() -> None:
 
     """)
 
-    # fl_training trigger is created only when the table exists (it is created
-    # dynamically by migrate_to_db.py, not here). Safe to re-run: IF NOT EXISTS.
-    fl_exists = cur.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='fl_training'"
-    ).fetchone()
-    if fl_exists:
-        cur.executescript("""
-            CREATE TRIGGER IF NOT EXISTS trg_ft_created_at
-            AFTER INSERT ON fl_training
-            BEGIN
-                UPDATE fl_training
-                SET created_at = datetime('now','localtime'),
-                    updated_at = datetime('now','localtime')
-                WHERE rowid = NEW.rowid;
-            END;
-        """)
+    # fl_training is created by migrate_to_db.py via pandas to_sql, which does NOT
+    # add created_at/updated_at columns. Installing a trigger that references those
+    # columns would break every subsequent insert, so no fl_training trigger is created.
+    # Drop the stale trigger if it was installed by an older version.
+    cur.execute("DROP TRIGGER IF EXISTS trg_ft_created_at")
 
     conn.commit()
     conn.close()
@@ -224,7 +224,7 @@ def get_patient_vitals(patient: int, limit: int = 20) -> pd.DataFrame:
 
 
 def append_patient_vitals(patient: int, row: dict) -> None:
-    """Insert one vitals row and keep only the most recent 20 per patient."""
+    """Insert one vitals row and keep only the most recent _VITALS_WINDOW per patient."""
     conn = get_conn()
     cur  = conn.cursor()
     cur.execute(
@@ -233,11 +233,10 @@ def append_patient_vitals(patient: int, row: dict) -> None:
         (patient, row["time"], row["HR"], row["RR"], row["SpO2"],
          row["Temp"], row["SBP"], row["DBP"], row["MAP"])
     )
-    # Keep sliding window to 20 rows
     cur.execute(
         "DELETE FROM patient_vitals WHERE patient = ? AND id NOT IN ("
         "  SELECT id FROM patient_vitals WHERE patient = ? "
-        "  ORDER BY id DESC LIMIT 20"
+        f" ORDER BY id DESC LIMIT {_VITALS_WINDOW}"
         ")",
         (patient, patient)
     )
@@ -252,12 +251,6 @@ def append_patient_vitals(patient: int, row: dict) -> None:
 def get_prediction_history(patient: int, limit: int = 50) -> pd.DataFrame:
     """Return the last `limit` predictions for a patient."""
     conn = get_conn()
-    # Ensure DBP column exists in case this DB predates the migration
-    try:
-        conn.execute("ALTER TABLE prediction_history ADD COLUMN DBP REAL")
-        conn.commit()
-    except Exception:
-        pass
     df = pd.read_sql(
         "SELECT Timestamp, Reading, SOFA, Risk, HR, RR, SpO2 as 'SpO₂', "
         "       Temp as 'Temp (°C)', SBP, DBP, MAP, GCS_Eye as 'GCS Eye', Stress "
@@ -271,15 +264,9 @@ def get_prediction_history(patient: int, limit: int = 50) -> pd.DataFrame:
 
 
 def append_prediction(patient: int, row: dict) -> None:
-    """Insert one prediction row and keep only the most recent 50 per patient."""
+    """Insert one prediction row and keep only the most recent _HISTORY_WINDOW per patient."""
     conn = get_conn()
     cur  = conn.cursor()
-    # Live migration: add DBP column to existing DBs that predate this field
-    try:
-        cur.execute("ALTER TABLE prediction_history ADD COLUMN DBP REAL")
-        conn.commit()
-    except Exception:
-        pass  # column already exists — safe to ignore
     cur.execute(
         "INSERT INTO prediction_history "
         "(patient, Timestamp, Reading, SOFA, Risk, HR, RR, SpO2, Temp, "
@@ -294,11 +281,10 @@ def append_prediction(patient: int, row: dict) -> None:
          row.get("MAP"),
          row.get("GCS Eye"),   row.get("Stress"))
     )
-    # Keep only last 50 per patient
     cur.execute(
         "DELETE FROM prediction_history WHERE patient = ? AND id NOT IN ("
         "  SELECT id FROM prediction_history WHERE patient = ? "
-        "  ORDER BY id DESC LIMIT 50"
+        f" ORDER BY id DESC LIMIT {_HISTORY_WINDOW}"
         ")",
         (patient, patient)
     )
@@ -342,13 +328,15 @@ def get_sample_patient_count(patient: int) -> int:
 def get_fl_client_data(client_id: int) -> pd.DataFrame:
     """Return all rows for a given FL client as a DataFrame."""
     conn = get_conn()
+    # ORDER BY rowid gives a stable physical order so train_test_split(random_state=42)
+    # produces the same split every time, regardless of SQLite page layout.
     df = pd.read_sql(
-        "SELECT * FROM fl_training WHERE client_id = ?",
+        "SELECT * FROM fl_training WHERE client_id = ? ORDER BY rowid",
         conn, params=(client_id,)
     )
     conn.close()
-    # Drop DB-only columns that the ML code doesn't expect
-    for col in ["id", "client_id"]:
+    # Drop DB-only / metadata columns that the ML code doesn't expect
+    for col in ["id", "client_id", "created_at", "updated_at"]:
         if col in df.columns:
             df = df.drop(columns=[col])
     # Drop rows with missing labels — these indicate a schema-mismatch import
@@ -369,9 +357,17 @@ def get_fl_client_data(client_id: int) -> pd.DataFrame:
 
 
 def fl_training_exists() -> bool:
-    """Return True if fl_training table has any rows."""
+    """Return True if fl_training has the full schema (sofa_score column) and at least one row."""
     conn = get_conn()
     cur  = conn.cursor()
-    n = cur.execute("SELECT COUNT(*) FROM fl_training").fetchone()[0]
-    conn.close()
-    return n > 0
+    try:
+        row = cur.execute("SELECT 1 FROM fl_training LIMIT 1").fetchone()
+        if row is None:
+            conn.close()
+            return False
+        cols = [r[1] for r in cur.execute("PRAGMA table_info(fl_training)").fetchall()]
+        conn.close()
+        return "sofa_score" in cols
+    except sqlite3.OperationalError:
+        conn.close()
+        return False

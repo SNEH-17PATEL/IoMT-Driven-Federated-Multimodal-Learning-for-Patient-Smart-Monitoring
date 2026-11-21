@@ -23,7 +23,6 @@ import json
 import time
 import threading
 import numpy as np
-import pandas as pd
 import joblib
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -224,7 +223,7 @@ button[data-testid="baseButton-secondary"] div[data-testid="stMarkdownContainer"
 """, unsafe_allow_html=True)
 
 # ── Paths & display constants ─────────────────────────────────────────────────
-MODEL_PATH   = "models/"
+MODEL_PATH   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models") + os.sep
 HOSP_NAMES   = ["General ICU", "Mixed ICU", "Cardiac/Trauma ICU"]
 HOSP_COLORS  = ["#28a745", "#f0a500", "#dc3545"]
 HOSP_RGBA    = ["40,167,69", "240,165,0", "220,53,69"]
@@ -374,6 +373,19 @@ def load_client_data():
 
 def fl_thread(num_rounds: int, speed: float, algorithm: str,
               clients: list, input_dim: int):
+    try:
+        _fl_thread_body(num_rounds, speed, algorithm, clients, input_dim)
+    except Exception as exc:
+        import traceback
+        with _LOCK:
+            _STATE["status"]        = "error"
+            _STATE["current_phase"] = "error"
+            _STATE["phase_label"]   = f"Simulation error: {exc}"
+            _STATE["error"]         = traceback.format_exc()
+
+
+def _fl_thread_body(num_rounds: int, speed: float, algorithm: str,
+                    clients: list, input_dim: int):
     use_yogi  = "FedYogi" in algorithm
     use_prox  = "FedProx" in algorithm
     mu        = 0.5 if use_prox else 0.0
@@ -473,7 +485,7 @@ def fl_thread(num_rounds: int, speed: float, algorithm: str,
         total_n   = sum(c_samples)
         g_loss    = float(sum(l * n / total_n for l, n in zip(c_losses, c_samples)))
 
-        # Global MAE + R² on combined validation set (mirrors app_test.py approach)
+        # Global MAE + R² on combined validation set
         _eval_model = ICUModel(input_dim)
         set_weights(_eval_model, global_weights)
         _global_eval = evaluate_model(_eval_model, combined_X_val, combined_y_val)
@@ -484,8 +496,8 @@ def fl_thread(num_rounds: int, speed: float, algorithm: str,
             break
 
         # ── Phase ⑥ Round complete ────────────────────────────────────────
-        is_best = g_loss < _STATE["best_loss"]
         with _LOCK:
+            is_best = g_loss < _STATE["best_loss"]
             _STATE["current_phase"] = "round_complete"
             _STATE["phase_label"]   = (
                 f"Round {rnd}/{num_rounds} complete — "
@@ -702,10 +714,11 @@ def _heatmap_chart(layer1_weights):
 # inside an iframe — bypassing all Markdown processing and sanitization.
 
 def _network_diagram(phase, rnd, total, algorithm, client_metrics,
-                      best_round, best_loss):
+                      best_round, best_loss, client_sizes=None):
     """Returns a full HTML document for use with st.components.v1.html()."""
 
     # ── Phase badge ───────────────────────────────────────────────────────
+    bl_fmt = f"{best_loss:.4f}" if best_round > 0 else "—"
     badge_cfg = {
         "idle":          ("#7fb3c8", "⊙",  "Idle — configure and press ▶ Start"),
         "distributing":  ("#00d2ff", "①",  f"Round {rnd}/{total} — Server distributing global weights → hospitals"),
@@ -714,7 +727,7 @@ def _network_diagram(phase, rnd, total, algorithm, client_metrics,
         "training_2":    ("#dc3545", "④",  f"Round {rnd}/{total} — Training Hospital 2 ({HOSP_NAMES[2]})"),
         "aggregating":   ("#9c27b0", "⑤",  f"Round {rnd}/{total} — Hospitals → Server  [{algorithm}]"),
         "round_complete":("#00c853", "⑥",  f"Round {rnd}/{total} complete"),
-        "done":          ("#ffd700", "✓",  f"Simulation complete — Best: Rnd {best_round}  (loss: {best_loss:.4f})"),
+        "done":          ("#ffd700", "✓",  f"Simulation complete — Best: Rnd {best_round}  (loss: {bl_fmt})"),
         "stopped":       ("#ff9800", "⏹", "Simulation stopped by user"),
         "error":         ("#f44336", "✗",  "Error during simulation"),
     }
@@ -885,19 +898,19 @@ body {{ background: #0a1628; font-family: 'Segoe UI', Arial, sans-serif;
     <div class="hosp" style="background:{h0bg};border:{h0bd};">
       <div class="hosp-title" style="color:{HOSP_COLORS[0]};">&#127973; Hospital 0</div>
       <div class="hosp-sub">{HOSP_NAMES[0]}</div>
-      <div class="hosp-cnt">~15,889 patients</div>
+      <div class="hosp-cnt">{f"{client_sizes[0]:,}" if client_sizes else "—"} samples</div>
       {h0ft}
     </div>
     <div class="hosp" style="background:{h1bg};border:{h1bd};">
       <div class="hosp-title" style="color:{HOSP_COLORS[1]};">&#127973; Hospital 1</div>
       <div class="hosp-sub">{HOSP_NAMES[1]}</div>
-      <div class="hosp-cnt">~15,890 patients</div>
+      <div class="hosp-cnt">{f"{client_sizes[1]:,}" if client_sizes else "—"} samples</div>
       {h1ft}
     </div>
     <div class="hosp" style="background:{h2bg};border:{h2bd};">
       <div class="hosp-title" style="color:{HOSP_COLORS[2]};">&#127973; Hospital 2</div>
       <div class="hosp-sub">{HOSP_NAMES[2]}</div>
-      <div class="hosp-cnt">~16,372 patients</div>
+      <div class="hosp-cnt">{f"{client_sizes[2]:,}" if client_sizes else "—"} samples</div>
       {h2ft}
     </div>
   </div>
@@ -921,7 +934,7 @@ def load_training_metadata() -> dict:
         "split_type": "IID",
         "train_samples": 12795, "test_samples": 2559,
         "input_features": 108,
-        "model_architecture": "108 → 128 → 64 → 32 → 1  (ReLU, no Dropout, FedProx)",
+        "model_architecture": "108 → 256 → 128 → 64 → 1  (ReLU, Dropout 0.3, FedProx)",
         "best_round": 18,
         "final_mae": 1.8968, "final_r2": 0.5995,
         "pred_range_min": -0.22, "pred_range_max": 14.38,
@@ -973,7 +986,16 @@ if _missing:
     )
     st.stop()
 
-clients, input_dim = load_client_data()
+try:
+    clients, input_dim = load_client_data()
+except Exception as _e:
+    st.error(
+        f"⛔ Failed to load training data: {_e}. "
+        "Run `python migrate_to_db.py` then `python train_federated.py` to populate the database.",
+        icon="⛔",
+    )
+    st.stop()
+
 m = load_training_metadata()
 
 # ── Two-tab layout ────────────────────────────────────────────────────────────
@@ -1026,9 +1048,10 @@ with tab_sim:
     if algorithm_ui == "FedYogi + FedProx" and not is_running:
         st.markdown(f"""
         <div class="algo-banner">
-          ★ <b style="color:#00d2ff;">FedYogi + FedProx</b> — this is the exact algorithm
-          used in your <code>train_federated.py</code> run that achieved
-          <b style="color:#00d2ff;">R² = {m['final_r2']:.4f}</b>
+          ★ <b style="color:#00d2ff;">FedYogi + FedProx</b> — same algorithm as your
+          <code>train_federated.py</code> training run
+          (R² = <b style="color:#00d2ff;">{m.get('final_r2', 0.0):.4f}</b>
+          on the full {m.get('num_rounds', 100)}-round run)
         </div>
         """, unsafe_allow_html=True)
 
@@ -1184,6 +1207,7 @@ without any patient records leaving their respective institutions.
                     S["client_metrics"],
                     S["best_round"],
                     bl if bl < 1e9 else 0.0,
+                    client_sizes=[clients[i]["n_total"] for i in range(3)],
                 ),
                 height=350,
                 scrolling=False,
@@ -1205,7 +1229,12 @@ updated weights back to the server, which blends them using the selected algorit
         with metric_col:
             rnd   = S["current_round"]
             total = S["total_rounds"]
-            pct   = rnd / total if total > 0 else 0.0
+            # Show completed rounds / total while running (rnd is set at round START,
+            # so subtract 1 to avoid showing 100% while the last round is in progress).
+            if S["status"] == "running":
+                pct = max(0, rnd - 1) / total if total > 0 else 0.0
+            else:
+                pct = rnd / total if total > 0 else 0.0
             sc    = {"running":"#00d2ff","done":"#ffd700",
                      "stopped":"#ff9800","error":"#f44336"}.get(S["status"],"#7fb3c8")
             bl    = S["best_loss"]
@@ -1441,8 +1470,8 @@ to specific clinical features (low SpO₂, high RR, certain TF-IDF terms).
             st.markdown(
                 '<div style="font-size:11px;color:#4a7a8a;padding:8px 2px 0 2px;">'
                 '✓ Best = lowest global loss achieved so far &nbsp;·&nbsp; '
-                'H0/H1/H2 = per-hospital validation loss &nbsp;·&nbsp; '
-                'Global = weighted average &nbsp;·&nbsp; Updates live during simulation.</div>',
+                'H0/H1/H2 = per-hospital training loss (weighted MSE + FedProx term) &nbsp;·&nbsp; '
+                'Global = sample-weighted average &nbsp;·&nbsp; Updates live during simulation.</div>',
                 unsafe_allow_html=True,
             )
 
@@ -1517,14 +1546,14 @@ with tab_info:
     )
 
     _cfg_tiles = [
-        ("FL Rounds",        str(m["num_rounds"]),        "#00d2ff","#1565c0","rounds of federation"),
-        ("Hospitals",        str(m["hospitals"]),          "#b39ddb","#4527a0","ICU sites"),
-        ("Epochs / Round",   str(m["epochs_per_round"]),  "#4caf50","#1b5e20","local training epochs"),
-        ("Aggregation",      m["aggregation"],             "#f0a500","#7a4f00","weight averaging method"),
-        ("Training Samples", f"{m['train_samples']:,}",   "#26c6da","#00607a","real ICU patients"),
-        ("Test Samples",     f"{m['test_samples']:,}",    "#81c784","#2e6b30","held-out patients"),
-        ("Best Round",       str(m["best_round"]),         "#ffd700","#7a6000","lowest eval loss"),
-        ("Split Type",       m["split_type"],              "#9575cd","#3d1a8a","data distribution"),
+        ("FL Rounds",        str(m.get("num_rounds", 100)),                     "#00d2ff","#1565c0","rounds of federation"),
+        ("Hospitals",        str(m.get("hospitals", 3)),                         "#b39ddb","#4527a0","ICU sites"),
+        ("Epochs / Round",   str(m.get("epochs_per_round", 3)),                 "#4caf50","#1b5e20","local training epochs"),
+        ("Aggregation",      m.get("aggregation", "FedYogi + FedProx"),          "#f0a500","#7a4f00","weight averaging method"),
+        ("Training Samples", f"{m.get('train_samples', 0):,}",                  "#26c6da","#00607a","real ICU patients"),
+        ("Test Samples",     f"{m.get('test_samples', 0):,}",                   "#81c784","#2e6b30","held-out patients"),
+        ("Best Round",       str(m.get("best_round", 0)),                        "#ffd700","#7a6000","lowest eval loss"),
+        ("Split Type",       m.get("split_type", "IID"),                         "#9575cd","#3d1a8a","data distribution"),
     ]
 
     _t1, _t2, _t3, _t4 = st.columns(4)
@@ -1555,13 +1584,13 @@ with tab_info:
     )
 
     _perf_tiles = [
-        ("Mean Abs. Error",  f"{m['final_mae']:.3f}", "SOFA points", "#00d2ff","#1565c0",
+        ("Mean Abs. Error",  f"{m.get('final_mae', 0.0):.3f}",      "SOFA points", "#00d2ff","#1565c0",
          "Average prediction error on held-out ICU patients"),
-        ("R² Score",         f"{m['final_r2']:.3f}",  "variance",    "#4caf50","#1b5e20",
+        ("R² Score",         f"{m.get('final_r2', 0.0):.3f}",       "variance",    "#4caf50","#1b5e20",
          "Proportion of variance explained by the model"),
-        ("Pred Range Min",   f"{m['pred_range_min']:.1f}", "SOFA",   "#26c6da","#00607a",
+        ("Pred Range Min",   f"{m.get('pred_range_min', 0.0):.1f}", "SOFA",        "#26c6da","#00607a",
          "Lowest predicted SOFA across test set"),
-        ("Pred Range Max",   f"{m['pred_range_max']:.1f}", "SOFA",   "#f0a500","#7a4f00",
+        ("Pred Range Max",   f"{m.get('pred_range_max', 24.0):.1f}","SOFA",        "#f0a500","#7a4f00",
          "Highest predicted SOFA across test set"),
     ]
 
@@ -1624,9 +1653,9 @@ with tab_info:
             <b style="color:#7fb3c8;">Optimizer:</b> AdamW (weight_decay=1e-4)<br>
             <b style="color:#7fb3c8;">Loss:</b> Weighted MSE — high-SOFA patients get up to 4.7× gradient weight<br>
             <b style="color:#7fb3c8;">No Dropout</b> — causes FL divergence; regularised by AdamW instead<br>
-            <b style="color:#7fb3c8;">Parameters:</b> ~23,000 total trainable weights<br>
+            <b style="color:#7fb3c8;">Parameters:</b> ~69,121 total trainable weights<br>
             <b style="color:#7fb3c8;">FL Framework:</b> Flower (flwr) · FedYogi + FedProx<br>
-            <b style="color:#7fb3c8;">Best round:</b> {m['best_round']} of {m['num_rounds']}
+            <b style="color:#7fb3c8;">Best round:</b> {m.get('best_round', 0)} of {m.get('num_rounds', 100)}
         </div>
         """, unsafe_allow_html=True)
 
@@ -1647,10 +1676,10 @@ with tab_info:
                 ✅ Differential Privacy ENABLED
             </div>
             <div style="display:flex;gap:20px;flex-wrap:wrap;font-size:12px;color:#c8dced;">
-                <span><b style="color:#7fb3c8;">σ (noise multiplier):</b> {m['dp_sigma']}</span>
-                <span><b style="color:#7fb3c8;">S (sensitivity):</b> {m['dp_sensitivity']}</span>
-                <span><b style="color:#7fb3c8;">ε (privacy budget):</b> ≈{m['dp_epsilon']}</span>
-                <span><b style="color:#7fb3c8;">δ:</b> {m['dp_delta']}</span>
+                <span><b style="color:#7fb3c8;">σ (noise multiplier):</b> {m.get('dp_sigma', '—')}</span>
+                <span><b style="color:#7fb3c8;">S (sensitivity):</b> {m.get('dp_sensitivity', '—')}</span>
+                <span><b style="color:#7fb3c8;">ε (privacy budget):</b> ≈{m.get('dp_epsilon', '—')}</span>
+                <span><b style="color:#7fb3c8;">δ:</b> {m.get('dp_delta', '—')}</span>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -1669,7 +1698,8 @@ with tab_info:
                 ⚙️ Differential Privacy: Disabled in current build
             </div>
             <div style="font-size:11px;color:#b8d0e0;margin-top:4px;">
-                Model trained with plain FedAvg (no noise). Enable: set
+                Model trained with FedYogi + FedProx — no Gaussian noise added to weight updates.
+                Enable: set
                 <code style="background:rgba(0,0,0,0.4);padding:1px 5px;border-radius:3px;">USE_DP = True</code>
                 in train_federated.py and retrain.
             </div>

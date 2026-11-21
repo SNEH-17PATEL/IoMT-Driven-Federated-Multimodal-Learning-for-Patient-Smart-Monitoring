@@ -26,10 +26,9 @@ test.describe('Monitor Dashboard', () => {
     await expect(page.locator('text=/\\d{1,2}s|···/')).toBeVisible({ timeout: 10000 })
   })
 
-  test('vitals grid shows 7 vital cards', async ({ page }) => {
-    // Look for vital labels
-    for (const label of ['Heart Rate', 'SpO₂', 'Systolic BP']) {
-      await expect(page.locator(`text=/${label}/`).first()).toBeVisible({ timeout: 15000 })
+  test('vitals grid shows the vital cards', async ({ page }) => {
+    for (const label of ['Heart Rate', 'SpO₂', 'Resp. Rate', 'Temperature', 'Sys. BP', 'MAP', 'Dia. BP']) {
+      await expect(page.getByText(label, { exact: true }).first()).toBeVisible({ timeout: 15000 })
     }
   })
 
@@ -51,7 +50,8 @@ test.describe('Monitor Dashboard', () => {
     const fab = page.getByRole('button', { name: /Open SOFA Score Validation/i })
     await expect(fab).toBeVisible({ timeout: 10000 })
     await fab.click()
-    await expect(page.locator('text=/MAE|AUROC|R²/')).toBeVisible({ timeout: 5000 })
+    await expect(page.getByText('MAE', { exact: true }).first()).toBeVisible({ timeout: 5000 })
+    await expect(page.getByText('R²', { exact: true }).first()).toBeVisible()
   })
 
   test('exit button returns to patient selection', async ({ page }) => {

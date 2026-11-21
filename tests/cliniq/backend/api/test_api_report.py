@@ -118,26 +118,44 @@ def test_report_patient_zero_returns_400(client, predict_p1):
 
 
 @pytest.mark.api
-def test_report_predict_result_patient_id_mismatch_returns_400(client, predict_p1):
-    """C5 fix: predict_result.patient_id must match patient_id in body."""
-    r = _report(client, predict_p1, patient_id=2)  # p1 data but pid=2
-    assert r.status_code == 400
+def test_report_without_prior_prediction_returns_409(client, monkeypatch):
+    """The report is built only from the server's own last prediction."""
+    from backend.api.predict import _LAST_PREDICT
+    monkeypatch.delitem(_LAST_PREDICT, 3, raising=False)
+    r = client.post("/api/report", json={"patient_id": 3, "care_mode": "hospital"})
+    assert r.status_code == 409
 
 
 @pytest.mark.api
-def test_report_missing_vitals_returns_400(client, predict_p1):
-    """C5 fix: predict_result.vitals must be a dict."""
-    bad = {**predict_p1, "vitals": "not_a_dict"}
-    r = _report(client, bad)
-    assert r.status_code == 400
+def test_report_ignores_client_supplied_predict_result(client, predict_p1, monkeypatch):
+    """Client-sent data (even malformed or for another patient) is never used."""
+    import backend.api.report as report_mod
+    from backend.api.predict import _LAST_PREDICT
+    seen = {}
+
+    def fake_generate(pr, care_mode, api_key):
+        seen["pr"] = pr
+        return {"sections": {}, "care_mode": care_mode}
+
+    monkeypatch.setattr(report_mod, "generate_report", fake_generate)
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    bad = {"patient_id": 2, "vitals": "not_a_dict"}  # no sofa_score either
+    r = _report(client, bad, patient_id=1)
+    assert r.status_code == 200, r.text
+    assert seen["pr"] is _LAST_PREDICT[1]
+    assert seen["pr"]["patient_id"] == 1
 
 
 @pytest.mark.api
-def test_report_missing_sofa_score_returns_400(client, predict_p1):
-    """C5 fix: predict_result.sofa_score is required."""
-    bad = {k: v for k, v in predict_p1.items() if k != "sofa_score"}
-    r = _report(client, bad)
-    assert r.status_code == 400
+def test_report_uses_server_prediction_with_minimal_body(client, predict_p1, monkeypatch):
+    """The frontend sends only patient_id and care_mode — that must be enough."""
+    import backend.api.report as report_mod
+    monkeypatch.setattr(report_mod, "generate_report",
+                        lambda pr, mode, key: {"sections": {}, "care_mode": mode})
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    r = client.post("/api/report", json={"patient_id": 1, "care_mode": "homecare"})
+    assert r.status_code == 200, r.text
+    assert r.json()["care_mode"] == "homecare"
 
 
 @pytest.mark.api

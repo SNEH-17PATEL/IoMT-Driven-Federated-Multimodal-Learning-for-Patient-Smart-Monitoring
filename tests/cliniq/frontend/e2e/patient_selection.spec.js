@@ -22,7 +22,7 @@ test.describe('Patient Selection', () => {
 
   test('ClinIQ branding is visible', async ({ page }) => {
     await page.goto('/')
-    await expect(page.getByText('ClinIQ')).toBeVisible({ timeout: 5000 })
+    await expect(page.getByRole('heading', { name: 'ClinIQ' })).toBeVisible({ timeout: 5000 })
   })
 
   test('clicking Patient 1 navigates to monitor dashboard', async ({ page }) => {

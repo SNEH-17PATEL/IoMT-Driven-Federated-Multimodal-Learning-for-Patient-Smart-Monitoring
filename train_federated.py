@@ -6,7 +6,7 @@ Combines Phase 0 (data preprocessing from BigQuery) with Phase 1–6 (FL trainin
 Phase 0 — Preprocessing  (skipped automatically if fl_training table in the DB
                            already has data, or set SKIP_PREPROCESSING = True)
   • Queries BigQuery: ml_dataset_final (last row per ICU stay) + clinical_notes
-  • TF-IDF on clinical notes  (600 bigram features, 80K note sample)
+  • TF-IDF on clinical notes  (~90 SOFA-whitelist terms, up to 283,208 note sample)
   • Merges vitals + TF-IDF, drops IDs, fills NaN → fillna(0)
   • Train/test split  (80 / 20, stratified by High-Risk flag)
   • StandardScaler fit on X_train
@@ -16,10 +16,11 @@ Phase 0 — Preprocessing  (skipped automatically if fl_training table in the DB
 Phase 1-6 — FL Training  (always runs)
   • Loads client data from fl_training table (already StandardScaler-normalised)
   • SHAP background samples (300 rows from combined training data)
-  • Flower FL simulation: 20 rounds, all-3-clients, SaveBestStrategy
-      - Weighted MSE loss  (1 + SOFA×3  →  High-Risk gets ~2.4× gradient weight)
+  • Flower FL simulation: 100 rounds, all-3-clients, SaveBestStrategy
+      - Plain MSE loss     (weighted loss raised MAE without better recall — see model_utils)
+      - Server aggregation: FedAvg + FedProx  (USE_FEDYOGI=True switches back to FedYogi)
       - AdamW optimizer    (lr=0.001, weight_decay=1e-4)
-      - LR scheduling via server_round config (LR_DECAY=1.0 = no decay by default)
+      - LR scheduling via server_round config (LR_DECAY=0.99 per round)
       - Optional: Non-IID split, Differential Privacy, Oversampling
   • Saves: federated_model.pth, shap_background.npy, training_metadata.json
 
@@ -34,6 +35,7 @@ Usage:
 """
 
 import json
+import random
 import warnings
 import numpy as np
 import pandas as pd
@@ -50,6 +52,12 @@ from model_utils import (
 )
 from db import init_db, get_fl_client_data, fl_training_exists
 
+# Seed all RNGs for reproducible results across runs.
+# Ray scheduling in fl.simulation is not deterministic regardless of seed.
+torch.manual_seed(42)
+np.random.seed(42)
+random.seed(42)
+
 # =============================================================
 # ── CONFIG ────────────────────────────────────────────────────
 # =============================================================
@@ -59,7 +67,7 @@ MODEL_PATH = "models/"
 
 # ── BigQuery (Phase 0) ──
 BIGQUERY_PROJECT  = "mimic-project-2"
-BIGQUERY_DATASET  = "Dataset"   # actual dataset name in BigQuery console
+BIGQUERY_DATASET  = "dataset_v2"   # rebuilt dataset, see docs/SQL_COMMANDS.md
 BIGQUERY_LOCATION = "US"        # Data location shown in BigQuery → Dataset → Details
 
 # Set True to skip BigQuery + TF-IDF entirely and go straight to FL training.
@@ -75,8 +83,8 @@ TFIDF_MAX_DF       = 0.9
 TFIDF_MIN_DF       = 10
 
 # ── FL Training ──
-NUM_ROUNDS       = 100   # 100 rounds — FedYogi consistently finds best at round 24-29
-EPOCHS_PER_ROUND = 3     # sweet spot: 3E with FedYogi gave best R²=0.2229
+NUM_ROUNDS       = 100   # best round is saved automatically (SaveBestStrategy)
+EPOCHS_PER_ROUND = 3     # local epochs per round on each hospital
 BATCH_SIZE       = 64
 SHAP_BG_SAMPLES  = 300
 
@@ -104,7 +112,15 @@ MU_FEDPROX = 0.5
 # produces a large pseudo-gradient — the very failure mode that caused the
 # 82× loss explosion seen with FedAdam η=0.01 (rounds 7-13 in a prior run).
 # Same η=0.01 as the best FedAdam run → same exploration power, no explosion.
-SERVER_ETA    = 0.01   # server-side step size — same as best FedAdam run (R²=0.2148)
+# USE_FEDYOGI = False (default) → plain FedAvg aggregation (FedProx still on).
+# On dataset_v2, FedYogi with η=0.01 made the server loss explode in rounds 5-10
+# (8 → 123) and ended worse.  40-round simulation on the same test set, plain MSE:
+#     FedAvg            : MAE 1.871  R² 0.450  AUROC 0.916
+#     FedYogi η=0.001   : MAE 1.890  R² 0.438  AUROC 0.919
+#     FedYogi η=0.01 *  : MAE 1.943  R² 0.436  AUROC 0.917   (* weighted MSE, old setup)
+# Set USE_FEDYOGI = True to use FedYogi again; SERVER_ETA is then used.
+USE_FEDYOGI   = False
+SERVER_ETA    = 0.001  # FedYogi server step size (only if USE_FEDYOGI) — 0.01 was unstable
 SERVER_BETA1  = 0.9    # momentum decay (standard Adam)
 SERVER_BETA2  = 0.99   # adaptive rate decay (standard Adam)
 SERVER_TAU    = 1e-3   # stability constant
@@ -202,146 +218,6 @@ def run_preprocessing():
         text = re.sub(r'[^a-z\s]', ' ', text)              # keep only letters + spaces
         return ' '.join(text.split())
 
-    # ── Extended stop words (replaces the whitelist approach) ──
-    # Rather than restricting to a fixed vocabulary (which reduces features
-    # and loses data-driven signal), we use aggressive stop words to remove
-    # noise while letting TF-IDF pick the top 600 most informative clean terms.
-    # The _clean_clinical_text() function already removes numbers and MIMIC
-    # de-identification artifacts before TF-IDF runs.
-    # NOTE: _MEDICAL_VOCABULARY is kept here as a reference/documentation
-    # of the clinical terms we expect to appear in the vocabulary, but it
-    # is NOT passed as the vocabulary= parameter — TF-IDF is data-driven.
-    _MEDICAL_VOCABULARY_REF = sorted(set([
-        # ── Respiratory (SOFA component 1: PaO2/FiO2) ──
-        "airway", "aspiration", "asthma", "atelectasis", "auscultation",
-        "bipap", "breath", "breathing", "bronchial", "copd", "cpap",
-        "crackles", "diminished", "dyspnea", "effusion", "extubated",
-        "extubation", "fio", "hypoxia", "hypercapnia", "intubated", "intubation",
-        "lungs", "nasal", "oxygen", "pleural", "pneumonia", "pna",
-        "pulmonary", "respiratory", "secretions", "sob", "sputum",
-        "stridor", "tachypnea", "ventilation", "ventilator", "wheezes",
-        "breath sounds", "clear auscultation", "lungs clear",
-        "mechanical ventilation", "positive pressure", "pulmonary edema",
-        "respiratory distress", "respiratory failure", "respiratory rate",
-        "shortness breath",
-
-        # ── Cardiovascular (SOFA component 4: MAP/vasopressors) ──
-        "afib", "arrhythmia", "arterial", "artery", "aorta", "aortic",
-        "bradycardia", "cabg", "cad", "cardiac", "cardiac arrest",
-        "cardiothoracic", "cardiovascular", "cardiogenic", "carotid", "chf",
-        "coronary", "cva", "dobutamine", "dopamine",
-        "ejection", "epinephrine", "femoral", "fibrillation",
-        "hemodynamic", "hemodynamically", "htn", "hypotension", "hypertension",
-        "ischemia", "lad", "lopressor", "mitral", "murmur", "myocardial",
-        "norepinephrine", "pacemaker", "pericardial", "pressors",
-        "rca", "regurgitation", "resuscitation", "shock",
-        "stent", "stenosis", "systolic",
-        "tachycardia", "vascular", "vasopressor", "vasopressors",
-        "ventricular", "valve",
-        "aortic valve", "artery bypass", "artery disease",
-        "atrial fibrillation", "bypass graft", "cardiac arrest",
-        "cardiac catheterization", "cardiac output", "cardiogenic shock",
-        "coronary artery", "failure acute", "heart failure", "heart rate",
-        "hemodynamically stable", "rate rhythm", "ventricular tachycardia",
-
-        # ── Renal (SOFA component 6: creatinine/urine output) ──
-        "angap", "bun", "creat", "creatinine", "dialysis", "hco",
-        "oliguria", "phos", "phosphate", "renal", "urine", "urean",
-        "angap blood", "creat hco", "hco angap",
-        "acute kidney", "kidney injury", "renal failure",
-        "urine output", "urean creat",
-
-        # ── Hepatic (SOFA component 3: bilirubin) ──
-        "anicteric", "ascites", "alt", "ast", "bilirubin", "cirrhosis",
-        "coagulopathy", "hepatic", "hepatitis", "hepatorenal",
-        "icterus", "jaundice", "liver", "transaminase",
-        "end stage", "liver failure", "portal hypertension",
-
-        # ── CNS (SOFA component 5: GCS) ──
-        "agitation", "altered", "aphasia", "coma", "confused",
-        "encephalopathy", "glasgow", "lethargy", "neuro",
-        "obtunded", "pupils", "sedated", "sedation", "seizure",
-        "alert oriented", "altered mental", "mental status", "neck supple",
-
-        # ── Coagulation (SOFA component 2: platelets) ──
-        "anticoagulation", "bleed", "bleeding", "coagulation",
-        "coumadin", "hematoma", "hemorrhage", "heparin",
-        "inr", "plt", "thrombosis", "transfusion",
-        "blood ptt", "fresh frozen", "inr blood",
-        "plt blood", "ptt inr", "rdw plt",
-
-        # ── Infection / Sepsis ──
-        "antibiotics", "bacteremia", "candida", "cellulitis",
-        "cultures", "culture", "endocarditis", "fever", "fevers",
-        "fungemia", "infection", "infectious", "meningitis",
-        "mrsa", "sepsis", "septic", "septicemia",
-        "vanco", "vancomycin",
-        "blood cultures", "gram negative", "gram positive",
-
-        # ── ICU laboratory values ──
-        "albumin", "arterial", "bicarbonate", "bnp", "calcium",
-        "chloride", "fibrinogen", "glucose", "hct", "hematocrit",
-        "hgb", "lactate", "magnesium", "mch", "mchc", "mcv",
-        "phosphate", "platelets", "potassium", "procalcitonin",
-        "rbc", "rdw", "sodium", "troponin", "wbc",
-        "arterial blood", "blood glucose", "blood gas",
-        "glucose urean", "hct mcv", "hgb hct",
-        "mch mchc", "mchc rdw", "mcv mch",
-        "platelet count", "potassium chloride",
-        "rbc hgb", "sodium potassium", "wbc rbc",
-
-        # ── ICU medications ──
-        "amiodarone", "aspirin", "ativan", "bolus", "coumadin",
-        "dilaudid", "dobutamine", "dopamine", "drip",
-        "epinephrine", "fentanyl", "foley", "gtt",
-        "heparin", "insulin", "ivf", "lasix", "lopressor",
-        "metoprolol", "morphine", "norepinephrine",
-        "propofol", "rocuronium", "steroids", "tylenol",
-        "vanco", "vasopressin",
-
-        # ── Clinical symptoms / signs ──
-        "abdominal", "afebrile", "bilateral", "bilaterally",
-        "chills", "cough", "diarrhea", "distended", "distress",
-        "dyspnea", "edema", "hemoptysis", "nausea",
-        "nontender", "pain", "sob", "syncope",
-        "tender", "tenderness", "vomiting", "weakness", "worsening",
-        "abdominal pain", "bowel sounds", "chest pain",
-        "nausea vomiting", "pain control",
-
-        # ── Diagnoses / medical history ──
-        "anemia", "aneurysm", "cancer",
-        "diabetes", "hyperlipidemia", "hypertension",
-        "infarction", "ischemia", "stroke",
-        "atrial fibrillation", "chronic pain",
-        "diabetes mellitus", "heart failure",
-        "myocardial infarction", "renal failure",
-
-        # ── Anatomy (clinically relevant) ──
-        "abd", "abdomen", "cardiac", "carotid",
-        "coronary", "femoral", "hepatic", "lungs",
-        "mitral", "pleural", "pulmonary", "renal",
-        "respiratory", "ventricular",
-        "abd soft", "abdomen soft", "intensive care",
-
-        # ── Procedures ──
-        "bypass", "cabg", "catheter", "catheterization", "cath",
-        "chest tube", "dialysis", "drainage", "extubation",
-        "foley", "intubation", "paracentesis", "repair",
-        "replacement", "resection", "stent", "surgery",
-        "surgical", "thoracentesis", "transplant",
-        "artery bypass", "bypass graft", "cardiac catheterization",
-        "central line", "fluid resuscitation",
-        "invasive procedure", "surgical invasive",
-
-        # ── Vital sign clinical references ──
-        "bradycardia", "hypotensive", "pulse", "pulses",
-        "sat", "sats", "saturation", "tachycardia", "temperature",
-
-        # ── Other important ICU terms ──
-        "blood", "crrt", "icu", "micu", "nad", "resp", "stable",
-        "blood pressure", "blood wbc",
-    ]))
-
     # ── Sample, group by admission, clean, limit ─────────────
     notes_sampled = notes.sample(n=min(NOTES_SAMPLE_SIZE, len(notes)), random_state=42)
     notes_combined = (
@@ -401,98 +277,6 @@ def run_preprocessing():
         "failure", "acute", "pneumonia", "ards",
         "pulmonary", "dyspnea", "edema",
     })
-
-    # ── Legacy stop-word block (kept for reference, no longer active) ─────
-    # _ADMIN_STOP was used with data-driven TF-IDF to filter noise.
-    # With vocabulary=_SOFA_VOCABULARY, sklearn ignores stop_words entirely.
-    _ADMIN_STOP = {
-        # MIMIC-III de-identification artifact words
-        "hospital", "hospital1", "hospital2", "hospital3", "hospital4",
-        "name", "lastname", "firstname", "namepattern1", "namepattern2",
-        "name3", "name4", "name8", "stitle",
-        # Administrative / chart-navigation
-        "admission", "admitted", "discharge", "discharged",
-        "transfer", "transferred", "rehab",
-        "date", "birth", "age", "sex", "gender",
-        "floor", "room", "bed", "unit", "service", "team",
-        "note", "report", "documentation", "recorded", "having", "known",
-        "shift", "morning", "night", "overnight", "evening", "daily", "weekly",
-        # People / social
-        "patient", "family", "daughter", "son", "wife", "husband",
-        "mother", "father", "brother", "sister", "friend",
-        # Generic temporal
-        "ago", "prior", "previous", "recent", "currently", "initial",
-        "following", "subsequent", "overall", "approximately",
-        # Chart-completion filler
-        "noted", "ordered", "placed", "obtained", "performed", "given",
-        "called", "states", "denies", "reports",
-        "cont", "continue", "continued", "continues",
-        "action", "response", "evaluation",
-        # Generic qualifiers
-        "good", "poor", "old", "new", "large", "small",
-        "right", "left", "upper", "lower",
-        "including", "total", "multiple", "also", "however",
-        "since", "although", "within", "without", "due", "via",
-        # Common chart narrative words
-        "plan", "assessment", "case", "course", "brief", "general",
-        "male", "man", "woman", "female", "year", "years",
-        "day", "days", "week", "weeks", "month", "months",
-        "history", "past", "present", "social", "complaint",
-        "allergies", "medications", "meds", "labs", "results",
-        "exam", "examination", "physical", "pertinent",
-        "changed", "changes", "improved", "improving",
-        "high", "low", "normal", "abnormal", "positive", "negative",
-        # Generic ability/state words (not clinically discriminative)
-        "able", "unable", "active", "activity", "adequate", "appropriate",
-        "awake", "aware", "benign", "comfortable", "complicated",
-        "concern", "condition", "consistent", "controlled",
-        "current", "decreased", "deep", "did", "does",
-        "equal", "free", "frequent", "general", "goal",
-        "improved", "improvement", "intact", "later", "likely",
-        "minimal", "moderate", "minimal", "minor", "multiple",
-        "non", "notable", "occasional", "open", "oral",
-        "outside", "possible", "present", "prior", "quit",
-        "recent", "recently", "resolved", "rest", "showed",
-        "significant", "slightly", "stopped", "subsequently",
-        "today", "tolerated", "tolerating", "unable", "unchanged",
-        "unknown", "use", "went", "white", "work", "yesterday",
-        # Anatomical locations too generic to be discriminative
-        "air", "area", "arm", "arrival", "base", "baseline", "bases",
-        "bilat", "cervical", "chair", "code", "face", "facial",
-        "fall", "foot", "groin", "head", "hip", "leg",
-        "line", "lobe", "midline", "mouth", "movement", "movements",
-        "site", "size", "skin", "sounds", "spine",
-        "stage", "wall", "weight",
-        # Common clinical narrative verbs (not discriminative)
-        "admit", "appears", "began", "care", "cell",
-        "checks", "commands", "consult", "consulted",
-        "denied", "died", "diet", "drain",
-        "evidence", "feeling", "felt", "flow",
-        "follow", "followed", "function", "grade",
-        "life", "light", "loss", "management",
-        "monitor", "monitoring", "pending", "place", "placement",
-        "precautions", "presented", "presents", "received",
-        "remained", "remains", "removal", "removed",
-        "reported", "required", "requiring", "revealed",
-        "review", "seen", "sensation", "sent", "setting",
-        "signs", "sleep", "soft", "speech",
-        "started", "status", "strength", "study",
-        "supple", "support", "symptoms", "syndrome",
-        "systems", "taken", "taking", "therapy", "thought",
-        "time", "times", "tobacco", "treated", "treatment",
-        "tube", "type", "underwent", "units", "valuables",
-        "vessel", "vital", "vital signs", "vitals",
-        # Administrative chart terms
-        "attending", "attending chief", "drugs attending",
-        "procedure illness", "review systems", "sig tablet",
-        "tablet sig", "warm perfused",
-        # Non-clinical / personal items that slip through text cleaning
-        "wallet", "money", "job", "wires", "afternoon", "morning",
-        "evening", "contact", "valuables", "belongings",
-    }
-    _all_stop_words = list(ENGLISH_STOP_WORDS) + list(_ADMIN_STOP)
-    # _all_stop_words is no longer passed to TfidfVectorizer (vocabulary= mode
-    # ignores stop_words). Kept for potential future use.
 
     tfidf_vec = TfidfVectorizer(
         vocabulary=list(_SOFA_VOCABULARY),                 # SOFA-specific whitelist only
@@ -561,14 +345,18 @@ def run_preprocessing():
 
     data_train = X_train_df.copy()
     data_train["sofa_score"] = y_train
-    data_train = sk_shuffle(data_train, random_state=42)
 
-    n = len(data_train)
-    splits = [
-        data_train.iloc[:int(n * 0.33)],
-        data_train.iloc[int(n * 0.33):int(n * 0.66)],
-        data_train.iloc[int(n * 0.66):],
-    ]
+    # Stratified IID 3-way split: each hospital gets the same high-risk proportion.
+    # Plain shuffle+slice can skew one hospital's class mix by chance.
+    _strat = (data_train["sofa_score"] >= 10).astype(int)
+    split_a, split_bc = train_test_split(
+        data_train, test_size=2/3, random_state=42, stratify=_strat
+    )
+    _strat_bc = (split_bc["sofa_score"] >= 10).astype(int)
+    split_b, split_c = train_test_split(
+        split_bc, test_size=0.5, random_state=42, stratify=_strat_bc
+    )
+    splits = [split_a, split_b, split_c]
 
     # ── Save client splits to SQLite (primary storage) ───────
     import sqlite3 as _sqlite3
@@ -576,17 +364,25 @@ def run_preprocessing():
     from db import init_db as _init_db, DB_PATH as _DB_PATH
     _init_db()
     _db_conn = _sqlite3.connect(_DB_PATH)
+    _db_conn.execute("PRAGMA journal_mode=WAL")
     for i, split in enumerate(splits):
         y_h = split["sofa_score"]
         X_h = split.drop(columns=["sofa_score"])
         save_df = X_h.copy()
         save_df["sofa_score"] = y_h.values
-        # Replace this client's rows in the DB on every retrain
-        _db_conn.execute("DELETE FROM fl_training WHERE client_id = ?", (i,))
-        _db_conn.commit()
-        db_df = _pd_local.concat(
-            [_pd_local.DataFrame({"client_id": [i] * len(save_df)}), save_df], axis=1
-        )
+        # Replace this client's rows in the DB on every retrain.
+        # DELETE is wrapped in try/except because on a fresh checkout fl_training
+        # does not yet exist — init_db() intentionally omits it and to_sql creates it.
+        try:
+            _db_conn.execute("DELETE FROM fl_training WHERE client_id = ?", (i,))
+            _db_conn.commit()
+        except _sqlite3.OperationalError:
+            pass  # table will be created by to_sql below
+        # insert() on a positional copy — concat(axis=1) aligns on the index, and
+        # the shuffled split index never matches 0..n-1, which used to split every
+        # row into a client_id-only row and a client_id-less row with the data.
+        db_df = save_df.reset_index(drop=True)
+        db_df.insert(0, "client_id", i)
         db_df.to_sql("fl_training", _db_conn, if_exists="append", index=False)
         _db_conn.commit()
         n_low  = (y_h < 5).sum()
@@ -607,6 +403,12 @@ def run_preprocessing():
     print("  Saved: scaler.pkl, tfidf_vectorizer.pkl, feature_columns.pkl")
     print("  Saved: fl_training table (SQLite) — 3 hospital client splits")
 
+    # Persist the true held-out test set so subsequent runs (Phase 0 skipped)
+    # can load it instead of splitting from client training data (T1 fix).
+    np.save(MODEL_PATH + "fl_test_X.npy", X_test_np)
+    np.save(MODEL_PATH + "fl_test_y.npy", y_test.astype(np.float32))
+    print("  Saved: fl_test_X.npy, fl_test_y.npy  (true held-out test set)")
+
     return X_test_np, y_test
 
 
@@ -626,6 +428,16 @@ if not skip:
 
 print("\n[1/6] Loading hospital datasets from database (fl_training table)...")
 
+_required_artifacts = ["scaler.pkl", "tfidf_vectorizer.pkl", "feature_columns.pkl"]
+_missing_artifacts  = [f for f in _required_artifacts if not os.path.exists(MODEL_PATH + f)]
+if _missing_artifacts:
+    raise FileNotFoundError(
+        f"fl_training table has data but required artifacts are missing: "
+        f"{_missing_artifacts}. "
+        f"Set SKIP_PREPROCESSING = False (or delete the fl_training table) "
+        f"to regenerate them from BigQuery."
+    )
+
 scaler_obj     = joblib.load(MODEL_PATH + "scaler.pkl")
 feature_columns = list(scaler_obj.feature_names_in_)
 
@@ -637,10 +449,18 @@ for i in range(3):
     y  = df["sofa_score"].values.astype(np.float32)
     X  = df.drop(columns=["sofa_score"])
 
-    # Align columns to scaler's expected order
-    for col in feature_columns:
-        if col not in X.columns:
-            X[col] = 0.0
+    # Align columns to scaler's expected order; warn on any mismatch
+    _missing_cols = [col for col in feature_columns if col not in X.columns]
+    if _missing_cols:
+        warnings.warn(
+            f"Hospital {i}: {len(_missing_cols)} feature column(s) missing from "
+            f"fl_training — zero-filled (first 5: {_missing_cols[:5]}). "
+            f"This usually means the TF-IDF vocabulary changed since the last "
+            f"Phase 0 run. Re-run Phase 0 to fix the mismatch.",
+            stacklevel=1,
+        )
+    for col in _missing_cols:
+        X[col] = 0.0
     X = X[feature_columns].values.astype(np.float32)
 
     n_low  = (y < 5).sum()
@@ -661,20 +481,34 @@ input_dim = X_all.shape[1]
 
 print(f"\n  Combined: {X_all.shape[0]:,} samples, {X_all.shape[1]} features")
 
-# Build held-out test set:
-# - If preprocessing just ran: use the real held-out X_test from Phase 0
-# - If skipped: reconstruct a 20% split from the combined client data
+# Build held-out test set — priority order:
+#   1. Phase 0 just ran in this session  → X_test_np / y_test_global in memory
+#   2. Phase 0 ran previously            → fl_test_X.npy / fl_test_y.npy on disk
+#   3. Fallback (INFLATED METRICS)       → split from client training data
 try:
-    X_test_np    # set by run_preprocessing() if Phase 0 ran
+    X_test_np    # set by run_preprocessing() if Phase 0 ran in this session
     y_test_np = y_test_global
-    print(f"  Using held-out test set from Phase 0: {X_test_np.shape}")
+    print(f"  Using held-out test set from Phase 0 (this run): {X_test_np.shape}")
 except NameError:
-    # Preprocessing was skipped — reconstruct test set from client data
-    X_train_pool, X_test_np, y_train_pool, y_test_np = train_test_split(
-        X_all, y_all, test_size=0.2, random_state=42,
-        stratify=(y_all >= 10).astype(int)
-    )
-    print(f"  Reconstructed test set: {X_test_np.shape}")
+    _tx = MODEL_PATH + "fl_test_X.npy"
+    _ty = MODEL_PATH + "fl_test_y.npy"
+    if os.path.exists(_tx) and os.path.exists(_ty):
+        X_test_np = np.load(_tx)
+        y_test_np = np.load(_ty)
+        print(f"  Loaded saved held-out test set from disk: {X_test_np.shape}")
+    else:
+        warnings.warn(
+            "No saved held-out test set found (fl_test_X.npy / fl_test_y.npy). "
+            "Run Phase 0 (BigQuery) once to generate it. "
+            "Falling back to a 20 %% split of CLIENT TRAINING DATA — "
+            "reported MAE/R2 will be inflated.",
+            stacklevel=1,
+        )
+        X_train_pool, X_test_np, y_train_pool, y_test_np = train_test_split(
+            X_all, y_all, test_size=0.2, random_state=42,
+            stratify=(y_all >= 10).astype(int)
+        )
+        print(f"  WARNING — fallback test set from client data (inflated metrics): {X_test_np.shape}")
 
 # =============================================================
 # NON-IID SPLIT  (only if USE_NONIID_SPLIT = True)
@@ -709,6 +543,12 @@ def make_noniid_split(X_pool, y_pool, seed=42):
     splits = []
     for i in range(3):
         idx = np.concatenate([low_p[i], mod_p[i], high_p[i]])
+        if len(idx) == 0:
+            raise ValueError(
+                f"Non-IID split produced an empty client {i}. "
+                "The dataset is too small or the class fractions are too extreme. "
+                "Use IID split (USE_NONIID_SPLIT = False) or increase dataset size."
+            )
         rng.shuffle(idx)
         splits.append((X_pool[idx], y_pool[idx]))
     return splits
@@ -744,13 +584,14 @@ try:
 except NameError:
     X_bg_pool = X_all
 rng = np.random.default_rng(42)
-bg_idx    = rng.choice(len(X_bg_pool), SHAP_BG_SAMPLES, replace=False)
+_n_bg = min(SHAP_BG_SAMPLES, len(X_bg_pool))
+bg_idx    = rng.choice(len(X_bg_pool), _n_bg, replace=False)
 background = X_bg_pool[bg_idx]
 np.save(MODEL_PATH + "shap_background.npy", background)
 print(f"  Saved {SHAP_BG_SAMPLES} background samples → models/shap_background.npy")
 
 # =============================================================
-# [3/6] FLOWER CLIENT  (weighted MSE + AdamW + LR scheduling + optional DP)
+# [3/6] FLOWER CLIENT  (plain MSE + AdamW + LR scheduling + optional DP)
 # =============================================================
 def get_model():
     return ICUModel(input_dim)
@@ -824,21 +665,23 @@ def client_fn(context: Context):
     return hospital_clients[cid].to_client()
 
 # =============================================================
-# FLOWER SERVER STRATEGY  (SaveBestStrategy + FedAdam)
+# FLOWER SERVER STRATEGY  (SaveBestStrategy + FedAvg, or FedYogi if USE_FEDYOGI)
 # =============================================================
 _best_loss    = float("inf")
 _best_round   = 0
 _best_weights = {}
 _last_weights = {}
 
-# Initial parameters: random model weights for FedYogi bootstrap.
+# Initial parameters: random model weights (required by FedYogi, harmless for FedAvg).
 # FedPreTrain (centralized warm-start) was tested but hurt performance:
 # it trapped the model near the centralized local minimum, removing the
 # cold-start exploration that allows FedYogi to find deeper global minima.
 _init_model     = get_model()
 _initial_params = ndarrays_to_parameters(get_weights(_init_model))
 
-class SaveBestStrategy(fl.server.strategy.FedYogi):
+_BaseStrategy = fl.server.strategy.FedYogi if USE_FEDYOGI else fl.server.strategy.FedAvg
+
+class SaveBestStrategy(_BaseStrategy):
 
     def configure_fit(self, server_round, parameters, client_manager):
         config  = {"server_round": server_round}
@@ -872,33 +715,43 @@ class SaveBestStrategy(fl.server.strategy.FedYogi):
                   f"avg_loss={avg_loss:.4f}{tag}")
         return super().aggregate_evaluate(server_round, results, failures)
 
+_yogi_kwargs = dict(
+    eta=SERVER_ETA,          # server-side Yogi learning rate
+    eta_l=BASE_LR,           # client-side LR (informational — we compute it ourselves)
+    beta_1=SERVER_BETA1,
+    beta_2=SERVER_BETA2,
+    tau=SERVER_TAU,
+) if USE_FEDYOGI else {}
+
 strategy = SaveBestStrategy(
     fraction_fit=1.0,
     fraction_evaluate=1.0,
     min_fit_clients=3,
     min_evaluate_clients=3,
     min_available_clients=3,
-    initial_parameters=_initial_params,  # required by FedAdam
-    eta=SERVER_ETA,          # server-side Adam learning rate
-    eta_l=BASE_LR,           # client-side LR (informational — we compute it ourselves)
-    beta_1=SERVER_BETA1,
-    beta_2=SERVER_BETA2,
-    tau=SERVER_TAU,
+    initial_parameters=_initial_params,  # same random start for FedAvg and FedYogi
+    **_yogi_kwargs,
+)
+
+AGGREGATION_DESC = (
+    f"FedYogi (η={SERVER_ETA}, β1={SERVER_BETA1}, β2={SERVER_BETA2}) + FedProx (μ={MU_FEDPROX})"
+    if USE_FEDYOGI else f"FedAvg + FedProx (μ={MU_FEDPROX})"
 )
 
 # =============================================================
 # RUN FL SIMULATION
 # =============================================================
 print(f"\n[3/6] Starting FL simulation...")
+print(f"  Model              : {input_dim} → 256 → 128 → 64 → 1  (ReLU, Dropout 0.3)")
 print(f"  Rounds             : {NUM_ROUNDS}")
 print(f"  Epochs/round       : {EPOCHS_PER_ROUND}")
 print(f"  Batch size         : {BATCH_SIZE}")
 print(f"  Base LR            : {BASE_LR}  (decays ×{LR_DECAY} per round)")
 print(f"  Gradient clip      : {GRAD_CLIP}")
 print(f"  FedProx μ          : {MU_FEDPROX}  (client-side proximal term)")
-print(f"  Server optimizer   : FedYogi  (η={SERVER_ETA}, β1={SERVER_BETA1}, β2={SERVER_BETA2}, τ={SERVER_TAU})")
+print(f"  Server aggregation : {AGGREGATION_DESC}")
 print(f"  Oversampling       : {'Enabled' if OVERSAMPLE else 'Disabled'}")
-print(f"  Loss weights       : Linear (1 + SOFA×0.5)  →  High~2.0×, Severe~3.7×")
+print(f"  Loss               : Plain MSE (no SOFA weighting)")
 print(f"  Split type         : {'Non-IID' if USE_NONIID_SPLIT else 'IID'}")
 if USE_DP:
     eps = estimate_privacy_budget(NUM_ROUNDS, DP_SIGMA)
@@ -945,6 +798,10 @@ with torch.no_grad():
         torch.tensor(X_test_np, dtype=torch.float32)
     ).numpy().flatten()
 
+# Clip to valid SOFA range — raw model output can go outside [0, 24].
+# The dashboard and compute_sofa_risk_metrics both clip, so metrics must too.
+preds = np.clip(preds, 0.0, 24.0)
+
 mae = mean_absolute_error(y_test_np, preds)
 r2  = r2_score(y_test_np, preds)
 
@@ -969,10 +826,12 @@ print("\n  Computing risk-band classification and alert metrics...")
 try:
     _risk_metrics = compute_sofa_risk_metrics(y_test_np, preds)
     _alert = _risk_metrics["high_risk_alert"]
-    print(f"  High-risk alert  AUROC : {_alert['auroc']:.4f}" if _alert["auroc"] else "  AUROC : N/A (single class)")
-    print(f"  High-risk alert  PR-AUC: {_alert['pr_auc']:.4f}" if _alert["pr_auc"] else "  PR-AUC: N/A")
-    print(f"  False negatives (missed high-risk): {_alert['false_negative']}")
-    print(f"  False positives (false alerts):     {_alert['false_positive']}")
+    print(f"  High-risk alert  AUROC      : {_alert['auroc']:.4f}" if _alert["auroc"] is not None else "  High-risk alert  AUROC      : N/A (single class)")
+    print(f"  High-risk alert  PR-AUC     : {_alert['pr_auc']:.4f}" if _alert["pr_auc"] is not None else "  High-risk alert  PR-AUC     : N/A")
+    print(f"  Recall / Sensitivity        : {_alert['recall']:.4f}")
+    print(f"  Specificity                 : {_alert['specificity']:.4f}")
+    print(f"  False negatives (missed)    : {_alert['false_negative']}")
+    print(f"  False positives (false alert): {_alert['false_positive']}")
 except Exception as _e:
     _risk_metrics = None
     print(f"  Risk metrics unavailable: {_e}")
@@ -989,19 +848,19 @@ metadata = {
     "lr_decay":           LR_DECAY,
     "hospitals":          3,
     "hospital_names":     hospital_names,
-    "aggregation":        f"FedYogi (η={SERVER_ETA}, β1={SERVER_BETA1}, β2={SERVER_BETA2}) + FedProx (μ={MU_FEDPROX})",
+    "aggregation":        AGGREGATION_DESC,
     "split_type":         "Non-IID (specialty bias)" if USE_NONIID_SPLIT else "IID",
     "train_samples":      int(X_all.shape[0]),
     "test_samples":       int(len(y_test_np)),
     "input_features":     int(input_dim),
-    "model_architecture": f"{input_dim} → 128 → 64 → 32 → 1  (ReLU, no Dropout, FedProx)",
+    "model_architecture": f"{input_dim} → 256 → 128 → 64 → 1  (ReLU, Dropout 0.3, FedProx)",
     "best_round":         int(_best_round),
     "final_mae":          round(float(mae), 4),
     "final_r2":           round(float(r2), 4),
     "pred_range_min":     round(float(preds.min()), 2),
     "pred_range_max":     round(float(preds.max()), 2),
     "oversample":           OVERSAMPLE,
-    "loss_weights":         "Linear (1 + SOFA×0.5) — mild high-SOFA emphasis (~2× at SOFA=10)",
+    "loss_weights":         "None — plain MSE",
     "optimizer":            "AdamW (weight_decay=1e-4)",
     "differential_privacy": USE_DP,
     "dp_sensitivity":     DP_SENSITIVITY if USE_DP else None,
@@ -1010,20 +869,30 @@ metadata = {
     "dp_delta":           1e-5            if USE_DP else None,
     # Preprocessing metadata
     "bigquery_project":   BIGQUERY_PROJECT,
-    "tfidf_features":     TFIDF_MAX_FEATURES,
+    # tfidf_features: actual vocabulary size, not TFIDF_MAX_FEATURES (which is
+    # ignored when vocabulary= is supplied to TfidfVectorizer).
+    "tfidf_features":     (
+        len(joblib.load(MODEL_PATH + "tfidf_vectorizer.pkl").get_feature_names_out())
+        if os.path.exists(MODEL_PATH + "tfidf_vectorizer.pkl") else TFIDF_MAX_FEATURES
+    ),
     "tfidf_ngram":        list(TFIDF_NGRAM_RANGE),
+    # notes_sample_size is the cap passed to notes.sample(); actual sampled count
+    # may be lower if fewer notes exist in BigQuery at query time.
     "notes_sample_size":  NOTES_SAMPLE_SIZE,
     # Risk classification metrics (AUROC, PR-AUC, confusion matrices)
     "risk_classification_metrics": _risk_metrics,
     "evaluation_limitation": (
-        "Row-level train/test split — patient/ICU-stay IDs unavailable. "
-        "Treat as initial evaluation results, not independent clinical validation."
+        "One row per ICU stay, split 80/20 by ICU stay — a patient with several "
+        "stays can appear in both train and test. Retrospective MIMIC-III results, "
+        "not independent clinical validation."
     ),
+    "sklearn_version": __import__("sklearn").__version__,
+    "torch_version":   torch.__version__,
 }
 
 with open(MODEL_PATH + "training_metadata.json", "w") as f:
     json.dump(metadata, f, indent=2)
 
 print(f"  Metadata saved → models/training_metadata.json")
-print("\nDone. Restart the app to load the new model:")
-print("  streamlit run app.py")
+print("\nDone. Restart the backend to load the new model:")
+print("  uvicorn backend.main:app --port 8000 --reload")

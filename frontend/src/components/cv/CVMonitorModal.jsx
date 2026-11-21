@@ -32,20 +32,27 @@ const GCS_ANY_FRAC      = 0.30
 const GCS_FLICKER_S     = 0.10
 const GCS_MIN_OBS_S     = 10.0
 const CALIB_FACE_N      = 90
+// A patient whose eyes stay closed (the E1/E2 case) never yields 90 clearly-open
+// frames. After this many face frames (~10 s) calibration ends on the defaults,
+// otherwise the monitor could never score the patients who matter most.
+const GCS_CALIB_MAX_FACE_N = 300
+
+const SEND_INTERVAL_MS  = 1000   // max rate of readings sent to the dashboard
+const FACE_LOST_MS      = 3000   // stop reporting readings after this long without a face
 
 /* ── Algorithm helpers (ported 1:1 from cv_monitor.py) ─────────────────────── */
 function dist2D(a, b) {
   return Math.hypot(a.x - b.x, a.y - b.y)
 }
 
-function calcEAR(landmarks, idxs, W, H) {
+export function calcEAR(landmarks, idxs, W, H) {
   const p = idxs.map(i => ({ x: landmarks[i].x * W, y: landmarks[i].y * H }))
   const num = dist2D(p[1], p[5]) + dist2D(p[2], p[4])
   const den = 2.0 * dist2D(p[0], p[3]) + 1e-6
   return num / den
 }
 
-function pspiFromBlendshapes(bs) {
+export function pspiFromBlendshapes(bs) {
   const pair = name =>
     ((bs[`${name}Left`] ?? 0) + (bs[`${name}Right`] ?? 0)) / 2
 
@@ -60,7 +67,7 @@ function pspiFromBlendshapes(bs) {
   return pspi * (1.0 - pair('mouthSmile'))
 }
 
-function updateStress(pspi, motion, ema) {
+export function updateStress(pspi, motion, ema) {
   const facial    = Math.min(pspi / PSPI_MAX, 1.0)
   const agitation = Math.min(motion / MOTION_SAT, 1.0)
   const frameS    = 10.0 * (FACIAL_W * facial + (1 - FACIAL_W) * agitation)
@@ -68,14 +75,14 @@ function updateStress(pspi, motion, ema) {
   return { display: Math.min(newEma, 10.0), ema: newEma }
 }
 
-function eyeState(ear, blinkScore, openTh, partialTh) {
+export function eyeState(ear, blinkScore, openTh, partialTh) {
   if (blinkScore !== null && blinkScore > BLINK_CLOSED) return 'closed'
   if (ear >= openTh)    return 'open'
   if (ear >= partialTh) return 'partial'
   return 'closed'
 }
 
-function gcsFromWindow(history) {
+export function gcsFromWindow(history) {
   if (!history.length) return { score: 4, label: 'Spontaneous' }
   const states    = history.map(h => h.state)
   const n         = states.length
@@ -96,12 +103,14 @@ function gcsFromWindow(history) {
   return { score: 1, label: 'No Response' }
 }
 
+// Stress bands: LOW < 3.5 ≤ MODERATE < 6.5 ≤ HIGH. Shared with VitalsGrid,
+// ml_service explanations and the LLM rules — keep all four in sync.
 function stressColor(s) {
   if (s < 3.5) return '#4ade80'   // green
   if (s < 6.5) return '#fbbf24'   // amber
   return '#f87171'                  // red
 }
-function stressLabel(s) {
+export function stressLabel(s) {
   if (s < 3.5) return 'LOW'
   if (s < 6.5) return 'MODERATE'
   return 'HIGH'
@@ -244,6 +253,13 @@ export default function CVMonitorModal({ open, onClose, onCVResults }) {
   const [gcsTh,        setGcsTh]        = useState([GCS_OPEN_DEFAULT, GCS_PART_DEFAULT])
   const [detected,     setDetected]     = useState(false)
   const [calibPct,     setCalibPct]     = useState(0)
+  const [eyeCalibPct,  setEyeCalibPct]  = useState(0)
+  const [gcsPersonal,  setGcsPersonal]  = useState(false)
+
+  // Read through a ref so the detection loop never needs restarting when the
+  // parent passes a new callback.
+  const onCVResultsRef = useRef(onCVResults)
+  onCVResultsRef.current = onCVResults
 
   /* ── Canvas drawing ──────────────────────────────────────────────────────── */
   const drawLandmarks = useCallback((landmarks) => {
@@ -295,6 +311,15 @@ export default function CVMonitorModal({ open, onClose, onCVResults }) {
       return
     }
 
+    // rAF runs at the display rate (60–120 Hz) but the camera delivers ~30 fps:
+    // only process genuinely new frames, so each frame counts once toward
+    // calibration and the GCS window.
+    if (video.currentTime === st.lastVideoTime) {
+      rafRef.current = requestAnimationFrame(runLoop)
+      return
+    }
+    st.lastVideoTime = video.currentTime
+
     const W = video.videoWidth  || 640
     const H = video.videoHeight || 480
     if (canvasRef.current) {
@@ -302,12 +327,47 @@ export default function CVMonitorModal({ open, onClose, onCVResults }) {
       if (canvasRef.current.height !== H) canvasRef.current.height = H
     }
 
-    const result = fl.detectForVideo(video, Date.now())
-    const det    = result.faceLandmarks && result.faceLandmarks.length > 0
+    // VIDEO mode requires strictly increasing timestamps; a repeat throws and,
+    // without the try/catch, would kill the loop and freeze the modal.
+    const ts = Math.max(performance.now(), st.lastTs + 1)
+    st.lastTs = ts
+    let result
+    try {
+      result = fl.detectForVideo(video, ts)
+    } catch (err) {
+      console.warn('[CV] detection failed for one frame:', err)
+      rafRef.current = requestAnimationFrame(runLoop)
+      return
+    }
+    const det    = !!(result.faceLandmarks && result.faceLandmarks.length > 0)
+    const nowMs  = Date.now()
 
     setDetected(det)
 
+    if (!det) {
+      // A head that reappears elsewhere would read as one huge jump and pin
+      // agitation at maximum for the next 30 frames.
+      st.noseTrack = []
+      if (!st.windowReset && st.lastFaceMs && nowMs - st.lastFaceMs > FACE_LOST_MS) {
+        // Patient left the frame: start a fresh observation. Keeping the old
+        // window would let a gap count as "observed time", and the E2 flicker
+        // test (run length × seconds-per-frame) would misfire on the gap.
+        st.windowReset = true
+        st.gcsHistory  = []
+        st.earQueue    = []
+        st.stressEma   = null
+        setGcsProvis(true)
+        if (st.lastSent) {
+          // Stop the dashboard reusing a stale reading.
+          st.lastSent = null
+          onCVResultsRef.current?.(null)
+        }
+      }
+    }
+
     if (det) {
+      st.lastFaceMs  = nowMs
+      st.windowReset = false
       const lm = result.faceLandmarks[0]
       st.faceFrames++
 
@@ -335,19 +395,28 @@ export default function CVMonitorModal({ open, onClose, onCVResults }) {
       // GCS calibration
       if (!st.gcsCalibDone) {
         if (blinkV === null || blinkV < GCS_CALIB_BLINK) st.gcsCalibEar.push(earV)
-        if (st.gcsCalibEar.length >= GCS_CALIB_N) {
-          const sorted = [...st.gcsCalibEar].sort((a, b) => a - b)
-          const mid    = Math.floor(sorted.length / 2)
-          // np.median: average of two middle elements for even-length arrays
-          const baseline = sorted.length % 2 === 0
-            ? (sorted[mid - 1] + sorted[mid]) / 2
-            : sorted[mid]
-          if (baseline >= GCS_CALIB_EAR_MIN && baseline <= GCS_CALIB_EAR_MAX) {
-            st.gcsOpenTh    = baseline * 0.70
-            st.gcsPartialTh = baseline * 0.40
+        const enoughOpen = st.gcsCalibEar.length >= GCS_CALIB_N
+        if (enoughOpen || st.faceFrames >= GCS_CALIB_MAX_FACE_N) {
+          let personal = false
+          if (enoughOpen) {
+            const sorted = [...st.gcsCalibEar].sort((a, b) => a - b)
+            const mid    = Math.floor(sorted.length / 2)
+            // np.median: average of two middle elements for even-length arrays
+            const baseline = sorted.length % 2 === 0
+              ? (sorted[mid - 1] + sorted[mid]) / 2
+              : sorted[mid]
+            personal = baseline >= GCS_CALIB_EAR_MIN && baseline <= GCS_CALIB_EAR_MAX
+            if (personal) {
+              st.gcsOpenTh    = baseline * 0.70
+              st.gcsPartialTh = baseline * 0.40
+            }
           }
           st.gcsCalibDone = true
+          // Eye states logged so far used the default thresholds — start the
+          // 30 s GCS window fresh with the calibrated ones.
+          st.gcsHistory = []
           setGcsReady(true)
+          setGcsPersonal(personal)
           setGcsTh([st.gcsOpenTh, st.gcsPartialTh])
         }
       }
@@ -374,7 +443,9 @@ export default function CVMonitorModal({ open, onClose, onCVResults }) {
       st.stressEma = newEma
 
       const sRound  = Math.round(stressV * 10) / 10
-      st.stressPeak = Math.max(st.stressPeak, sRound)   // track rounded value, same as Python
+      if (st.faceFrames >= CALIB_FACE_N) {
+        st.stressPeak = Math.max(st.stressPeak, sRound)   // track rounded value, same as Python
+      }
       setStress(sRound)
       setStressLabel_(stressLabel(sRound))
       setStressColor_(stressColor(sRound))
@@ -400,12 +471,22 @@ export default function CVMonitorModal({ open, onClose, onCVResults }) {
       setGcsScore(score)
       setGcsLabel_(label)
       setGcsColor_(gcsColor(score))
-      onCVResults?.({ stress: sRound, gcs_eye: score })
-
       const obsSec = st.gcsHistory.length >= 2
         ? st.gcsHistory[st.gcsHistory.length - 1].ts - st.gcsHistory[0].ts
         : 0
       setGcsProvis(obsSec < GCS_MIN_OBS_S)
+      // Readings taken during calibration aren't reliable — don't let them reach
+      // the dashboard (they're included in the next SOFA predict call).
+      // Throttled: sending every frame re-rendered the whole dashboard 30+ times/s.
+      if (st.faceFrames >= CALIB_FACE_N && st.gcsCalibDone && obsSec >= GCS_MIN_OBS_S && nowMs - st.lastSendMs >= SEND_INTERVAL_MS) {
+        const prev = st.lastSent
+        if (!prev || prev.stress !== sRound || prev.gcs_eye !== score) {
+          st.lastSent = { stress: sRound, gcs_eye: score }
+          onCVResultsRef.current?.(st.lastSent)
+        }
+        st.lastSendMs = nowMs
+      }
+
       setEarVal(Math.round(earSm * 1000) / 1000)
 
       drawLandmarks(lm)
@@ -413,9 +494,15 @@ export default function CVMonitorModal({ open, onClose, onCVResults }) {
       clearCanvas()
     }
 
-    // Calibration progress
-    const cpct = Math.min(st.faceFrames / CALIB_FACE_N, 1.0)
-    setCalibPct(cpct)
+    // Calibration progress: face-frame count and eye baseline finish at
+    // different times (blinks don't count toward the baseline) — show the slower.
+    setCalibPct(Math.min(st.faceFrames / CALIB_FACE_N, 1.0))
+    // Eye progress: whichever finishes first — enough open-eye frames, or the
+    // fallback cap for a patient who can't open their eyes.
+    setEyeCalibPct(st.gcsCalibDone ? 1.0 : Math.min(Math.max(
+      st.gcsCalibEar.length / GCS_CALIB_N,
+      st.faceFrames / GCS_CALIB_MAX_FACE_N,
+    ), 1.0))
 
     rafRef.current = requestAnimationFrame(runLoop)
   }, [drawLandmarks, clearCanvas])
@@ -445,6 +532,12 @@ export default function CVMonitorModal({ open, onClose, onCVResults }) {
       gcsCalibDone: false,
       gcsOpenTh:    GCS_OPEN_DEFAULT,
       gcsPartialTh: GCS_PART_DEFAULT,
+      lastVideoTime: -1,
+      lastTs:       0,
+      lastFaceMs:   0,
+      lastSendMs:   0,
+      lastSent:     null,
+      windowReset:  false,
     }
 
     // Reset display state
@@ -453,7 +546,7 @@ export default function CVMonitorModal({ open, onClose, onCVResults }) {
     setGcsLabel_('Spontaneous'); setGcsColor_('#4ade80')
     setGcsReady(false); setGcsProvis(true); setEarVal(0)
     setGcsTh([GCS_OPEN_DEFAULT, GCS_PART_DEFAULT]); setDetected(false)
-    setCalibPct(0); setErrorMsg('')
+    setCalibPct(0); setEyeCalibPct(0); setGcsPersonal(false); setErrorMsg('')
 
     async function init() {
       try {
@@ -512,6 +605,8 @@ export default function CVMonitorModal({ open, onClose, onCVResults }) {
 
     return () => {
       cancelled = true
+      // Closing the monitor ends live readings: predictions go back to dataset values.
+      onCVResultsRef.current?.(null)
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
       if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop())
       if (flRef.current)   { try { flRef.current.close() } catch (_) {} }
@@ -527,6 +622,8 @@ export default function CVMonitorModal({ open, onClose, onCVResults }) {
   }
 
   const isRunning  = status === 'running'
+  const calibrated = calibPct >= 1.0 && gcsReady
+  const calibDisplayPct = calibrated ? 1.0 : Math.min(calibPct, eyeCalibPct, 0.99)
   const showStatus = !isRunning
 
   return (
@@ -696,12 +793,13 @@ export default function CVMonitorModal({ open, onClose, onCVResults }) {
                     position: 'absolute', top: 0, left: 0,
                     width: '100%', height: '100%',
                     transform: 'scaleX(-1)',  // mirror to match video
+                    objectFit: 'cover',       // crop like the video, or landmarks drift on 4:3 cameras
                     pointerEvents: 'none',
                   }}
                 />
 
                 {/* Calibration bar overlay */}
-                {isRunning && calibPct < 1.0 && (
+                {isRunning && !calibrated && (
                   <div style={{
                     position: 'absolute', bottom: 0, left: 0, right: 0,
                     padding: '12px 16px',
@@ -714,19 +812,19 @@ export default function CVMonitorModal({ open, onClose, onCVResults }) {
                     <div style={{ height: 5, borderRadius: 3, background: a('#fbbf24', 20) }}>
                       <div style={{
                         height: '100%', borderRadius: 3,
-                        width: `${Math.round(calibPct * 100)}%`,
+                        width: `${Math.round(calibDisplayPct * 100)}%`,
                         background: '#fbbf24',
                         transition: 'width 0.18s ease',
                       }} />
                     </div>
                     <p style={{ color: '#fbbf24', fontSize: 10, fontFamily: 'var(--font-display)', marginTop: 4 }}>
-                      {Math.round(calibPct * 100)}% complete
+                      {Math.round(calibDisplayPct * 100)}% complete
                     </p>
                   </div>
                 )}
 
                 {/* No-face warning */}
-                {isRunning && !detected && calibPct >= 1.0 && (
+                {isRunning && !detected && calibrated && (
                   <div style={{
                     position: 'absolute', bottom: 16, left: '50%', transform: 'translateX(-50%)',
                     padding: '6px 14px', borderRadius: 20, zIndex: 3,
@@ -739,8 +837,24 @@ export default function CVMonitorModal({ open, onClose, onCVResults }) {
                 )}
               </div>
 
+              {/* ── Waiting for calibration ── */}
+              {isRunning && !calibrated && (
+                <div style={{
+                  background: 'var(--s1)', border: '1px dashed var(--b2, var(--b1))',
+                  borderRadius: 14, padding: '22px 18px', textAlign: 'center',
+                  fontFamily: 'var(--font-display)',
+                }}>
+                  <p style={{ fontSize: 12, fontWeight: 700, color: 'var(--t2)', marginBottom: 4 }}>
+                    Stress Score and GCS Eye Score will appear once calibration is complete
+                  </p>
+                  <p style={{ fontSize: 11, color: 'var(--t4)' }}>
+                    {detected ? 'Hold still and look at the camera…' : 'Centre your face in the camera to begin calibrating'}
+                  </p>
+                </div>
+              )}
+
               {/* ── Score cards row ── */}
-              {isRunning && (
+              {isRunning && calibrated && (
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
 
                   {/* ── STRESS SCORE card ── */}
@@ -851,8 +965,8 @@ export default function CVMonitorModal({ open, onClose, onCVResults }) {
                         Open≥<span className="num">{gcsTh[0].toFixed(3)}</span>&ensp;
                         Partial≥<span className="num">{gcsTh[1].toFixed(3)}</span>
                         &ensp;
-                        <span style={{ color: gcsReady ? '#4ade80' : '#fbbf24', fontWeight: 700 }}>
-                          ({gcsReady ? 'personal' : 'default'})
+                        <span style={{ color: gcsPersonal ? '#4ade80' : '#fbbf24', fontWeight: 700 }}>
+                          ({gcsPersonal ? 'personal' : 'default'})
                         </span>
                       </div>
                     </div>
@@ -873,7 +987,7 @@ export default function CVMonitorModal({ open, onClose, onCVResults }) {
                 ⚠ Supplementary visual assessment — not a clinical diagnosis
               </span>
               <span style={{ fontSize: '10.5px', color: 'var(--t4)', fontFamily: 'var(--font-display)' }}>
-                PSPI formula · 30s GCS window · Live CV data supplements clinical context; SOFA prediction uses dataset values
+                PSPI formula · 30s GCS window · Live readings replace dataset GCS Eye &amp; Stress in the next SOFA prediction
               </span>
             </div>
           </motion.div>

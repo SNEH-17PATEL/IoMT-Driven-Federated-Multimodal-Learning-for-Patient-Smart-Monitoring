@@ -21,17 +21,22 @@ groq>=0.9.0
 # sqlite3 is part of the Python standard library — no installation needed.
 # The database file (models/icu_monitor.db) is created by migrate_to_db.py.
 
+# ── FL Dashboard (fl_dashboard.py — run standalone with `streamlit run`) ─────
+streamlit>=1.35.0
+plotly>=5.20.0
+
 # ── Federated Learning ────────────────────────────────────────────────────────
 flwr[simulation]>=1.8.0
 
-# ── Computer Vision Monitor (cv_monitor.py — run standalone) ─────────────────
-# Real-time Stress Score + GCS Eye Score from webcam.
-# MediaPipe 1.0+ Tasks API is used (face_landmarker.task downloaded on first run).
-opencv-python>=5.0.0
-mediapipe>=0.10.35
+# The CV monitor (Stress Score + GCS Eye) runs in the browser via the npm
+# package @mediapipe/tasks-vision — no Python computer-vision packages needed.
 
 # ── BigQuery — Phase 0 preprocessing only ────────────────────────────────────
 # Required only for running train_federated.py from scratch.
 # Skip if models/icu_monitor.db is already populated (run migrate_to_db.py once).
 google-cloud-bigquery>=3.11.0
 google-cloud-bigquery-storage>=2.20.0
+# db-dtypes and pyarrow are required by google-cloud-bigquery's .to_dataframe()
+# but are not installed transitively on all platforms.
+db-dtypes>=1.1.0
+pyarrow>=12.0.0

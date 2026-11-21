@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -25,6 +26,8 @@ def get_vitals(patient_id: int, limit: int = 20):
         raise HTTPException(status_code=400, detail="limit must be between 1 and 20")
     try:
         df = get_patient_vitals(patient_id, limit=limit)
-        return df.to_dict(orient="records")
+        return json.loads(df.to_json(orient="records"))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Vitals query failed: {str(e)}")
+        import sys as _sys
+        print(f"[ClinIQ] Vitals error: {e}", file=_sys.stderr)
+        raise HTTPException(status_code=500, detail="Vitals query failed — check server logs.")

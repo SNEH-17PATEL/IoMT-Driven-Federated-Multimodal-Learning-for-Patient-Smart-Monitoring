@@ -2,6 +2,7 @@ import os
 import re
 import sys
 import json
+import math
 import functools
 from datetime import datetime
 
@@ -18,7 +19,7 @@ _ROOT         = os.path.dirname(_BACKEND_DIR)                 # icu_monitor/
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from model_utils import ICUModel, get_trend, classify_range
+from model_utils import ICUModel, get_trend, classify_range, ALERT_THRESHOLD
 from db import (
     get_sample_patient_count, get_sample_patient_row,
     get_patient_vitals, append_patient_vitals,
@@ -28,20 +29,30 @@ from db import (
 
 MODEL_PATH = os.path.join(_ROOT, "models") + os.sep
 
+
+def _safe_float(val, default: float = 0.0) -> float:
+    """Convert to float, replacing NaN/inf/None with default."""
+    try:
+        v = float(val)
+        return default if (math.isnan(v) or math.isinf(v)) else v
+    except (TypeError, ValueError):
+        return default
+
 # ──────────────────────────────────────────────
 # CONSTANTS
 # ──────────────────────────────────────────────
 
-ALERT_THRESHOLD = 8.0
+# ALERT_THRESHOLD (7.0) is imported from model_utils so training metrics and
+# the live dashboard always use the same value — see model_utils for why.
 
 NORMAL_RANGES = {
-    "HR":   (60,  100),
-    "RR":   (12,  20),
-    "SpO2": (95,  100),
-    "Temp": (36.5, 37.5),
-    "SBP":  (100, 120),
-    "DBP":  (60,  80),
-    "MAP":  (70,  100),
+    "HR":   (60,   100),
+    "RR":   (12,   20),
+    "SpO2": (95,   100),
+    "Temp": (36.0, 37.5),  # H11: aligned with frontend (36.0 is standard lower normal)
+    "SBP":  (90,   120),   # H11: aligned with frontend (SBP < 90 = hypotension threshold)
+    "DBP":  (60,   80),
+    "MAP":  (70,   100),
 }
 
 VITAL_UNITS = {
@@ -183,7 +194,7 @@ def _compute_conformal_q_hat():
         return 2.9
 
 
-@functools.lru_cache(maxsize=1)
+@functools.lru_cache(maxsize=1)  # file is read once at startup and cached for the process lifetime
 def load_training_metadata():
     path = MODEL_PATH + "training_metadata.json"
     if os.path.exists(path):
@@ -197,7 +208,7 @@ def load_training_metadata():
         "split_type": "IID",
         "train_samples": 12795, "test_samples": 2559,
         "input_features": 108,
-        "model_architecture": "108 → 128 → 64 → 32 → 1  (ReLU, no Dropout, FedProx)",
+        "model_architecture": "108 → 256 → 128 → 64 → 1  (ReLU, Dropout 0.3, FedProx)",
         "best_round": 18,
         "final_mae": 1.8968, "final_r2": 0.5995,
     }
@@ -284,19 +295,27 @@ def _interpret_shap(feature, orig_value, impact):
         fmt = ".0f" if unit in ("/4", "/10") else ".1f"
         val_str = f"{orig_value:{fmt}}"
         if "spo2" in f:
-            return f"{label} = {val_str}{unit} → low oxygen levels, {direction}"
+            desc = "low oxygen saturation" if orig_value < 95 else "oxygen saturation within range"
+            return f"{label} = {val_str}{unit} → {desc}, {direction}"
         if "hr" in f:
-            return f"{label} = {val_str}{unit} → abnormal heart rate, {direction}"
+            desc = "elevated heart rate" if orig_value > 100 else ("low heart rate" if orig_value < 60 else "heart rate within range")
+            return f"{label} = {val_str}{unit} → {desc}, {direction}"
         if "rr" in f:
-            return f"{label} = {val_str}{unit} → respiratory distress, {direction}"
+            desc = "elevated breathing rate" if orig_value > 20 else ("low breathing rate" if orig_value < 12 else "breathing rate within range")
+            return f"{label} = {val_str}{unit} → {desc}, {direction}"
         if any(x in f for x in ("sbp", "dbp", "map")):
-            return f"{label} = {val_str}{unit} → blood pressure instability, {direction}"
+            desc = "elevated blood pressure" if orig_value > 120 else ("low blood pressure" if orig_value < 70 else "blood pressure within range")
+            return f"{label} = {val_str}{unit} → {desc}, {direction}"
         if "temp" in f:
-            return f"{label} = {val_str}{unit} → possible infection / fever, {direction}"
+            desc = "fever" if orig_value > 37.5 else ("hypothermia" if orig_value < 36.0 else "normal temperature")
+            return f"{label} = {val_str}{unit} → {desc}, {direction}"
         if "gcs" in f:
-            return f"{label} = {val_str}{unit} → neurological deterioration, {direction}"
+            desc = "impaired consciousness" if orig_value < 4 else "intact eye opening"
+            return f"{label} = {val_str}{unit} → {desc}, {direction}"
         if "stress" in f:
-            return f"{label} = {val_str}{unit} → elevated physiological stress, {direction}"
+            # Bands match the CV monitor and dashboard: <3.5 low, <6.5 elevated, else high
+            desc = "high physiological stress" if orig_value >= 6.5 else ("elevated physiological stress" if orig_value >= 3.5 else "low physiological stress")
+            return f"{label} = {val_str}{unit} → {desc}, {direction}"
         return f"{label} = {val_str}{unit} → {direction}"
     return f'Clinical note contains "{feature}" → {direction}'
 
@@ -305,10 +324,19 @@ def _interpret_shap(feature, orig_value, impact):
 # MAIN ENTRY POINT
 # ──────────────────────────────────────────────
 
-def run_prediction(patient_id: int, row_idx: int) -> dict:
+def run_prediction(
+    patient_id: int,
+    row_idx: int,
+    cv_gcs_eye: int | None = None,
+    cv_stress: float | None = None,
+) -> dict:
     """
     Reads sample patient row from DB, runs full SOFA pipeline,
     saves vitals + prediction to DB, returns complete result dict.
+
+    cv_gcs_eye / cv_stress: live values captured by the CV monitor (webcam).
+    When provided they override the CSV simulation values so the live
+    multimodal reading is actually used in the model.
     """
     model, scaler, tfidf, feature_cols, _ = load_artifacts()
     explainer      = _load_shap_explainer()
@@ -322,15 +350,16 @@ def run_prediction(patient_id: int, row_idx: int) -> dict:
     cur_idx     = row_idx % total_rows
     current_row = get_sample_patient_row(patient_id, cur_idx)
 
-    HR            = float(current_row["HR"])
-    RR            = float(current_row["RR"])
-    SpO2          = float(current_row["SpO2"])
-    Temp          = float(current_row["Temp"])
-    SBP           = float(current_row["SBP"])
-    DBP           = float(current_row["DBP"])
-    MAP           = float(current_row["MAP"])
-    GCS_eye       = int(current_row["GCS_eye_opening"])
-    stress        = int(current_row["stress_score"])
+    HR            = _safe_float(current_row["HR"])
+    RR            = _safe_float(current_row["RR"])
+    SpO2          = _safe_float(current_row["SpO2"],  98.0)
+    Temp          = _safe_float(current_row["Temp"],  37.0)
+    SBP           = _safe_float(current_row["SBP"],  120.0)
+    DBP           = _safe_float(current_row["DBP"],   80.0)
+    MAP           = _safe_float(current_row["MAP"],   90.0)
+    # Use live CV values when available, otherwise fall back to the CSV row.
+    GCS_eye       = int(cv_gcs_eye) if cv_gcs_eye is not None else int(_safe_float(current_row["GCS_eye_opening"], 4.0))
+    stress        = float(cv_stress) if cv_stress is not None else _safe_float(current_row["stress_score"], 0.0)
     clinical_note = str(current_row["clinical_note"])
 
     # ── 2. SEED VITALS IF EMPTY ──
@@ -344,10 +373,10 @@ def run_prediction(patient_id: int, row_idx: int) -> dict:
                 _seed_time = (datetime.now() - timedelta(minutes=(min(20, total_rows) - _si) * 1.5)).strftime("%Y-%m-%d %H:%M:%S")
                 append_patient_vitals(patient_id, {
                     "time": _seed_time,
-                    "HR": float(_sr["HR"]),   "RR":  float(_sr["RR"]),
-                    "SpO2": float(_sr["SpO2"]), "Temp": float(_sr["Temp"]),
-                    "SBP": float(_sr["SBP"]),  "DBP":  float(_sr["DBP"]),
-                    "MAP": float(_sr["MAP"]),
+                    "HR":   _safe_float(_sr["HR"]),        "RR":   _safe_float(_sr["RR"]),
+                    "SpO2": _safe_float(_sr["SpO2"], 98.0), "Temp": _safe_float(_sr["Temp"], 37.0),
+                    "SBP":  _safe_float(_sr["SBP"], 120.0), "DBP":  _safe_float(_sr["DBP"], 80.0),
+                    "MAP":  _safe_float(_sr["MAP"], 90.0),
                 })
 
     # ── 3. APPEND CURRENT VITALS ──
@@ -594,4 +623,6 @@ def run_prediction(patient_id: int, row_idx: int) -> dict:
         "_traj_msg":          _traj_msg,
         # Confidence derived from conformal interval width (narrower = more confident)
         "confidence":         round(max(0.0, 1.0 - conformal_q / 12.0), 3),
+        # H14: include training metadata so SOFAValidationDrawer reads real numbers
+        "_training_meta":     load_training_metadata(),
     }

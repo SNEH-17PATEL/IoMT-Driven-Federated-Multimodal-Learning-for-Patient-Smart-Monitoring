@@ -13,19 +13,18 @@ Each client:
   - Sends only model weights to the server — NO patient data leaves
   - Receives updated global weights after each round
 
-All hyperparameters below mirror train_federated.py for consistency.
+Hyperparameters below are kept in sync with train_federated.py; update both if changed.
 """
 
 import argparse
 import numpy as np
-import pandas as pd
 import joblib
 import flwr as fl
 from sklearn.model_selection import train_test_split
 
 from model_utils import (
     ICUModel, train_model, evaluate_model, get_weights, set_weights,
-    apply_dp_to_update, estimate_privacy_budget,
+    apply_dp_to_update,
 )
 from db import get_fl_client_data
 
@@ -37,12 +36,14 @@ parser.add_argument("--client_id", type=int, required=True,
                     help="Hospital ID: 0, 1, or 2")
 args = parser.parse_args()
 CLIENT_ID = args.client_id
+if CLIENT_ID not in (0, 1, 2):
+    raise SystemExit(f"--client_id must be 0, 1, or 2 (got {CLIENT_ID})")
 
 MODEL_PATH   = "models/"
 SERVER_ADDR  = "127.0.0.1:8080"
 
 # ── Training hyperparameters — keep in sync with train_federated.py ──
-EPOCHS       = 3      # epochs per FL round (sweet spot: 3 with FedYogi)
+EPOCHS       = 3      # epochs per FL round (mirrors train_federated.py)
 BATCH_SIZE   = 64
 BASE_LR      = 0.001  # starting LR; decays per round (see HospitalClient.fit)
 LR_DECAY     = 0.99   # per-round LR multiplier; mirrors train_federated.py
@@ -68,9 +69,17 @@ df = get_fl_client_data(CLIENT_ID)
 y = df["sofa_score"].values.astype(np.float32)   # raw SOFA (0-24)
 X = df.drop(columns=["sofa_score"])
 
-for col in feature_columns:
-    if col not in X.columns:
-        X[col] = 0
+_missing_cols = [col for col in feature_columns if col not in X.columns]
+if _missing_cols:
+    import warnings
+    warnings.warn(
+        f"[Hospital {CLIENT_ID}] {len(_missing_cols)} feature column(s) missing from "
+        f"fl_training — zero-filled (first 5: {_missing_cols[:5]}). "
+        f"Vocabulary/schema mismatch — re-run Phase 0 to fix.",
+        stacklevel=1,
+    )
+for col in _missing_cols:
+    X[col] = 0
 X = X[feature_columns].values.astype(np.float32)
 y = y.astype(np.float32)
 
@@ -128,7 +137,11 @@ class HospitalClient(fl.client.NumPyClient):
             f"MAE={metrics['mae']:.3f} SOFA | "
             f"R²={metrics['r2']:.3f}{dp_tag}"
         )
-        return weights_to_send, len(X_train), {}
+        return weights_to_send, len(X_train), {
+            "loss": float(loss),
+            "mae":  float(metrics["mae"]),
+            "r2":   float(metrics["r2"]),
+        }
 
     def evaluate(self, parameters, config):  # noqa: ARG002
         set_weights(model, parameters)

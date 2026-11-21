@@ -1,31 +1,40 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { runPredict } from '../api/client.js'
 
-export function useMonitor(patientId) {
+export function useMonitor(patientId, cvData = null) {
   const [predictData,  setPredictData]  = useState(null)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const [lastUpdated,  setLastUpdated]  = useState(null)
   const [countdown,    setCountdown]    = useState(90)
   const [error,        setError]        = useState(null)
 
-  const rowIdxRef        = useRef(0)
-  const patientIdRef     = useRef(patientId)
-  const fetchingRef      = useRef(false)   // guard: prevent overlapping fetches
-  const lastPatientRef   = useRef(null)    // StrictMode guard: skip duplicate initial fetch
-  patientIdRef.current   = patientId
+  const rowIdxRef      = useRef(
+    // H7: resume from where we left off across page visits
+    parseInt(sessionStorage.getItem(`rowIdx_${patientId}`) ?? '0', 10)
+  )
+  const patientIdRef   = useRef(patientId)
+  const cvDataRef      = useRef(cvData)
+  const fetchingRef    = useRef(false)  // guard: prevent overlapping fetches
+  const lastPatientRef = useRef(null)   // StrictMode guard: skip duplicate initial fetch
+  patientIdRef.current = patientId
+  cvDataRef.current    = cvData         // always latest CV reading without recreating fetchNext
 
   // Stable fetch function — reads latest values from refs
   const fetchNext = useCallback(async () => {
-    // Don't start a new fetch if one is already in flight
     if (fetchingRef.current) return
     fetchingRef.current = true
     setIsRefreshing(true)
+    const currentPatient = patientIdRef.current
     try {
-      const result = await runPredict(patientIdRef.current, rowIdxRef.current)
+      const result = await runPredict(currentPatient, rowIdxRef.current, cvDataRef.current)
+      // H6: discard response if patient changed while in-flight
+      if (result.data?.patient_id !== patientIdRef.current) return
       setPredictData(result.data)
       setLastUpdated(new Date())
       setError(null)
       rowIdxRef.current += 1
+      // H7: persist so page refresh resumes from the same row
+      sessionStorage.setItem(`rowIdx_${currentPatient}`, rowIdxRef.current)
     } catch (err) {
       console.error('Predict failed:', err)
       const detail = err?.response?.data?.detail ?? err?.message ?? null
@@ -36,8 +45,6 @@ export function useMonitor(patientId) {
     } finally {
       setIsRefreshing(false)
       fetchingRef.current = false
-      // Reset countdown only after the fetch completes so the timer reflects
-      // how long until the NEXT reading, not time elapsed during this one.
       setCountdown(90)
     }
   }, [])
@@ -47,7 +54,8 @@ export function useMonitor(patientId) {
   useEffect(() => {
     if (lastPatientRef.current === patientId) return
     lastPatientRef.current = patientId
-    rowIdxRef.current   = 0
+    // H7: load the persisted row index for this patient (or start at 0)
+    rowIdxRef.current = parseInt(sessionStorage.getItem(`rowIdx_${patientId}`) ?? '0', 10)
     fetchingRef.current = false
     setCountdown(90)
     setError(null)
@@ -55,21 +63,18 @@ export function useMonitor(patientId) {
     fetchNext()
   }, [patientId, fetchNext])
 
-  // 1-second countdown — triggers fetchNext when it reaches 0
+  // H5: keep the countdown tick pure — no side effects inside the updater.
+  // A separate effect watches countdown and fires fetchNext when it bottoms out.
   useEffect(() => {
     const tick = setInterval(() => {
-      setCountdown(c => {
-        if (c <= 1) {
-          fetchNext()
-          // Don't reset here — fetchNext resets it after the call completes
-          // so the counter freezes at ~0-1 during the in-flight predict call
-          return 1
-        }
-        return c - 1
-      })
+      setCountdown(c => (c <= 1 ? 1 : c - 1))
     }, 1000)
     return () => clearInterval(tick)
-  }, [patientId, fetchNext])
+  }, [patientId])
+
+  useEffect(() => {
+    if (countdown === 1) fetchNext()
+  }, [countdown, fetchNext])
 
   return { predictData, isRefreshing, lastUpdated, countdown, error }
 }

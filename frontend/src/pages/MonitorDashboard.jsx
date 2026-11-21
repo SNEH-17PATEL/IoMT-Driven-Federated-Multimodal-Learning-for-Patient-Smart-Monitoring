@@ -3,7 +3,7 @@ import { useParams, Navigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
 import AOS from 'aos'
-import { getPatient } from '../api/client.js'
+import { getPatient, getHistory } from '../api/client.js'
 import { useMonitor } from '../hooks/useMonitor.js'
 import HeaderBar from '../components/layout/HeaderBar.jsx'
 import AlertBanner from '../components/layout/AlertBanner.jsx'
@@ -56,7 +56,7 @@ function SectionHeading({ children, accent, sub, Icon }) {
       <div style={{
         width: 3, height: 28, borderRadius: 2, flexShrink: 0,
         background: `linear-gradient(to bottom, ${ac}, color-mix(in srgb, ${ac} 15%, transparent))`,
-        boxShadow: `0 0 10px ${ac}50`,
+        boxShadow: `0 0 10px color-mix(in srgb, ${ac} 31%, transparent)`,
       }} />
 
       {/* Icon badge */}
@@ -124,14 +124,15 @@ function Stat({ label, value, riskColor, unit }) {
   )
 }
 
-function PatientContextStrip({ patient, predictData, isRefreshing }) {
+function PatientContextStrip({ patient, predictData, reportData, isRefreshing }) {
   if (!patient || !predictData) return null
 
   const riskColor = predictData.risk_color
   const sofa      = predictData.sofa_score
   const risk      = predictData.risk_level
-  const conf      = predictData.confidence
-  const confPct   = conf != null ? `${Math.round(conf * 100)}%` : '—'
+  // Same value and rounding as the ReliabilityBadge in the AI Clinical Report
+  const relScore  = reportData?.reliability_score
+  const relPct    = relScore != null ? `${Math.round(relScore * 100)}%` : '—'
   const isHighRisk = risk !== 'Low Risk'
 
   return (
@@ -175,21 +176,23 @@ function PatientContextStrip({ patient, predictData, isRefreshing }) {
 
       {/* Dividers + stat columns */}
       <div style={{ width: 1, background: 'var(--b1)', flexShrink: 0, alignSelf: 'stretch' }} />
-      <div className="flex items-center">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 3, flexShrink: 0, padding: '0 20px' }}>
+      {/* Same structure as <Stat> so the label and value line up with the other columns */}
+      <div className="flex flex-col justify-center px-5 py-4 flex-shrink-0">
+        <span style={{
+          fontSize: '9.5px', color: 'var(--t4)', fontFamily: 'var(--font-display)',
+          fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 4,
+        }}>
+          Risk Level
+        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
           <span style={{
-            width: 7, height: 7, borderRadius: '50%', background: riskColor, display: 'inline-block', flexShrink: 0,
-            boxShadow: `0 0 6px ${riskColor}`,
+            width: 8, height: 8, borderRadius: '50%', background: riskColor, flexShrink: 0,
+            boxShadow: `0 0 0 3px ${riskColor}22, 0 0 8px ${riskColor}`,
             animation: isHighRisk ? 'pulse 1.6s ease-in-out infinite' : 'none',
           }} />
-          <div>
-            <span style={{ display: 'block', fontSize: '9.5px', color: 'var(--t4)', fontFamily: 'var(--font-display)', fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', marginBottom: 2 }}>
-              Risk Level
-            </span>
-            <span style={{ fontWeight: 700, fontSize: '13px', color: riskColor, fontFamily: 'var(--font-display)', letterSpacing: '-0.01em' }}>
-              {risk}
-            </span>
-          </div>
+          <span style={{ fontWeight: 700, fontSize: '16px', color: riskColor, fontFamily: 'var(--font-display)', letterSpacing: '-0.01em', lineHeight: 1.2 }}>
+            {risk}
+          </span>
         </div>
       </div>
 
@@ -197,7 +200,7 @@ function PatientContextStrip({ patient, predictData, isRefreshing }) {
       <Stat label="SOFA Score" value={sofa?.toFixed(1) ?? '—'} unit="/24" />
 
       <div style={{ width: 1, background: 'var(--b1)', flexShrink: 0, alignSelf: 'stretch' }} />
-      <Stat label="AI Confidence" value={confPct} />
+      <Stat label="AI Reliability" value={relPct} riskColor={reportData?.reliability_color} />
     </div>
   )
 }
@@ -244,7 +247,7 @@ function RefreshErrorBanner({ message }) {
   return (
     <div
       className="flex items-center gap-3 rounded-xl px-4 py-3 mb-6 text-sm"
-      style={{ background: 'var(--warn-bg)', border: '1px solid var(--warn)50', color: 'var(--warn-l)', fontFamily: 'var(--font-display)' }}
+      style={{ background: 'var(--warn-bg)', border: '1px solid color-mix(in srgb, var(--warn-l) 50%, transparent)', color: 'var(--warn-l)', fontFamily: 'var(--font-display)' }}
     >
       ⚠ {message}
     </div>
@@ -257,15 +260,24 @@ function RefreshErrorBanner({ message }) {
 export default function MonitorDashboard() {
   const { patientId } = useParams()
   const id = parseInt(patientId, 10)
+  const validId = [1, 2, 3].includes(id) ? id : null
 
-  if (![1, 2, 3].includes(id)) return <Navigate to="/" replace />
-
+  // All hooks must run unconditionally — Navigate guard is placed after hooks (H4 fix)
   const { data: patient } = useQuery({
-    queryKey: ['patient', id],
-    queryFn: () => getPatient(id).then(r => r.data),
+    queryKey: ['patient', validId],
+    queryFn: () => getPatient(validId).then(r => r.data),
+    enabled: !!validId,
   })
 
-  const { predictData, isRefreshing, lastUpdated, countdown, error } = useMonitor(id)
+  // M11: fetch history so the FAB badge can show the real count
+  // Same queryKey as HistoryDrawer → React Query deduplicates; no extra network request when drawer opens
+  const { data: historyRows } = useQuery({
+    queryKey: ['history', validId],
+    queryFn: () => getHistory(validId, 50).then(r => r.data),
+    enabled: !!validId,
+    staleTime: 30_000,
+  })
+
   const [careMode, setCareMode] = useState('hospital')
   const [historyOpen, setHistoryOpen] = useState(false)
   const [cvOpen, setCvOpen] = useState(false)
@@ -274,12 +286,26 @@ export default function MonitorDashboard() {
   const [llmReportData, setLlmReportData] = useState(null)
   const [cvLiveData, setCvLiveData] = useState(null) // { stress, gcs_eye } from CV monitor
 
+  // Live CV readings belong to the patient in front of the camera: close the
+  // monitor and drop them when navigating to another patient.
+  useEffect(() => {
+    setCvOpen(false)
+    setCvLiveData(null)
+  }, [validId])
+
+  // cvLiveData is passed to useMonitor so the next predict call includes live CV readings
+  const { predictData, isRefreshing, lastUpdated, countdown, error } = useMonitor(validId, cvLiveData)
+
   /* Refresh AOS whenever new data renders so scroll-reveal picks up late-mounted elements */
   useEffect(() => {
     if (predictData) {
-      setTimeout(() => AOS.refresh(), 120)
+      const id = setTimeout(() => AOS.refresh(), 120)
+      return () => clearTimeout(id)
     }
   }, [predictData])
+
+  // Guard: redirect invalid patient IDs only after all hooks have been called
+  if (!validId) return <Navigate to="/" replace />
 
   return (
     <div className="ambient-page min-h-screen" style={{ background: 'var(--base)' }}>
@@ -313,6 +339,7 @@ export default function MonitorDashboard() {
               <PatientContextStrip
                 patient={patient}
                 predictData={predictData}
+                reportData={llmReportData}
                 isRefreshing={isRefreshing}
               />
             </motion.div>
@@ -395,7 +422,7 @@ export default function MonitorDashboard() {
         <>
           <HistoryFAB
             onClick={() => setHistoryOpen(true)}
-            recordCount={0}
+            recordCount={historyRows?.length ?? 0}
           />
           <CVMonitorFAB
             onClick={() => setCvOpen(v => !v)}

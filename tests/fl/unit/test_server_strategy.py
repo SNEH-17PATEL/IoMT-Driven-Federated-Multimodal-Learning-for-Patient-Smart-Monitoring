@@ -108,7 +108,7 @@ def test_aggregate_fit_calls_set_weights_when_params_not_none(monkeypatch):
 
 
 def test_aggregate_fit_saves_latest_model_to_pth(monkeypatch):
-    """aggregate_fit() calls torch.save(..., 'federated_model.pth') after aggregation."""
+    """aggregate_fit() saves every round to the crash-recovery file, never the production model."""
     monkeypatch.setattr(fl.server.strategy.FedAvg, "aggregate_fit",
                         MagicMock(return_value=(MagicMock(), {})))
     monkeypatch.setattr(srv, "parameters_to_ndarrays", MagicMock(return_value=[]))
@@ -118,7 +118,7 @@ def test_aggregate_fit_saves_latest_model_to_pth(monkeypatch):
     _strategy().aggregate_fit(1, [], [])
     mock_save.assert_called_once()
     saved_path = mock_save.call_args[0][1]
-    assert "federated_model.pth" in saved_path
+    assert saved_path.endswith("federated_model_latest.pth")
 
 
 def test_aggregate_fit_prints_round_number(monkeypatch, capsys):
@@ -176,26 +176,25 @@ def test_aggregate_evaluate_higher_loss_does_not_update_best(monkeypatch):
 
 
 def test_aggregate_evaluate_new_best_saves_best_model(monkeypatch):
-    """New best loss → torch.save called with path ending in 'federated_model_best.pth'."""
+    """New best loss → production model (federated_model.pth) is written."""
     monkeypatch.setattr(fl.server.strategy.FedAvg, "aggregate_evaluate",
                         MagicMock(return_value=(None, {})))
     mock_save = MagicMock()
     monkeypatch.setattr(srv.torch, "save", mock_save)
     _strategy().aggregate_evaluate(1, _eval_results(0.3), [])
     saved_paths = [call[0][1] for call in mock_save.call_args_list]
-    assert any("federated_model_best.pth" in p for p in saved_paths)
+    assert any(p.endswith("/federated_model.pth") for p in saved_paths)
 
 
 def test_aggregate_evaluate_not_best_does_not_save_best_model(monkeypatch):
-    """When loss is not a new best, federated_model_best.pth is NOT written."""
+    """When loss is not a new best, the production model is NOT overwritten."""
     monkeypatch.setattr(srv, "_best_loss", 0.1)   # very good existing best
     monkeypatch.setattr(fl.server.strategy.FedAvg, "aggregate_evaluate",
                         MagicMock(return_value=(None, {})))
     mock_save = MagicMock()
     monkeypatch.setattr(srv.torch, "save", mock_save)
     _strategy().aggregate_evaluate(2, _eval_results(5.0), [])
-    saved_paths = [call[0][1] for call in mock_save.call_args_list]
-    assert not any("federated_model_best.pth" in p for p in saved_paths)
+    mock_save.assert_not_called()
 
 
 def test_aggregate_evaluate_updates_best_round(monkeypatch):

@@ -37,8 +37,8 @@ function ArcGauge({ score, maxScore = 24, color, isRefreshing }) {
 
   return (
     <svg viewBox="0 0 132 132" width="168" height="168" aria-hidden="true">
-      {/* Outer ambient glow ring for high risk */}
-      {color !== '#0d8a52' && color !== '#18c872' && (
+      {/* Outer ambient glow ring — only for Moderate (#e6a817) and High Risk (#dc3545) */}
+      {color !== '#28a745' && (
         <circle cx={cx} cy={cy} r={r + 16} fill="none"
           stroke={color} strokeWidth="1" opacity="0.07"
           style={{ filter: 'blur(6px)' }} />
@@ -82,19 +82,33 @@ function ArcGauge({ score, maxScore = 24, color, isRefreshing }) {
 
 export default function SOFAGauge({ predictData, isRefreshing }) {
   const { sofa_score, risk_level, risk_color, conformal_lo, conformal_hi } = predictData
-  const scoreRef = useRef(null)
-  const prevScore = useRef(0)
+  const scoreRef      = useRef(null)
+  const prevScore     = useRef(0)
+  const lastPatientRef = useRef(null)
 
   const confPct = conformal_lo != null && conformal_hi != null && conformal_hi > conformal_lo
     ? Math.min(100, (((sofa_score ?? 0) - conformal_lo) / (conformal_hi - conformal_lo)) * 100)
     : 0
 
-  /* Animate score number from previous value to new value */
+  // Reset animation baseline on patient switch so we count from 0, not the previous patient's score
+  useEffect(() => {
+    const pid = predictData.patient_id
+    if (lastPatientRef.current !== null && lastPatientRef.current !== pid) {
+      prevScore.current = 0
+      if (scoreRef.current) scoreRef.current.textContent = '0.0'
+    }
+    lastPatientRef.current = pid
+  }, [predictData.patient_id])
+
+  /* Animate score number — animejs owns textContent; span has no React children */
   useEffect(() => {
     if (sofa_score == null || !scoreRef.current) return
     const from = prevScore.current
     const to = sofa_score
     prevScore.current = to
+
+    // Seed text immediately so there's no flash of empty content
+    scoreRef.current.textContent = from.toFixed(1)
 
     const obj = { val: from }
     const anim = animate(obj, {
@@ -190,9 +204,7 @@ export default function SOFAGauge({ predictData, isRefreshing }) {
               letterSpacing: '-0.05em',
               filter: `drop-shadow(0 0 14px ${risk_color}55)`,
             }}
-          >
-            {sofa_score?.toFixed(1)}
-          </span>
+          />
           <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-display)', marginTop: 2 }}>
             out of 24
           </span>
@@ -231,7 +243,7 @@ export default function SOFAGauge({ predictData, isRefreshing }) {
           <p
             style={{ fontSize: '10px', color: 'rgba(255,255,255,0.35)', fontFamily: 'var(--font-display)', fontWeight: 500 }}
           >
-            90% prediction interval
+            Conformal prediction interval
           </p>
           <span className="num text-[10px]" style={{ color: 'rgba(255,255,255,0.35)' }}>
             {conformal_lo?.toFixed(1)} – {conformal_hi?.toFixed(1)}

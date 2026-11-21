@@ -29,4 +29,6 @@ def get_history(patient_id: int, limit: int = 5):
         # pandas .to_json() converts NaN → null; parse back so FastAPI can serialize
         return json.loads(df.to_json(orient="records"))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"History query failed: {str(e)}")
+        import sys as _sys
+        print(f"[ClinIQ] History error: {e}", file=_sys.stderr)
+        raise HTTPException(status_code=500, detail="History query failed — check server logs.")

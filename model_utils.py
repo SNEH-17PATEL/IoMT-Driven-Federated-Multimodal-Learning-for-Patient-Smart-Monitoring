@@ -2,7 +2,6 @@ import math
 import torch
 import torch.nn as nn
 import numpy as np
-import pandas as pd
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from sklearn.metrics import (
     average_precision_score,
@@ -12,6 +11,21 @@ from sklearn.metrics import (
     r2_score,
     roc_auc_score,
 )
+
+
+# =============================================================
+# ALERT THRESHOLD  (shared by training evaluation and the backend)
+# =============================================================
+# The dashboard raises a clinical alert when predicted SOFA ≥ ALERT_THRESHOLD.
+# It is lower than the High-risk band (actual SOFA ≥ 10) because the model
+# under-predicts severe patients (mean prediction for true High ≈ 9.7).
+# Lowered 8.0 → 7.0: in an ICU, a missed deteriorating patient costs more than
+# a false alarm.  Saved model (256-128-64 + dropout), held-out test set,
+# 602 true High-risk patients out of 10,450:
+#     threshold 8.0 : recall 61.1%  specificity 97.8%  missed 234  false alarms 220
+#     threshold 7.0 : recall 67.1%  specificity 96.3%  missed 198  false alarms 360
+# AUROC / PR-AUC / MAE do not depend on this value.
+ALERT_THRESHOLD = 7.0
 
 
 # =============================================================
@@ -25,35 +39,46 @@ class ICUModel(nn.Module):
     Input:  108 features — 9 trend vitals + 7 latest vitals + 2 CV + 90 SOFA-vocab TF-IDF
     Output: raw SOFA score in the 0–24 range (NOT normalised; no ×24 needed).
 
-    Architecture:
-        Linear(input_dim → 128) → ReLU
-        Linear(128 → 64)  → ReLU
-        Linear( 64 → 32)  → ReLU
-        Linear( 32 →  1)
+    Architecture (default hidden=(256, 128, 64), dropout=0.3):
+        Linear(input_dim → 256) → ReLU → Dropout(0.3)
+        Linear(256 → 128)       → ReLU → Dropout(0.3)
+        Linear(128 →  64)       → ReLU → Dropout(0.3)
+        Linear( 64 →   1)
+    ≈ 69,121 trainable parameters for input_dim=108.
 
-    No LayerNorm: tested but collapsed prediction range to 0.22–7.04.
-        LayerNorm normalises each sample's activations to mean=0, std=1 within
-        the sample itself — this makes a SOFA=20 patient's activations look the
-        same scale as a SOFA=2 patient, destroying the wide-range regression
-        signal. High-SOFA predictions were capped at ~7, giving MAE=6.5 for
-        the ≥10 segment. Removed.
+    Why wider + Dropout (changed from 128→64→32, no Dropout):
+        With plain MSE + FedAvg the old network peaked at round ~13 and then
+        overfit — each hospital's training loss kept falling (7.7 → 2.4) while
+        the server validation loss rose (5.9 → 8.7).  Dropout stops that
+        memorisation, and the extra width gives the model room to use it.
+        Federated simulation on the dataset_v2 training set, same test set:
+            128-64-32, no dropout  : MAE 1.854  R² 0.458  AUROC 0.921  PR-AUC 0.632
+            256-128-64, dropout 0.3: MAE 1.831  R² 0.472  AUROC 0.925  PR-AUC 0.645
+        (confirmed on two random seeds; 512-256-128 gave no further gain).
+        An earlier note warned that per-hospital dropout masks could pull FedAvg
+        in different directions — that did not happen in these runs.
 
-    No Dropout — each hospital trains with different random masks, producing
-    divergent gradient directions that FedAvg cannot reconcile. Regularisation
-    is handled instead by AdamW weight_decay=1e-4 + FedProx.
-    Saved weights: models/federated_model.pth
+    Dropout is only active in model.train(); evaluate_model(), the backend and
+    SHAP all call model.eval(), so predictions are deterministic.
+
+    No LayerNorm: tested earlier but collapsed prediction range to 0.22–7.04
+        (it rescales every sample to the same scale, which hides how severe a
+        high-SOFA patient is).
+
+    Saved weights: models/federated_model.pth — a checkpoint trained with a
+    different hidden size will not load into this class (retrain instead).
     """
-    def __init__(self, input_dim):
-        super(ICUModel, self).__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, 64),
-            nn.ReLU(),
-            nn.Linear(64, 32),
-            nn.ReLU(),
-            nn.Linear(32, 1)
-        )
+    def __init__(self, input_dim, hidden=(256, 128, 64), dropout=0.3):
+        super().__init__()
+        layers = []
+        prev = input_dim
+        for width in hidden:
+            layers += [nn.Linear(prev, width), nn.ReLU()]
+            if dropout > 0:
+                layers.append(nn.Dropout(dropout))
+            prev = width
+        layers.append(nn.Linear(prev, 1))
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x):
         return self.net(x)
@@ -124,10 +149,24 @@ def get_sample_weights(y):
 # =============================================================
 
 def train_model(model, X, y, epochs=10, lr=0.001, batch_size=64,
-                grad_clip=None, oversample=True, global_params=None, mu=0.0):
+                grad_clip=None, oversample=False, global_params=None, mu=0.0,
+                weighted_loss=False):
     """
-    Mini-batch training with AdamW, linear weighted MSE, optional oversampling,
+    Mini-batch training with AdamW, plain MSE (default), optional oversampling,
     and optional FedProx proximal regularisation.
+
+    weighted_loss=False (default): plain MSE.  The linear-weighted loss
+        (weighted_mse_loss, 1 + SOFA×0.5) pushed every prediction upward and
+        raised MAE without catching more high-risk patients.  Tested on the
+        dataset_v2 training set (40-round FL simulation, same test set):
+            weighted MSE : MAE 1.976  R² 0.423  recall@10 0.457
+            plain MSE    : MAE 1.871  R² 0.450  recall@10 0.465
+        Pass weighted_loss=True to bring the weighted loss back.
+
+    oversample=False (default): WeightedRandomSampler is disabled. Aggressive
+        oversampling of the 6% high-risk minority caused overfitting and degraded
+        overall performance.  Combined with weighted_loss=True it would also
+        double-count the high-SOFA emphasis.
 
     global_params / mu (FedProx):
         When global_params (list of numpy arrays) and mu > 0 are provided,
@@ -141,50 +180,59 @@ def train_model(model, X, y, epochs=10, lr=0.001, batch_size=64,
         effectively on tabular data, reducing overfitting to the majority
         low-SOFA class.
     """
+    if len(X) == 0:
+        return 0.0
+
     model.train()
-    dataset = ICUDataset(X, y)
+    try:
+        dataset = ICUDataset(X, y)
 
-    if oversample:
-        sample_w = get_sample_weights(y)
-        sampler  = WeightedRandomSampler(
-            weights=torch.tensor(sample_w, dtype=torch.float32),
-            num_samples=len(sample_w),
-            replacement=True
-        )
-        loader = DataLoader(dataset, batch_size=batch_size, sampler=sampler)
-    else:
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        if oversample:
+            sample_w = get_sample_weights(y)
+            sampler  = WeightedRandomSampler(
+                weights=torch.tensor(sample_w, dtype=torch.float32),
+                num_samples=len(sample_w),
+                replacement=True
+            )
+            loader = DataLoader(dataset, batch_size=batch_size, sampler=sampler)
+        else:
+            loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
 
-    # FedProx: snapshot global weights as tensors once before training starts
-    global_tensors = None
-    if global_params is not None and mu > 0.0:
-        global_tensors = [torch.tensor(w, dtype=torch.float32) for w in global_params]
+        # FedProx: snapshot global weights as tensors once before training starts
+        global_tensors = None
+        if global_params is not None and mu > 0.0:
+            global_tensors = [torch.tensor(w, dtype=torch.float32) for w in global_params]
 
-    final_loss = 0.0
-    for _ in range(epochs):
-        epoch_loss = 0.0
-        for X_batch, y_batch in loader:
-            optimizer.zero_grad()
-            preds = model(X_batch)
-            loss  = weighted_mse_loss(preds, y_batch)
+        final_loss = 0.0
+        for _ in range(epochs):
+            epoch_loss = 0.0
+            for X_batch, y_batch in loader:
+                optimizer.zero_grad()
+                preds = model(X_batch)
+                if weighted_loss:
+                    loss = weighted_mse_loss(preds, y_batch)
+                else:
+                    loss = torch.mean((preds - y_batch) ** 2)
 
-            if global_tensors is not None:
-                prox = sum(
-                    ((p - gp) ** 2).sum()
-                    for p, gp in zip(model.parameters(), global_tensors)
-                )
-                loss = loss + (mu / 2.0) * prox
+                if global_tensors is not None:
+                    prox = sum(
+                        ((p - gp) ** 2).sum()
+                        for p, gp in zip(model.parameters(), global_tensors)
+                    )
+                    loss = loss + (mu / 2.0) * prox
 
-            loss.backward()
-            if grad_clip is not None:
-                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-            optimizer.step()
-            epoch_loss += loss.item()
-        final_loss = epoch_loss / len(loader)
+                loss.backward()
+                if grad_clip is not None:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                optimizer.step()
+                epoch_loss += loss.item()
+            final_loss = epoch_loss / len(loader)
 
-    return final_loss
+        return final_loss
+    finally:
+        model.eval()
 
 
 # =============================================================
@@ -199,17 +247,21 @@ def evaluate_model(model, X, y):
     with torch.no_grad():
         preds = model(X_tensor).numpy().flatten()
 
+    # Clip to valid SOFA range — raw model output can go negative or above 24.
+    preds = np.clip(preds, 0.0, 24.0)
+
     mse = float(nn.MSELoss()(
         torch.tensor(preds).view(-1, 1),
         torch.tensor(y, dtype=torch.float32).view(-1, 1)
     ).item())
     mae = mean_absolute_error(y, preds)
-    r2 = r2_score(y, preds)
+    # r2_score is undefined when y is constant (zero variance); return 0.0 in that case.
+    r2 = float(r2_score(y, preds)) if len(y) >= 2 and float(np.std(y)) > 0.0 else 0.0
 
     return {"mse": mse, "mae": mae, "r2": r2}
 
 
-def compute_sofa_risk_metrics(y_true, y_score, alert_threshold=8.0):
+def compute_sofa_risk_metrics(y_true, y_score, alert_threshold=ALERT_THRESHOLD):
     """
     Risk-band classification and high-risk alert metrics on held-out test data.
 
@@ -317,11 +369,17 @@ def compute_sofa_risk_metrics(y_true, y_score, alert_threshold=8.0):
 # =============================================================
 
 def get_weights(model):
-    return [val.cpu().numpy() for val in model.state_dict().values()]
+    # .copy() ensures the returned arrays are independent snapshots — training the
+    # model afterwards will not mutate them (numpy shares memory with CPU tensors).
+    return [val.cpu().numpy().copy() for val in model.state_dict().values()]
 
 
 def set_weights(model, weights):
     state_dict = model.state_dict()
+    if len(weights) != len(state_dict):
+        raise ValueError(
+            f"set_weights: expected {len(state_dict)} weight arrays, got {len(weights)}"
+        )
     new_state_dict = {
         key: torch.tensor(val)
         for key, val in zip(state_dict.keys(), weights)
@@ -335,9 +393,11 @@ def set_weights(model, weights):
 
 def get_trend(series):
     """Returns 'increasing', 'decreasing', or 'stable' based on linear slope."""
-    if len(series) < 2:
+    arr = np.asarray(series, dtype=float)
+    arr = arr[~np.isnan(arr)]   # drop NaN — polyfit returns NaN slope otherwise
+    if len(arr) < 2:
         return "stable"
-    slope = np.polyfit(range(len(series)), series, 1)[0]
+    slope = np.polyfit(range(len(arr)), arr, 1)[0]
     if slope > 0.1:
         return "increasing"
     elif slope < -0.1:
@@ -347,6 +407,8 @@ def get_trend(series):
 
 def classify_range(value, low, high):
     """Returns 'low', 'normal', or 'high' based on clinical thresholds."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return "normal"
     if value < low:
         return "low"
     elif value > high:

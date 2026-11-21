@@ -123,6 +123,9 @@ def patched_env(tmp_path, monkeypatch):
     monkeypatch.setattr(db_mod, "DB_PATH", db_path)
     monkeypatch.setattr(mig,    "DB_PATH", db_path)
     monkeypatch.chdir(tmp_path)
+    # The tmp dir has no db.py/migrate_to_db.py, so the "run from icu_monitor/"
+    # guard would exit; it has its own tests below.
+    monkeypatch.setattr(mig, "_check_cwd", lambda: None)
     return tmp_path, db_path
 
 
@@ -317,3 +320,18 @@ def test_db_file_size_reported_without_crash(migrated_db):
     _, db_path = migrated_db
     size = os.path.getsize(db_path)
     assert size > 0
+
+
+# ── Working-directory guard ───────────────────────────────────────────────────
+
+def test_check_cwd_exits_outside_icu_monitor(tmp_path, monkeypatch):
+    """Running from another directory aborts instead of silently importing nothing."""
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit) as exc:
+        mig._check_cwd()
+    assert exc.value.code == 1
+
+
+def test_check_cwd_passes_inside_icu_monitor(monkeypatch):
+    monkeypatch.chdir(Path(mig.__file__).resolve().parent)
+    mig._check_cwd()  # must not exit
