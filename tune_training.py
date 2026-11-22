@@ -26,7 +26,7 @@ from model_utils import ICUModel, train_model, evaluate_model, get_weights, set_
 MODEL_PATH = "models/"
 
 
-def load_clients(synthetic=False):
+def load_clients(synthetic=False, data_dir=None):
     if synthetic:
         rng = np.random.default_rng(0)
         w = rng.normal(size=108)
@@ -36,16 +36,17 @@ def load_clients(synthetic=False):
             return X, y
         clients = [mk(3000) for _ in range(3)]
         return clients, mk(2000)
-    import joblib
-    from db import get_fl_client_data
-    cols = list(joblib.load(MODEL_PATH + "scaler.pkl").feature_names_in_)
+    import joblib, sqlite3, pandas as pd
+    mp = (data_dir.rstrip("/\\") + "/models/") if data_dir else MODEL_PATH
+    cols = list(joblib.load(mp + "scaler.pkl").feature_names_in_)
+    con = sqlite3.connect(f"file:{mp}icu_monitor.db?mode=ro", uri=True)
     clients = []
     for i in range(3):
-        df = get_fl_client_data(i)
-        y = df["sofa_score"].values.astype(np.float32)
-        X = df[cols].values.astype(np.float32)
-        clients.append((X, y))
-    return clients, (np.load(MODEL_PATH + "fl_test_X.npy"), np.load(MODEL_PATH + "fl_test_y.npy"))
+        df = pd.read_sql("SELECT * FROM fl_training WHERE client_id = ?", con, params=(i,))
+        clients.append((df[cols].values.astype(np.float32),
+                        df["sofa_score"].values.astype(np.float32)))
+    con.close()
+    return clients, (np.load(mp + "fl_test_X.npy"), np.load(mp + "fl_test_y.npy"))
 
 
 def run(cfg, clients, test, seed=42):
@@ -87,8 +88,9 @@ def main():
     ap.add_argument("--rounds", type=int, default=60)
     ap.add_argument("--quick", action="store_true")
     ap.add_argument("--synthetic", action="store_true")
+    ap.add_argument("--data-dir", default=None, help="folder containing models/ with icu_monitor.db + test npy")
     a = ap.parse_args()
-    clients, test = load_clients(a.synthetic)
+    clients, test = load_clients(a.synthetic, a.data_dir)
     print(f"clients: {[len(c[1]) for c in clients]}  test: {len(test[1])}")
 
     base = dict(hidden=(256, 128, 64), dropout=0.3, lr=1e-3, lr_decay=0.99, epochs=3,
