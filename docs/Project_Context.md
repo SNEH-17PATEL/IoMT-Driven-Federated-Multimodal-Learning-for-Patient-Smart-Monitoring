@@ -1209,7 +1209,8 @@ High-risk alert = predicted SOFA ≥ 7 vs actual SOFA ≥ 10.
 | Old dataset final (FedYogi, weighted MSE, 128-64-32) | 0.398 | Last model on the old dataset (historical) |
 | dataset_v2, FedYogi η=0.01, weighted MSE | 0.426 | New dataset (historical) |
 | dataset_v2 + FedAvg + plain MSE | 0.457 | Simpler server + loss |
-| **dataset_v2 + FedAvg + plain MSE + 256-128-64 + Dropout 0.3** | **0.4725** | **Current model** |
+| dataset_v2 + FedAvg + plain MSE + 256-128-64 + Dropout 0.3 | 0.4725 | Previous model (row-level split) |
+| **+ 200 data-chosen note words, patient-grouped split** | **0.518** | **Current model** — same split: 90-word whitelist 0.466. See `docs/MODEL_IMPROVEMENT.md` |
 
 *(R² values on the old dataset and on dataset_v2 are not directly comparable: the label definition changed.)*
 

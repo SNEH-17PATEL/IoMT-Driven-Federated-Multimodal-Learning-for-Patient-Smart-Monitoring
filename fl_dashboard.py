@@ -933,8 +933,8 @@ def load_training_metadata() -> dict:
         "aggregation": "FedYogi (η=0.01, β1=0.9, β2=0.99) + FedProx (μ=0.5)",
         "split_type": "IID",
         "train_samples": 12795, "test_samples": 2559,
-        "input_features": 108,
-        "model_architecture": "108 → 256 → 128 → 64 → 1  (ReLU, Dropout 0.3, FedProx)",
+        "input_features": 218,
+        "model_architecture": "218 → 256 → 128 → 64 → 1  (ReLU, Dropout 0.3, FedProx)",
         "best_round": 18,
         "final_mae": 1.8968, "final_r2": 0.5995,
         "pred_range_min": -0.22, "pred_range_max": 14.38,
@@ -1619,8 +1619,8 @@ with tab_info:
     )
 
     _layers = [
-        ("INPUT",  "108 features", "18 vitals (trends + latest + GCS) + 90 SOFA-vocab TF-IDF", "#64b5f6","rgba(21,101,192,0.2)"),
-        ("Linear", "108 → 128",   "Fully connected · ReLU activation",                         "#5fda80","rgba(46,125,50,0.2)"),
+        ("INPUT",  "218 features", "18 vitals (trends + latest + GCS) + 200 note-word TF-IDF", "#64b5f6","rgba(21,101,192,0.2)"),
+        ("Linear", "218 → 128",   "Fully connected · ReLU activation",                         "#5fda80","rgba(46,125,50,0.2)"),
         ("Linear", "128 →  64",   "Fully connected · ReLU activation",                         "#5fda80","rgba(46,125,50,0.2)"),
         ("Linear", " 64 →  32",   "Fully connected · ReLU activation",                         "#5fda80","rgba(46,125,50,0.2)"),
         ("Linear", " 32 →   1",   "Output layer · No activation (regression)",                 "#ce93d8","rgba(106,27,154,0.2)"),
@@ -1731,19 +1731,19 @@ with tab_info:
     # ── Feature Vector Breakdown ──────────────────────────────────────────────
     st.markdown(
         "<div style='font-size:18px;font-weight:800;color:#e8f4ff;margin-bottom:12px;"
-        "border-left:3px solid #00d2ff;padding-left:10px;'>🔢 Feature Vector Breakdown — 108 total</div>",
+        "border-left:3px solid #00d2ff;padding-left:10px;'>🔢 Feature Vector Breakdown — 218 total</div>",
         unsafe_allow_html=True,
     )
 
     _feat_rows = [
-        ("📈 Trend Vitals",         9,  108, "#64b5f6","rgba(21,101,192,0.18)","#1565c0",
+        ("📈 Trend Vitals",         9,  218, "#64b5f6","rgba(21,101,192,0.18)","#1565c0",
          "HR_mean, HR_std, RR_mean, SpO₂_mean, SpO₂_min, Temp_mean, SBP_mean, DBP_mean, MAP_mean"),
-        ("📊 Latest Vitals",         7,  108, "#5fda80","rgba(46,125,50,0.18)","#2e7d32",
+        ("📊 Latest Vitals",         7,  218, "#5fda80","rgba(46,125,50,0.18)","#2e7d32",
          "latest_HR, latest_RR, latest_SpO₂, latest_Temp, latest_SBP, latest_DBP, latest_MAP"),
-        ("👁️ Computer Vision",       2,  108, "#ce93d8","rgba(106,27,154,0.18)","#6a1b9a",
+        ("👁️ Computer Vision",       2,  218, "#ce93d8","rgba(106,27,154,0.18)","#6a1b9a",
          "GCS Eye Opening (1–4 scale), Stress Score (0–10)"),
-        ("📝 Clinical NLP (TF-IDF)", 90, 108, "#ff8a65","rgba(230,81,0,0.18)","#e65100",
-         "90 SOFA-vocabulary whitelist terms: creatinine, bilirubin, vasopressor, intubated, sepsis … directly mapped to 6 SOFA organ components"),
+        ("📝 Clinical NLP (TF-IDF)", 200, 218, "#ff8a65","rgba(230,81,0,0.18)","#e65100",
+         "200 note words chosen from the training notes only (e.g. levophed, intubated, acidosis, sedated) — every input stays a readable word, so SHAP names it"),
     ]
 
     for _flabel, _fcount, _ftotal, _ftc, _fbg, _fbrd, _fex in _feat_rows:
@@ -1755,7 +1755,7 @@ with tab_info:
                         margin-bottom:6px;">
                 <div style="font-size:13px;font-weight:700;color:{_ftc};">{_flabel}</div>
                 <div style="font-size:14px;font-weight:900;color:{_ftc};">
-                    {_fcount} <span style="font-size:10px;color:#8ab8cc;">/ 108 features ({_fw:.1f}%)</span>
+                    {_fcount} <span style="font-size:10px;color:#8ab8cc;">/ 218 features ({_fw:.1f}%)</span>
                 </div>
             </div>
             <div style="background:rgba(255,255,255,0.1);border-radius:6px;height:10px;margin-bottom:6px;overflow:hidden;">

@@ -14,6 +14,29 @@ from sklearn.metrics import (
 
 
 # =============================================================
+# CLINICAL-NOTE CLEANER  (used by Phase 0 AND saved inside tfidf_vectorizer.pkl)
+# =============================================================
+NOTE_TEXT_LIMIT = 30_000   # characters of raw note text read per admission
+
+
+def clean_clinical_text(text):
+    """
+    Clean a MIMIC-III clinical note before TF-IDF.
+    Removes de-identification placeholders ([**Name**]), numbers and punctuation,
+    lowercases, and reads at most NOTE_TEXT_LIMIT raw characters.
+    Module-level so the fitted vectorizer can be unpickled by the backend, which
+    then cleans a live clinical note exactly the way the training notes were cleaned.
+    """
+    import re
+    if not isinstance(text, str):
+        return ""
+    text = re.sub(r"\[\*\*[^\]]*\*\*\]", " ", text[:NOTE_TEXT_LIMIT])
+    text = re.sub(r"\b\d+(?:[./]\d+)?\b", " ", text)
+    text = re.sub(r"[^a-z\s]", " ", text.lower())
+    return " ".join(text.split())
+
+
+# =============================================================
 # ALERT THRESHOLD  (shared by training evaluation and the backend)
 # =============================================================
 # The dashboard raises a clinical alert when predicted SOFA ≥ ALERT_THRESHOLD.

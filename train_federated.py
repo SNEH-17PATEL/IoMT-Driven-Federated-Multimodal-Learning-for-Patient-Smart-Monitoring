@@ -82,6 +82,21 @@ TFIDF_NGRAM_RANGE  = (1, 2)
 TFIDF_MAX_DF       = 0.9
 TFIDF_MIN_DF       = 10
 
+# ── Clinical-note vocabulary ──
+# "data"      : the NOTE_TOP_TERMS most useful words, CHOSEN FROM THE TRAINING NOTES ONLY
+#               (candidate pool of NOTE_CANDIDATE_TERMS uni/bigrams, ranked by gain
+#               importance).  Every input stays a real word, so SHAP still names it.
+#               Uses a patient-grouped train/test split.  Neural-net R² on the same
+#               split: 90-word whitelist 0.46  ->  200 data-chosen words 0.52.
+# "whitelist" : the original 90 hand-picked SOFA words (old behaviour).
+NOTE_VOCAB           = "data"
+NOTE_CANDIDATE_TERMS = 3000
+NOTE_TOP_TERMS       = 200
+
+# Folder holding ml_dataset_final_last_row_per_stay.parquet + clinical_notes.parquet
+# (the two BigQuery tables).  Set to None to read from BigQuery instead.
+PARQUET_DIR = None
+
 # ── FL Training ──
 NUM_ROUNDS       = 100   # best round is saved automatically (SaveBestStrategy)
 EPOCHS_PER_ROUND = 3     # local epochs per round on each hospital
@@ -156,42 +171,51 @@ def run_preprocessing():
     print("  PHASE 0 — Data Preprocessing from BigQuery")
     print("=" * 60)
 
-    # ── 0a. BigQuery auth + data load ────────────────────────
-    try:
-        from google.cloud import bigquery
-    except ImportError:
-        raise ImportError(
-            "google-cloud-bigquery not installed.\n"
-            "Run: pip install google-cloud-bigquery google-cloud-bigquery-storage"
+    # ── 0a-0c. Load the two source tables (parquet export or BigQuery) ──
+    if PARQUET_DIR:
+        print(f"\n[0a] Reading parquet tables from {PARQUET_DIR}")
+        ml_data = pd.read_parquet(os.path.join(PARQUET_DIR, "ml_dataset_final_last_row_per_stay.parquet"))
+        notes   = pd.read_parquet(os.path.join(PARQUET_DIR, "clinical_notes.parquet"))
+        print(f"  Vitals dataset: {ml_data.shape}  |  Notes dataset: {notes.shape}")
+    else:
+        try:
+            from google.cloud import bigquery
+        except ImportError:
+            raise ImportError(
+                "google-cloud-bigquery not installed.\n"
+                "Run: pip install google-cloud-bigquery google-cloud-bigquery-storage"
+            )
+
+        print(f"\n[0a] Connecting to BigQuery project: {BIGQUERY_PROJECT}  (location: {BIGQUERY_LOCATION})")
+        bq = bigquery.Client(project=BIGQUERY_PROJECT, location=BIGQUERY_LOCATION)
+
+        print("[0b] Querying ml_dataset_final (last row per ICU stay)...")
+        query_vitals = f"""
+        SELECT *
+        FROM (
+            SELECT *,
+                   ROW_NUMBER() OVER(
+                       PARTITION BY icustay_id
+                       ORDER BY window_time DESC
+                   ) AS rn
+            FROM `{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.ml_dataset_final`
+            WHERE sofa_score IS NOT NULL
         )
+        WHERE rn = 1
+        """
+        ml_data = bq.query(query_vitals).to_dataframe()
+        print(f"  Vitals dataset: {ml_data.shape}  (rows × cols)")
 
-    print(f"\n[0a] Connecting to BigQuery project: {BIGQUERY_PROJECT}  (location: {BIGQUERY_LOCATION})")
-    bq = bigquery.Client(project=BIGQUERY_PROJECT, location=BIGQUERY_LOCATION)
+        print("[0c] Querying clinical_notes...")
+        query_notes = f"""
+        SELECT subject_id, hadm_id, text
+        FROM `{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.clinical_notes`
+        """
+        notes = bq.query(query_notes).to_dataframe()
+        print(f"  Notes dataset:  {notes.shape}")
 
-    print("[0b] Querying ml_dataset_final (last row per ICU stay)...")
-    query_vitals = f"""
-    SELECT *
-    FROM (
-        SELECT *,
-               ROW_NUMBER() OVER(
-                   PARTITION BY icustay_id
-                   ORDER BY window_time DESC
-               ) AS rn
-        FROM `{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.ml_dataset_final`
-        WHERE sofa_score IS NOT NULL
-    )
-    WHERE rn = 1
-    """
-    ml_data = bq.query(query_vitals).to_dataframe()
-    print(f"  Vitals dataset: {ml_data.shape}  (rows × cols)")
-
-    print("[0c] Querying clinical_notes...")
-    query_notes = f"""
-    SELECT subject_id, hadm_id, text
-    FROM `{BIGQUERY_PROJECT}.{BIGQUERY_DATASET}.clinical_notes`
-    """
-    notes = bq.query(query_notes).to_dataframe()
-    print(f"  Notes dataset:  {notes.shape}")
+    if NOTE_VOCAB == "data":
+        return _data_word_preprocessing(ml_data, notes)
 
     # ── 0d. TF-IDF on clinical notes ─────────────────────────
     print(f"\n[0d] Building TF-IDF  (sample {NOTES_SAMPLE_SIZE:,} notes, "
@@ -321,6 +345,81 @@ def run_preprocessing():
     )
     print(f"  Train: {X_train_df.shape}  |  Test: {X_test_df.shape}")
 
+    return _scale_split_save(X_train_df, X_test_df, y_train, y_test, tfidf_vec)
+
+
+
+def _data_word_preprocessing(ml_data, notes):
+    """
+    Patient-grouped split, then choose the note vocabulary from TRAIN rows only.
+    Test notes never influence which words are kept (no selection leakage), and
+    splitting by subject_id keeps every patient on one side.
+    """
+    from sklearn.model_selection import GroupShuffleSplit
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    import scipy.sparse as sp
+    import xgboost as xgb   # used ONLY to rank words; the model itself stays the neural network
+    from model_utils import clean_clinical_text
+
+    ml_data = ml_data.sort_values("icustay_id").reset_index(drop=True)   # reproducible split
+    note_by_adm = (notes.groupby("hadm_id")["text"]
+                        .apply(lambda x: " ".join(t for t in x if isinstance(t, str)))
+                        .rename("note_text"))
+    dataset = ml_data.merge(note_by_adm, on="hadm_id", how="left")
+    dataset["note_text"] = dataset["note_text"].fillna("")
+
+    print("\n[0f] Train/test split (80/20, grouped by patient)...")
+    id_cols  = [c for c in ["subject_id", "hadm_id", "icustay_id", "window_time", "rn"]
+                if c in dataset.columns]
+    num_cols = [c for c in dataset.columns if c not in id_cols + ["sofa_score", "note_text"]]
+    y = dataset["sofa_score"].values.astype(np.float32)
+    tr_idx, te_idx = next(GroupShuffleSplit(n_splits=1, test_size=0.2, random_state=42)
+                          .split(dataset, groups=dataset["subject_id"]))
+    print(f"  Train: {len(tr_idx):,}  |  Test: {len(te_idx):,}  (no patient on both sides)")
+
+    # ── choose the vocabulary from training notes only ───────────
+    print(f"\n[0d] Choosing {NOTE_TOP_TERMS} note words from {NOTE_CANDIDATE_TERMS:,} candidates "
+          "(training rows only)...")
+    train_text = dataset.loc[tr_idx, "note_text"].map(clean_clinical_text)
+    cand_vec = TfidfVectorizer(
+        max_features=NOTE_CANDIDATE_TERMS, min_df=20, max_df=TFIDF_MAX_DF,
+        ngram_range=TFIDF_NGRAM_RANGE, token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z]{2,}\b",
+        stop_words="english", sublinear_tf=True, dtype=np.float32,
+    )
+    cand_matrix = cand_vec.fit_transform(train_text)
+    cand_names  = np.array(cand_vec.get_feature_names_out())
+    X_rank = sp.hstack([sp.csr_matrix(dataset.loc[tr_idx, num_cols].fillna(0).values),
+                        cand_matrix]).tocsr()
+    ranker = xgb.XGBRegressor(
+        n_estimators=300, max_depth=5, learning_rate=0.05, subsample=0.7,
+        colsample_bytree=0.4, min_child_weight=5, reg_lambda=5, n_jobs=-1,
+        importance_type="gain", random_state=42,
+    ).fit(X_rank, y[tr_idx])
+    term_gain = ranker.feature_importances_[len(num_cols):]
+    selected  = sorted(cand_names[np.argsort(-term_gain)[:NOTE_TOP_TERMS]])
+    print(f"  Selected {len(selected)} words, e.g. {selected[:12]}")
+
+    # Final vectorizer: fixed vocabulary + the shared note cleaner, so the backend
+    # (which calls tfidf.transform([raw_note])) cleans text exactly like training.
+    tfidf_vec = TfidfVectorizer(
+        vocabulary=selected, ngram_range=TFIDF_NGRAM_RANGE,
+        token_pattern=r"(?u)\b[a-zA-Z][a-zA-Z]{2,}\b",
+        preprocessor=clean_clinical_text, stop_words="english",
+        sublinear_tf=True, norm="l2",
+    )
+    tfidf_vec.fit(dataset.loc[tr_idx, "note_text"])
+
+    def _build(idx):
+        num = dataset.loc[idx, num_cols].reset_index(drop=True)
+        tf  = pd.DataFrame(tfidf_vec.transform(dataset.loc[idx, "note_text"]).toarray(),
+                           columns=tfidf_vec.get_feature_names_out())
+        return pd.concat([num, tf], axis=1).fillna(0)
+
+    return _scale_split_save(_build(tr_idx), _build(te_idx), y[tr_idx], y[te_idx], tfidf_vec)
+
+
+def _scale_split_save(X_train_df, X_test_df, y_train, y_test, tfidf_vec):
+    """Scale, split into the 3 hospital clients, save DB rows + sklearn artifacts."""
     # ── 0g. StandardScaler on X_train ────────────────────────
     print("\n[0g] Fitting StandardScaler on X_train...")
     from sklearn.preprocessing import StandardScaler
@@ -336,7 +435,7 @@ def run_preprocessing():
 
     X_train_df = pd.DataFrame(X_train_scaled,
                                index=X_train_df.index,
-                               columns=X.columns)
+                               columns=X_train_df.columns)
     X_test_np  = X_test_scaled.astype(np.float32)
 
     # ── 0h. Split into 3 hospital client datasets (IID) ──────
