@@ -10,19 +10,19 @@
     "Mixed ICU",
     "Cardiac/Trauma ICU"
   ],
-  "aggregation": "FedAvg + FedProx (\u03bc=0.5)",
+  "aggregation": "FedAvg + FedProx (μ=0.5)",
   "split_type": "IID",
-  "train_samples": 41798,
-  "test_samples": 10450,
-  "input_features": 108,
-  "model_architecture": "108 \u2192 256 \u2192 128 \u2192 64 \u2192 1  (ReLU, Dropout 0.3, FedProx)",
-  "best_round": 37,
-  "final_mae": 1.8006,
-  "final_r2": 0.4806,
-  "pred_range_min": 1.78,
-  "pred_range_max": 23.07,
+  "train_samples": 41745,
+  "test_samples": 10503,
+  "input_features": 218,
+  "model_architecture": "218 → 256 → 128 → 64 → 1  (ReLU, Dropout 0.3, FedProx)",
+  "best_round": 30,
+  "final_mae": 1.6929,
+  "final_r2": 0.5184,
+  "pred_range_min": 1.25,
+  "pred_range_max": 23.11,
   "oversample": false,
-  "loss_weights": "None \u2014 plain MSE",
+  "loss_weights": "None — plain MSE",
   "optimizer": "AdamW (weight_decay=1e-4)",
   "differential_privacy": false,
   "dp_sensitivity": null,
@@ -30,12 +30,12 @@
   "dp_epsilon": null,
   "dp_delta": null,
   "bigquery_project": "mimic-project-2",
-  "tfidf_features": 90,
+  "tfidf_features": 200,
   "tfidf_ngram": [
     1,
     2
   ],
-  "notes_sample_size": 283208,
+  "note_vocabulary": "200 words chosen from training notes only (candidate pool 3,000 uni/bigrams, XGBoost gain ranking), English stop-words removed",
   "risk_classification_metrics": {
     "risk_bands": {
       "labels": [
@@ -45,50 +45,50 @@
       ],
       "confusion_matrix": [
         [
-          6714,
-          306,
-          7
+          6700,
+          340,
+          1
         ],
         [
-          2086,
-          669,
-          66
+          1982,
+          828,
+          64
         ],
         [
-          119,
-          219,
-          264
+          102,
+          235,
+          251
         ]
       ],
       "per_class": {
         "Low (<5)": {
-          "precision": 0.7527749747729566,
-          "recall": 0.9554575209904653,
-          "sensitivity": 0.9554575209904653,
-          "specificity": 0.3558282208588957,
-          "f1": 0.842092060704879
+          "precision": 0.7627504553734062,
+          "recall": 0.9515693793495242,
+          "sensitivity": 0.9515693793495242,
+          "specificity": 0.3980358174465627,
+          "f1": 0.8467614533965245
         },
         "Moderate (5-<10)": {
-          "precision": 0.5603015075376885,
-          "recall": 0.23714994682736618,
-          "sensitivity": 0.23714994682736618,
-          "specificity": 0.9311836413684624,
-          "f1": 0.3332503113325031
+          "precision": 0.5901639344262295,
+          "recall": 0.2881002087682672,
+          "sensitivity": 0.2881002087682672,
+          "specificity": 0.9246297024511732,
+          "f1": 0.3871872808043021
         },
         "High (>=10)": {
-          "precision": 0.7833827893175074,
-          "recall": 0.43853820598006643,
-          "sensitivity": 0.43853820598006643,
-          "specificity": 0.992587327376117,
-          "f1": 0.5623003194888179
+          "precision": 0.7943037974683544,
+          "recall": 0.4268707482993197,
+          "sensitivity": 0.4268707482993197,
+          "specificity": 0.9934442763489663,
+          "f1": 0.5553097345132744
         }
       },
       "macro": {
-        "precision": 0.698819757209384,
-        "recall": 0.5437152245992993,
-        "sensitivity": 0.5437152245992993,
-        "specificity": 0.7598663965344917,
-        "f1": 0.5792142305087333
+        "precision": 0.7157393957559967,
+        "recall": 0.5555134454723704,
+        "sensitivity": 0.5555134454723704,
+        "specificity": 0.7720365987489006,
+        "f1": 0.596419489571367
       }
     },
     "high_risk_alert": {
@@ -96,28 +96,29 @@
       "actual_high_risk_threshold": 10.0,
       "confusion_matrix": [
         [
-          9513,
-          335
+          9544,
+          371
         ],
         [
-          194,
-          408
+          190,
+          398
         ]
       ],
-      "true_negative": 9513,
-      "false_positive": 335,
-      "false_negative": 194,
-      "true_positive": 408,
-      "precision": 0.5491251682368775,
-      "recall": 0.6777408637873754,
-      "sensitivity": 0.6777408637873754,
-      "specificity": 0.965982940698619,
-      "f1": 0.6066914498141264,
-      "auroc": 0.9181203799412195,
-      "pr_auc": 0.6465900873840437
+      "true_negative": 9544,
+      "false_positive": 371,
+      "false_negative": 190,
+      "true_positive": 398,
+      "precision": 0.517555266579974,
+      "recall": 0.6768707482993197,
+      "sensitivity": 0.6768707482993197,
+      "specificity": 0.9625819465456379,
+      "f1": 0.5865880619012527,
+      "auroc": 0.9325504886775688,
+      "pr_auc": 0.6550103617192308
     }
   },
-  "evaluation_limitation": "One row per ICU stay, split 80/20 by ICU stay \u2014 a patient with several stays can appear in both train and test. Retrospective MIMIC-III results, not independent clinical validation.",
-  "sklearn_version": "1.9.0",
-  "torch_version": "2.13.0"
+  "training_run": "Federated loop run with tune_training.py (identical algorithm to train_federated.py: FedAvg, FedProx, 3 IID hospitals, AdamW, LR decay, best round by client validation MSE) because Flower/Ray cannot run on Windows.",
+  "evaluation_limitation": "One row per ICU stay; train/test split 80/20 GROUPED BY PATIENT (no patient on both sides). Retrospective MIMIC-III results, not independent clinical validation.",
+  "sklearn_version": "1.7.1",
+  "torch_version": "2.8.0+cpu"
 }

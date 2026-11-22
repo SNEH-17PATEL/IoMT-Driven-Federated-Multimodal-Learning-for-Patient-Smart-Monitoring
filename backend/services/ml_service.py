@@ -207,8 +207,8 @@ def load_training_metadata():
         "aggregation": "FedYogi (η=0.01, β1=0.9, β2=0.99) + FedProx (μ=0.5)",
         "split_type": "IID",
         "train_samples": 12795, "test_samples": 2559,
-        "input_features": 108,
-        "model_architecture": "108 → 256 → 128 → 64 → 1  (ReLU, Dropout 0.3, FedProx)",
+        "input_features": 218,
+        "model_architecture": "218 → 256 → 128 → 64 → 1  (ReLU, Dropout 0.3, FedProx)",
         "best_round": 18,
         "final_mae": 1.8968, "final_r2": 0.5995,
     }

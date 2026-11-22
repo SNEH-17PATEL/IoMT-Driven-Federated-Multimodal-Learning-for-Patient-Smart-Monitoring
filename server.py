@@ -129,7 +129,7 @@ _meta = {
     "aggregation":        "FedAvg",
     "best_round":         int(_best_round),
     "best_eval_loss":     round(_best_loss, 5),
-    "model_architecture": "108 → 256 → 128 → 64 → 1  (ReLU, Dropout 0.3, FedProx)",
+    "model_architecture": "218 → 256 → 128 → 64 → 1  (ReLU, Dropout 0.3, FedProx)",
     "input_features":     int(input_dim),
     "source":             "server.py (real FL — MAE/R² not available here)",
     "completed_at":       datetime.now().strftime("%Y-%m-%d %H:%M:%S"),

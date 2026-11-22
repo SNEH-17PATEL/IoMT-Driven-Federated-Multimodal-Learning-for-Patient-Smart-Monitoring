@@ -49,7 +49,7 @@ def load_clients(synthetic=False, data_dir=None):
     return clients, (np.load(mp + "fl_test_X.npy"), np.load(mp + "fl_test_y.npy"))
 
 
-def run(cfg, clients, test, seed=42):
+def run(cfg, clients, test, seed=42, return_model=False):
     torch.manual_seed(seed); np.random.seed(seed)
     splits = []
     for X, y in clients:
@@ -79,8 +79,9 @@ def run(cfg, clients, test, seed=42):
     gmodel.eval()
     with torch.no_grad():
         p = np.clip(gmodel(torch.tensor(test[0])).numpy().ravel(), 0, 24)
-    return dict(best_round=best_round, val_mse=best_val,
-                r2=float(r2_score(test[1], p)), mae=float(mean_absolute_error(test[1], p)))
+    result = dict(best_round=best_round, val_mse=best_val,
+                  r2=float(r2_score(test[1], p)), mae=float(mean_absolute_error(test[1], p)))
+    return (result, gmodel) if return_model else result
 
 
 def main():
