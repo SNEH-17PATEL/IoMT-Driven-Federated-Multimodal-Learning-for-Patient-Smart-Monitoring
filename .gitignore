@@ -1,93 +1,164 @@
-# =============================================================
-# SENSITIVE — NEVER push these
-# =============================================================
-.env
-.env.local
-.env.*.local
+# =============================================================================
+# ClinIQ — .gitignore
+# =============================================================================
+# This file tells git which files to leave OUT of the repository. The groups
+# below are ordered by importance:
+#   1. SECRETS   — keys and passwords (never push)
+#   2. PATIENT-DERIVED DATA — MIMIC-III is licensed; never push
+#   3. Model files that are generated or too large
+#   4. Everything else that is regenerated (caches, builds, logs, editor files)
+#
+# Paths are relative to this folder (icu_monitor/).
+# To check why a file is or is not ignored:   git check-ignore -v <path>
+# =============================================================================
 
-# Streamlit secrets (may contain API keys, database URLs, etc.)
-# .streamlit/config.toml is intentionally tracked (theme + server settings)
+
+# =============================================================================
+# 1. SECRETS — NEVER PUSH THESE
+# =============================================================================
+# .env holds the real GROQ_API_KEY. Anyone with the key can use your Groq
+# account. The template .env.example is meant to be committed (it holds only a
+# placeholder), so it is explicitly allowed again below.
+.env
+.env.*
+!.env.example
+
+# Streamlit secrets (may contain API keys or database URLs).
+# .streamlit/config.toml is intentionally NOT ignored (theme + server settings).
 .streamlit/secrets.toml
 
-# =============================================================
-# DATA — MIMIC-III derived / too large for GitHub (100 MB limit)
-# Source: Google BigQuery mimic-project-2.Dataset.ml_dataset_final
-# Recreate: python migrate_to_db.py  (reads from SQLite after first run)
-# =============================================================
-data/fl_training/*.csv
+# Google Cloud credential files (used for BigQuery in train_federated.py Phase 0).
+# `gcloud auth application-default login` stores credentials outside the project,
+# but these patterns stop an exported key file from being committed by accident.
+*service-account*.json
+*credentials*.json
+application_default_credentials.json
 
-# =============================================================
-# LEGACY CSV BACKUPS — app now reads/writes SQLite only
-# These are the original CSVs that migrate_to_db.py imported from.
-# Gitignored because the canonical data lives in models/icu_monitor.db.
-# =============================================================
-models/patient_vitals/*.csv
-models/prediction_history/*.csv
 
-# =============================================================
-# SQLITE DATABASE — runtime state + MIMIC-III derived data
-# Size: ~23 MB — too large; also subject to MIMIC-III data use agreement
-# Recreate: python migrate_to_db.py
-# =============================================================
+# =============================================================================
+# 2. PATIENT-DERIVED DATA — MIMIC-III IS LICENSED, NEVER PUSH
+# =============================================================================
+# The training data comes from MIMIC-III (PhysioNet). The data-use agreement
+# allows only credentialed users to hold it, so anything built from it stays off
+# GitHub, even though it is de-identified. Share it only with other credentialed
+# people, privately.
+# Source: BigQuery  mimic-project-2.dataset_v2  (rebuilt; see docs/SQL_COMMANDS.md)
+
+# The SQLite database: the 41,798-row fl_training table (MIMIC-derived) plus the
+# live vitals and prediction history. About 56 MB.
+# Recreate the demo tables with:  python migrate_to_db.py
+# Recreate fl_training with:      python train_federated.py  (needs BigQuery access)
 models/icu_monitor.db
 models/icu_monitor.db-shm
 models/icu_monitor.db-wal
+models/icu_monitor.db-journal
 
-# =============================================================
-# MODEL ARTIFACTS — large or intermediate; not needed in the repo
-# Tracked artifacts (DO commit): federated_model.pth, scaler.pkl,
-#   tfidf_vectorizer.pkl, feature_columns.pkl, shap_background.npy,
-#   training_metadata.json
-# =============================================================
-# Intermediate checkpoint saved during training; federated_model.pth is canon
-models/federated_model_best.pth
-# Auto-downloaded by cv_monitor.py on first run (~12 MB MediaPipe model)
-face_landmarker.task
+# The held-out test set (10,450 scaled ICU stays, ~4.5 MB), written by
+# train_federated.py Phase 0. It is built from MIMIC-III rows, so it is not pushed.
+# If it is missing, a later training run warns and falls back to a split of the
+# hospitals' own data (results then look better than they really are).
+models/fl_test_X.npy
+models/fl_test_y.npy
 
-# Keep directory placeholders so the folders exist on a fresh clone
+# Exports and hand-off packages made to share the dataset with another
+# credentialed person (zips, parquet or CSV dumps of the training tables).
+# These contain MIMIC-derived rows and must never be pushed.
+handoff*/
+handoff*.zip
+*.zip
+*.parquet
+data/fl_training/
+
+# Legacy CSV backups from before the app moved to SQLite. The canonical data is
+# in models/icu_monitor.db. The folders no longer exist; the rules stay in case
+# old copies reappear.
+models/patient_vitals/*.csv
+models/prediction_history/*.csv
 !models/patient_vitals/.gitkeep
 !models/prediction_history/.gitkeep
 
-# =============================================================
-# PYTHON CACHE
-# =============================================================
+
+# =============================================================================
+# 3. MODEL FILES — what is and is not committed
+# =============================================================================
+# COMMITTED (needed to run the dashboard without retraining):
+#   models/federated_model.pth     the trained network (~0.3 MB)
+#   models/scaler.pkl              StandardScaler for the 108 inputs
+#   models/tfidf_vectorizer.pkl    TF-IDF with the 90-word SOFA list
+#   models/feature_columns.pkl     the 108 input names in order
+#   models/shap_background.npy     300 background rows for SHAP (~0.1 MB)
+#   models/training_metadata.json  settings + results; the SOFA validation drawer reads it
+#
+# NOT committed:
+# Intermediate checkpoints saved during real federated training (server.py writes
+# federated_model_latest.pth every round; federated_model.pth is the best round and
+# is the one that matters). "best" is an older name, kept in case it reappears.
+models/federated_model_latest.pth
+models/federated_model_best.pth
+
+# The browser camera monitor downloads this ~12 MB MediaPipe face model itself.
+# Ignored in case a copy is saved into the project.
+face_landmarker.task
+
+
+# =============================================================================
+# 4. REGENERATED FILES
+# =============================================================================
+
+# ── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
 .Python
 *.egg-info/
+*.egg
 build/
 dist/
-*.egg
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# =============================================================
-# TEST & COVERAGE REPORTS
-# Generated by: pytest --cov  /  npx playwright test
-# =============================================================
+# ── Virtual environments ─────────────────────────────────────────────────────
+# python setup.py creates venv/ in this folder.
+venv/
+.venv/
+env/
+ENV/
+
+# ── Federated-learning run output (Ray / Flower) ─────────────────────────────
+# Ray writes session folders while the simulation runs; they are large and
+# useless to others (they normally live in /tmp/ray).
+ray_results/
+.ray/
+
+# ── Test and coverage reports ────────────────────────────────────────────────
+# Made by: pytest --cov, Vitest coverage, Playwright
 .coverage
 coverage.xml
+coverage/
 htmlcov/
 test-results/
 playwright-report/
 playwright/.cache/
 
-# =============================================================
-# FRONTEND BUILD OUTPUT & DEPENDENCIES
-# =============================================================
+# ── Frontend (React + Vite) ──────────────────────────────────────────────────
+# Installed by `npm install` / produced by `npm run build`.
 frontend/dist/
 frontend/node_modules/
-# Symlink created by: ln -sf frontend/node_modules node_modules
-# Allows Vitest/Vite to resolve packages when running tests from icu_monitor/
-node_modules/
 
-# Auto-generated Vite template file; project uses custom oxlint config
+# The frontend tests live in tests/ (outside frontend/), so Vitest needs this
+# symlink to find the packages:   ln -s frontend/node_modules node_modules
+# It is written WITHOUT a trailing slash on purpose: a pattern "node_modules/"
+# matches only real folders, so a symlink would NOT be ignored and could be
+# committed by accident (checked with `git check-ignore`).
+node_modules
+
+# Auto-generated by the Vite template; the project uses its own oxlint settings.
 frontend/.oxlintrc.json
 
-# =============================================================
-# LOGS
-# =============================================================
+# ── Logs ─────────────────────────────────────────────────────────────────────
+# Includes training output saved from the terminal, such as train_run.log.
 *.log
 logs/
 npm-debug.log*
@@ -95,9 +166,10 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
-# =============================================================
-# macOS
-# =============================================================
+# ── Jupyter ──────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+
+# ── macOS ────────────────────────────────────────────────────────────────────
 .DS_Store
 .AppleDouble
 .LSOverride
@@ -106,17 +178,12 @@ pnpm-debug.log*
 .Trashes
 Icon?
 
-# =============================================================
-# VIRTUAL ENVIRONMENTS
-# =============================================================
-venv/
-.venv/
-env/
-ENV/
+# ── Windows ──────────────────────────────────────────────────────────────────
+Thumbs.db
+Desktop.ini
 
-# =============================================================
-# IDE & EDITORS
-# =============================================================
+# ── Editors and IDEs ─────────────────────────────────────────────────────────
+# Only the personal VS Code settings are ignored; shared settings can still be committed.
 .vscode/settings.json
 .idea/
 *.swp
@@ -125,8 +192,3 @@ ENV/
 *.ntvs*
 *.njsproj
 *.sln
-
-# =============================================================
-# JUPYTER
-# =============================================================
-.ipynb_checkpoints/

@@ -1,1666 +1,904 @@
-# Complete Input-Output Lifecycle — ICU CDSS
+# Complete Input-Output Lifecycle — ClinIQ ICU CDSS
 **Multimodal Intelligence System with Federated Learning for ICU Patient Monitoring**
 **Status:** Fully implemented and verified
+**Last updated:** 2026-11-24
 
 ---
 
 ## What This Document Covers
 
-This document traces the complete journey of a single prediction — from the moment a clinician enters data, through every computation, transformation, and model inference step, all the way to the final output displayed on the dashboard.
+This document follows **one prediction** from the moment a new reading arrives, through every computation, to the final screen. Every step says:
+- what goes in and where it comes from,
+- exactly what is computed,
+- what comes out (with real values),
+- why the step exists and what would go wrong without it.
 
-Every step includes:
-- What the input is and where it comes from
-- Exactly what computation is performed
-- What the output looks like (with real example values)
-- Why this step exists and what would go wrong without it
+**All example numbers in this document are real.** They were produced by running the final trained model on the demo **Patient 3** (septic shock), reading 3 of 30. Where a number is only there to explain an idea (a made-up arithmetic example), the text says so.
+
+> Related documents: model and training details are in `docs/TRAIN_FEDERATED.md` and `docs/MODEL_DISCUSSION.md`; the checks on the SOFA score and the AI report are in `docs/VALIDATION.md`; the whole-project overview is in `docs/Project_Context.md`.
 
 ---
 
 ## Table of Contents
 
 1. [The Big Picture — What the System Does](#1-the-big-picture--what-the-system-does)
-2. [System Inputs — Five Modalities](#2-system-inputs--five-modalities)
-3. [Input Validation — The Safety Gate](#3-input-validation--the-safety-gate)
+2. [System Inputs — Where the Data Comes From](#2-system-inputs--where-the-data-comes-from)
+3. [Input Checks — The Safety Gate](#3-input-checks--the-safety-gate)
 4. [Step 1 — Sliding Window (Temporal Buffer)](#4-step-1--sliding-window-temporal-buffer)
-5. [Step 2 — Trend Feature Engineering (9 features)](#5-step-2--trend-feature-engineering-9-features)
-6. [Step 3 — Latest Vital and CV Features (9 features)](#6-step-3--latest-vital-and-cv-features-9-features)
-7. [Step 4 — TF-IDF Text Encoding (90 features)](#7-step-4--tfidf-text-encoding-90-features)
-8. [Step 5 — Feature Fusion and Alignment (108 features)](#8-step-5--feature-fusion-and-alignment-108-features)
+5. [Step 2 — Trend Features (9)](#5-step-2--trend-features-9)
+6. [Step 3 — Latest Vital and Camera Features (9)](#6-step-3--latest-vital-and-camera-features-9)
+7. [Step 4 — TF-IDF Text Encoding (90)](#7-step-4--tf-idf-text-encoding-90)
+8. [Step 5 — Feature Fusion and Alignment (108)](#8-step-5--feature-fusion-and-alignment-108)
 9. [Step 6 — StandardScaler Normalisation](#9-step-6--standardscaler-normalisation)
-10. [Step 7 — DNN Inference (108 → SOFA score)](#10-step-7--dnn-inference-108--sofa-score)
-11. [Step 8 — SOFA Post-processing and Alert Classification](#11-step-8--sofa-post-processing-and-alert-classification)
-12. [Step 9 — SHAP Explainability](#12-step-9--shap-explainability)
-13. [Step 10 — Trend Analysis](#13-step-10--trend-analysis)
-14. [Step 11 — LLM Prompt Construction](#14-step-11--llm-prompt-construction)
-15. [Step 12 — LLM Self-Consistency Check](#15-step-12--llm-self-consistency-check)
-16. [Step 13 — Output Display (Four Tabs)](#16-step-13--output-display-four-tabs)
-17. [Complete Data Flow Diagram](#17-complete-data-flow-diagram)
-18. [Artifacts Loaded at Startup](#18-artifacts-loaded-at-startup)
-19. [Feature Count Summary](#19-feature-count-summary)
+10. [Step 7 — Network Inference (108 → SOFA)](#10-step-7--network-inference-108--sofa)
+11. [Step 8 — SOFA Post-processing, Risk Level and Alert](#11-step-8--sofa-post-processing-risk-level-and-alert)
+12. [Step 9 — Runtime Safety Checks and the Conformal Range](#12-step-9--runtime-safety-checks-and-the-conformal-range)
+13. [Step 10 — SHAP Explainability](#13-step-10--shap-explainability)
+14. [Step 11 — Trend Text](#14-step-11--trend-text)
+15. [Step 12 — The Response Sent to the Browser](#15-step-12--the-response-sent-to-the-browser)
+16. [Step 13 — The AI Report: Prompt Construction](#16-step-13--the-ai-report-prompt-construction)
+17. [Step 14 — The AI Report: Reliability Score](#17-step-14--the-ai-report-reliability-score)
+18. [Step 15 — What the Clinician Sees](#18-step-15--what-the-clinician-sees)
+19. [Complete Data Flow Diagram](#19-complete-data-flow-diagram)
+20. [Artifacts Loaded at Startup](#20-artifacts-loaded-at-startup)
+21. [Feature Count Summary](#21-feature-count-summary)
+22. [Timing, Caching and Failure Behaviour](#22-timing-caching-and-failure-behaviour)
 
 ---
 
 ## 1. The Big Picture — What the System Does
 
-Before tracing the technical details, it helps to understand the problem being solved.
+A clinician is watching a patient's dashboard. **Every 90 seconds** a new reading arrives. Within seconds the system:
 
-A clinician is monitoring a patient in the ICU. They enter the patient's current vital signs, a brief clinical note, and two scores from the computer vision module. Within a few seconds, the system:
+1. **Predicts** a SOFA score (0–24), a measure of how badly the patient's organs are failing.
+2. **Classifies** the risk (Low / Moderate / High) and decides whether to raise the red **alert** (predicted SOFA ≥ 7).
+3. **Checks itself:** three plausibility checks and a 90% uncertainty range.
+4. **Explains** which factors pushed the score up or down (SHAP).
+5. **Writes** a structured clinical report with a large language model (LLM), in Hospital or Home Care style.
+6. **Scores the report's reliability** with nine checks against the real patient data.
 
-1. **Predicts** a SOFA score (0–24) — a clinically validated measure of organ failure severity
-2. **Explains** which factors drove that score up or down, using SHAP attribution values
-3. **Generates** a structured clinical report using a large language model (LLM)
-4. **Verifies** the LLM report's reliability by running it three times and measuring consistency
+The system is not replacing clinical judgment. It is a second opinion, based on patterns learned from 41,798 MIMIC-III ICU stays, with its reasoning shown.
 
-The system is not replacing clinical judgment. It is giving the clinician a second opinion in real time — grounded in patterns learned from 41,798 MIMIC-III ICU stays, with clear explanations of its reasoning.
-
-**Running example throughout this document:**
-
-To make every step concrete, we will trace a single patient through the entire pipeline:
+**Running example used in every step (real values from the final model):**
 
 ```
-Patient: 67-year-old male, septic shock
-  HR:    122 bpm      (normal: 60–100)
-  RR:    30 br/min    (normal: 12–20)
-  SpO₂:  84%          (normal: 95–100)
-  Temp:  39.1°C       (normal: 36.5–37.5)
-  SBP:   85 mmHg      (normal: 100–120)
-  DBP:   50 mmHg      (normal: 60–80)
-  MAP:   62 mmHg      (normal: 70–100)
-  GCS Eye Opening: 2  (eyes open only to pain)
-  Stress Score: 8.0   (significant visible distress)
-  
-Clinical note: "67-year-old male. SpO2 declining despite high-flow O2 therapy.
-               History of COPD and hypertension. Creatinine elevated.
-               Urine output low. On vasopressors."
-               
-Expected SOFA: High (multiple organ systems failing)
+Patient 3 — "Septic shock, vasopressors, intubated, multi-organ failure"
+Reading 3 of 30 (the 30 recorded readings are replayed in a loop)
+
+  HR:    124 bpm       (normal 60–100)
+  RR:    30 br/min     (normal 12–20)
+  SpO₂:  85 %          (normal 95–100)
+  Temp:  39.2 °C       (normal 36.0–37.5)
+  SBP:   84 mmHg       (normal 90–120)
+  DBP:   49 mmHg       (normal 60–80)
+  MAP:   61 mmHg       (normal 70–100)
+  GCS Eye Opening: 2   (eyes open only to pain)
+  Stress Score:    8.0 (high visible distress)
+
+Clinical note: "72-year-old male with septic shock on norepinephrine
+ vasopressor support. Intubated and mechanically ventilated at FiO2 0.8.
+ SpO2 critically low despite ventilator. Creatinine critically elevated at
+ 3.2 mg/dL with oliguria less than 0.3 mL/kg/h. History of COPD and chronic
+ kidney disease. Vasopressor requirement increasing. Broad-spectrum
+ antibiotics initiated. Blood cultures pending. Hemodynamic instability
+ worsening."
+
+Result: predicted SOFA 8.2 → Moderate Risk, but the alert fires (8.2 ≥ 7).
 ```
 
 ---
 
-## 2. System Inputs — Five Modalities
+## 2. System Inputs — Where the Data Comes From
 
-The system accepts **five independent categories** of input. Three come directly from the clinician at the time of each assessment. Two are pre-loaded from files saved on disk.
+The dashboard does **not** ask the clinician to type vitals. In the demo, the data comes from the database and, optionally, the webcam. There are five kinds of input:
 
-### Modality 1 — Real-time Vital Signs (7 numbers)
+### Input 1 — The next recorded reading (7 vital signs)
 
-These are the standard bedside monitoring values entered for the current assessment:
+Each demo patient has **30 recorded readings** (from MIMIC-III) in the `sample_patients` table. Every 90 seconds the backend takes the next one (`row_idx`, wrapping around after 30).
 
-| Input | Unit | What it measures | Normal range | Valid range | Our example |
-|---|---|---|---|---|---|
-| HR | bpm | Heart rate | 60–100 | 30–220 | 122.0 |
-| RR | br/min | Respiratory rate | 12–20 | 5–60 | 30.0 |
-| SpO₂ | % | Blood oxygen saturation | 95–100 | 50–100 | 84.0 |
-| Temp | °C | Body temperature | 36.5–37.5 | 30–43 | 39.1 |
-| SBP | mmHg | Systolic blood pressure | 100–120 | 40–250 | 85.0 |
-| DBP | mmHg | Diastolic blood pressure | 60–80 | 20–150 | 50.0 |
-| MAP | mmHg | Mean arterial pressure | 70–100 | 30–200 | 62.0 |
+| Input | Unit | What it measures | Normal range (dashboard) | Our example |
+|---|---|---|---|---|
+| HR | bpm | Heart rate | 60–100 | 124 |
+| RR | br/min | Respiratory rate | 12–20 | 30 |
+| SpO₂ | % | Blood oxygen saturation | 95–100 | 85 |
+| Temp | °C | Body temperature | 36.0–37.5 | 39.2 |
+| SBP | mmHg | Systolic blood pressure | 90–120 | 84 |
+| DBP | mmHg | Diastolic blood pressure | 60–80 | 49 |
+| MAP | mmHg | Mean arterial pressure | 70–100 | 61 |
 
-**What these vitals cover in the SOFA score:**
-- SpO₂ readings → proxy for SOFA Component 1 (Respiratory)
-- MAP readings → direct SOFA Component 4 (Cardiovascular)
-- GCS Eye Opening (next section) → SOFA Component 5 (CNS)
+Each vital gets a status badge (`low` / `normal` / `high`) by comparing it with these ranges. (The short trend summary that goes to the AI report uses 36.5 and 100 as the lower limits for temperature and SBP; both sets are as written in the code.)
 
-The remaining three SOFA components (Coagulation, Hepatic, Renal) require lab values not available at the bedside — these are captured through the clinical notes text.
+**What the vitals cover in SOFA:** SpO₂ is a proxy for the respiratory score, MAP is the cardiovascular score, and GCS eye opening is part of the brain score. The other organs (clotting, liver, kidney) need lab values that are not inputs; they are captured only through words in the clinical note.
 
-**The difference between "Normal Range" and "Valid Range":**
+### Input 2 — The two camera / observation values
 
-The valid range is the physiologically plausible boundary — values outside it indicate a data entry error or equipment malfunction (HR=10 bpm or SpO₂=110% cannot be real). The normal range is the clinical reference — values outside it are concerning but medically real. Both ranges are checked, but only the valid range causes the system to halt. Values outside the normal range trigger coloured indicators on the dashboard.
-
----
-
-### Modality 2 — Computer Vision Features (2 numbers)
-
-| Input | Scale | What it measures | Our example |
+| Input | Scale | Meaning | Our example |
 |---|---|---|---|
-| GCS Eye Opening | 1–4 | Neurological consciousness level assessed from eye behaviour | 2 |
-| Stress Score | 0–10 | Pain and agitation level assessed from facial expression | 8.0 |
+| GCS Eye Opening | 1–4 | 4 = eyes open on their own, 3 = to voice, 2 = to pain, 1 = no response | 2 |
+| Stress Score | 0–10 | Visible distress or pain: LOW < 3.5, MODERATE 3.5–6.5, HIGH ≥ 6.5 | 8.0 |
 
-**What these two numbers mean clinically:**
+Two sources:
+- **Recorded values** from the sample row (the default).
+- **Live webcam values**, when the clinician turns the **Camera monitor** on. The browser analyses the face (MediaPipe, entirely on the device) and sends only two numbers, `cv_gcs_eye` and `cv_stress`. When present they **replace** the recorded values in the model input. Details: `docs/CV_MONITOR.md`.
 
-**GCS Eye Opening (E1–E4):**
-| Score | Label | Meaning | Brain state implication |
-|---|---|---|---|
-| 4 | Spontaneous | Eyes open naturally without any stimulus | Brainstem arousal intact — patient alert |
-| 3 | To Voice | Eyes open when spoken to | Partial arousal — patient responds to external stimulation |
-| 2 | To Pain | Eyes open only to painful stimulus | Minimal arousal — only strongest stimuli penetrate |
-| 1 | No Response | Eyes remain closed regardless | No functional eye-opening response |
+### Input 3 — The clinical note (free text)
 
-Our patient scores E2 — eyes open only to pain. This indicates significant neurological impairment, which directly contributes to SOFA Component 5 (CNS).
+Each sample row has a clinical note (shown above). Notes capture what vitals cannot: **why** things are abnormal ("SpO₂ critically low *despite* ventilator"), **lab values** that are not inputs ("creatinine critically elevated"), **treatments in place** ("on norepinephrine") and **history** ("COPD and chronic kidney disease"). The text becomes 90 numbers in Step 4.
 
-**Stress Score (0.0–10.0):**
-| Range | Label | Meaning |
+### Input 4 — The vitals history (from the database)
+
+The `patient_vitals` table in `models/icu_monitor.db` holds the **last 20 readings** for each patient with timestamps. It is how the system remembers the trajectory. (An older version used a CSV file and a "Reset Patient History" button; the database replaced both.)
+
+### Input 5 — Pre-trained artifacts (loaded from disk once)
+
+These are products of the federated training run, loaded at startup (full list in Section 20): `federated_model.pth`, `scaler.pkl`, `tfidf_vectorizer.pkl`, `feature_columns.pkl`, `shap_background.npy` and `training_metadata.json`. They do not change between predictions.
+
+### The request that starts everything
+
+The browser sends `POST /api/predict` with:
+```json
+{ "patient_id": 3, "row_idx": 2, "cv_gcs_eye": 2, "cv_stress": 8.0 }
+```
+The last two fields are optional (only when the camera monitor is on).
+
+---
+
+## 3. Input Checks — The Safety Gate
+
+Before any computation, the API checks the request. A failed check stops the prediction with a clear error:
+
+| Check | Rule | Error |
 |---|---|---|
-| 0.0–3.4 | LOW | Patient appears calm and comfortable |
-| 3.5–6.4 | MODERATE | Noticeable discomfort, needs monitoring |
-| 6.5–10.0 | HIGH | Severe visible distress — likely acute pain or agitation |
+| Patient | `patient_id` must be 1, 2 or 3 | 400 "patient_id must be 1, 2, or 3" |
+| Camera eye score | `cv_gcs_eye`, if given, must be 1, 2, 3 or 4 | 400 "cv_gcs_eye must be 1–4" |
+| Camera stress | `cv_stress`, if given, must be between 0 and 10 | 400 "cv_stress must be 0–10" |
+| Data present | The patient must have sample rows | 400 "No sample data… Run migrate_to_db.py first" |
+| Anything else | Unexpected failure | 500 "Prediction failed — check server logs." (details go to the server log only) |
 
-Our patient scores 8.0 — HIGH stress. Combined with GCS E2, this paints a picture of a neurologically impaired but physiologically distressed patient.
+The vitals themselves come from the database, so they are not typed by a person. If a stored value is missing or not a number (NaN or infinity), `_safe_float()` replaces it with a safe default (for example SpO₂ 98, temperature 37, SBP 120, DBP 80, MAP 90) so one bad cell never crashes a prediction.
 
-**Why these are called "Computer Vision features":**
-
-In the full system architecture, GCS Eye Opening and Stress Score are derived automatically from a camera feed using MediaPipe facial analysis — no nurse intervention needed. The camera runs continuously, the CV module computes these scores in real time, and they feed into predictions automatically. For this implementation, the clinician enters them manually. The rest of the pipeline treats them identically regardless of how they were obtained.
-
----
-
-### Modality 3 — Clinical Notes (free text)
-
-```
-Example input (our running patient):
-"67-year-old male. SpO2 declining despite high-flow O2 therapy.
- History of COPD and hypertension. Creatinine elevated. Urine output low.
- On vasopressors."
-```
-
-Clinical notes capture information that structured vital signs cannot:
-- **Why** vitals are abnormal ("SpO2 declining DESPITE high-flow O2" — the resistance to treatment matters)
-- **Lab values** not automatically monitored ("creatinine elevated" — this encodes renal SOFA component)
-- **Interventions in place** ("on vasopressors" — this directly encodes cardiovascular SOFA component)
-- **Patient history** ("history of COPD" — chronic disease context changes the interpretation of SpO2)
-
-This free text is converted into 90 numerical TF-IDF features in Step 4.
-
----
-
-### Modality 4 — Historical Vitals (from file)
-
-The system reads `models/patient_vitals.csv`, which stores the last 20 readings of the 7 vital signs with timestamps. This file is how the system maintains a memory of the patient's trajectory.
-
-```
-Structure of patient_vitals.csv:
-  timestamp           | HR  | RR | SpO2 | Temp | SBP | DBP | MAP
-  2024-03-15 08:00:00 | 88  | 18 | 97   | 37.1 | 118 | 76  | 90
-  2024-03-15 08:15:00 | 92  | 19 | 96   | 37.2 | 115 | 74  | 88
-  2024-03-15 08:30:00 | 97  | 21 | 95   | 37.3 | 112 | 72  | 85
-  ...
-  2024-03-15 11:45:00 | 118 | 28 | 86   | 38.9 | 88  | 54  | 65
-  (most recent reading — the patient is deteriorating)
-```
-
-**What "Reset Patient History" does:**
-
-When the clinician presses "Reset Patient History," this file is replaced with 20 default stable readings. This **must** be pressed when switching to a new patient — otherwise the sliding window would mix the previous patient's vital history with the new patient's data, producing nonsensical trend statistics.
-
----
-
-### Modality 5 — Pre-trained Model Artifacts (loaded from disk at startup)
-
-These are not entered by the clinician. They are the products of the federated training run and are loaded once when the application starts:
-
-| Artifact | What it contains | Why it is needed |
-|---|---|---|
-| `models/federated_model.pth` | Trained DNN weights (108→256→128→64→1, Dropout 0.3) | The model that makes predictions |
-| `models/scaler.pkl` | StandardScaler fitted on 41,798 training ICU stays | Normalises new inputs to the same scale as training data |
-| `models/tfidf_vectorizer.pkl` | TF-IDF with 90-term SOFA vocabulary whitelist | Converts clinical notes to numeric features |
-| `models/feature_columns.pkl` | Ordered list of 108 column names | Ensures features are presented to the model in the correct order |
-| `models/shap_background.npy` | 300 representative training patients | Reference distribution for SHAP feature attribution |
-
-All 5 are loaded once and cached. They do not change between predictions — only the clinician-entered inputs change.
-
----
-
-## 3. Input Validation — The Safety Gate
-
-**Before any computation runs**, the system checks whether the entered vital signs are within physiologically plausible bounds.
-
-```
-For each of the 7 vital signs:
-  Check: lo ≤ value ≤ hi   (using VALID_RANGES dictionary)
-
-If ANY vital fails:
-  → Show error message: "HR=10 bpm is outside the valid range [30, 220]"
-  → Stop immediately — no prediction is made
-
-If ALL vitals pass:
-  → Continue to Step 1
-```
-
-**Why this check is essential:**
-
-Without validation, a typo (HR=10 instead of HR=110) would propagate through the entire pipeline and produce a wildly wrong SOFA prediction. The model was trained on physiologically real data — if you feed it values outside that range, its behaviour is undefined.
-
-```
-Example of what happens without validation:
-  Clinician accidentally enters SpO2 = 110 (valid SpO2 is 50–100)
-  
-  After StandardScaler: (110 - mean_spO2) / std_spO2
-    ≈ (110 - 96) / 3 = +4.7 z-scores (already high)
-  
-  After clipping to ±10: 4.7 (not clipped)
-  
-  The DNN processes 4.7 for SpO2 — a value it has never seen in training
-  → unpredictable, potentially wildly incorrect SOFA prediction
-  → patient may receive wrong clinical advice
-
-With validation: error message → prediction halted → clinician corrects the typo
-```
-
-Also checked: the Groq API key must be present (stored in the `.env` file). Without it, the LLM clinical report cannot be generated. This is checked upfront rather than failing after all the ML computation has already run.
+The report endpoint has its own checks (Section 16): the care mode must be `hospital` or `homecare`, a prediction must already exist for that patient (otherwise **409**), and the Groq key must be configured (otherwise **500**). The key is checked up front so the system fails before running any AI call, not after.
 
 ---
 
 ## 4. Step 1 — Sliding Window (Temporal Buffer)
 
-**Purpose:** Build and maintain a 20-reading history of vital signs to enable trend computation.
+**Purpose:** keep a 20-reading history of the vitals so trends can be computed.
 
-**Why a single reading is not enough:**
-
-A single vital sign snapshot is ambiguous. SpO₂ = 91% could mean:
-- The patient has been stably at 91% for 4 hours (concerning but stable)
-- The patient was at 97% an hour ago and is rapidly deteriorating (urgent emergency)
-- The probe slipped off the finger and gave one bad reading (false alarm)
-
-These three scenarios have completely different clinical responses, but they are indistinguishable from a single reading. Twenty readings across time tell the trajectory — the direction of change — which is far more informative.
+**Why one reading is not enough.** SpO₂ = 91% could mean a steady 91% for hours (concerning but stable), a fall from 97% an hour ago (urgent), or a probe that slipped (false alarm). These need very different responses and look identical in a single reading. Twenty readings show the direction.
 
 **The process:**
-
 ```
-Input:
-  Current reading: {HR: 122, RR: 30, SpO2: 84, Temp: 39.1, SBP: 85, DBP: 50, MAP: 62}
-  Historical file: patient_vitals.csv (up to 20 previous rows)
+Input:  the current reading's 7 vitals  +  the patient_vitals table
 
-Step A: Load patient_vitals.csv
-  → DataFrame with up to 20 rows, 8 columns (timestamp + 7 vitals)
-
-Step B: Append the current reading as a new row
-  → DataFrame now has up to 21 rows
-
-Step C: Keep only the last 20 rows
-  new_df = df.tail(20)
-  → If fewer than 20 readings exist (e.g., new patient with only 3 readings):
-    use however many are available
-  → If more than 20 exist: oldest reading is dropped
-
-Step D: Save the updated DataFrame back to patient_vitals.csv
-
-Output: vitals_df — DataFrame of shape (≤20, 8)
+A. If the patient has NO stored vitals yet (fresh start):
+     seed the window with earlier readings from the sample data
+     (starting from row 1, so row 0 — the current reading — is not duplicated),
+     timestamped a minute and a half apart going backwards in time.
+B. Append the current reading with the real clock time.
+C. Keep only the newest 20 rows for this patient (older rows are deleted).
+D. Read the window back: vitals_df, up to 20 rows × 7 vitals.
 ```
 
-**A concrete timeline example — showing the window moving forward:**
+**Why 20?** The training data used 20-reading windows, so the model learned what "normal trend" looks like over exactly that span. A different window length would shift every trend feature and make the model's inputs inconsistent with its training.
 
-```
-Time 08:00: Patient admitted. Only 1 reading (SpO2=97, HR=85, ...)
-  Window: [reading_1]  (1 reading)
-  
-Time 08:15: Second reading entered (SpO2=96, HR=89)
-  Window: [reading_1, reading_2]  (2 readings)
-  
-...continuing until...
-  
-Time 11:45: 20th reading (SpO2=86, HR=118)
-  Window: [reading_1, ..., reading_20]  (20 readings, FULL)
-  
-Time 12:00: 21st reading (SpO2=84, HR=122) — current assessment
-  Window: [reading_2, ..., reading_21]  (20 readings, reading_1 dropped)
-  → reading_1 from 08:00 (SpO2=97) is no longer in the window
-  → The trend computation now covers the last 3 hours, not the entire stay
-```
-
-**Why exactly 20 readings?**
-
-The training data in MIMIC-III was also computed using 20-reading windows. The model learned what "normal trend" looks like across 20 readings. If we used 10 readings at inference but the model was trained on 20-reading statistics, the z-scores for trend features would be systematically different, leading to incorrect predictions. Matching the inference window to the training window ensures consistency.
+**Example (Patient 3):** the window held 20 rows; its trend statistics are in the next step.
 
 ---
 
-## 5. Step 2 — Trend Feature Engineering (9 features)
+## 5. Step 2 — Trend Features (9)
 
-**Purpose:** Summarise the patient's 20-reading trajectory into 9 statistical measures that capture both the current level and the direction of change.
-
-```
-Input:  vitals_df — DataFrame with ≤20 rows and 7 vital sign columns
-
-Process: Compute 9 statistics across the rows:
-
-  HR_mean    = mean(HR values across all 20 readings)
-  HR_std     = standard deviation of HR values (measure of variability)
-  RR_mean    = mean(RR values)
-  SpO2_mean  = mean(SpO2 values)
-  SpO2_min   = minimum(SpO2 values across all 20 readings)
-  Temp_mean  = mean(Temp values)
-  SBP_mean   = mean(SBP values)
-  DBP_mean   = mean(DBP values)
-  MAP_mean   = mean(MAP values)
-
-Output: trend_features — dictionary of 9 float values
-```
-
-**Worked example using our running patient:**
+**Purpose:** summarise the 20-reading trajectory into 9 numbers.
 
 ```
-The 20 readings in the window (simplified):
-  Reading 1 (08:00):  HR=85,  SpO2=97, MAP=90
-  Reading 2 (08:15):  HR=89,  SpO2=96, MAP=88
-  Reading 3 (08:30):  HR=92,  SpO2=95, MAP=86
-  Reading 4 (08:45):  HR=96,  SpO2=94, MAP=85
-  ...
-  Reading 15 (10:30): HR=108, SpO2=89, MAP=74
-  ...
-  Reading 19 (11:30): HR=118, SpO2=87, MAP=67
-  Reading 20 (11:45): HR=118, SpO2=86, MAP=65
-  (Reading 21 = 12:00, HR=122, SpO2=84, MAP=62 — current, included)
-
-After computation:
-  HR_mean    = average of 85, 89, 92, ..., 118, 122 = 101.5 bpm
-  HR_std     = std of those values = 14.2 bpm  (large spread = unstable)
-  RR_mean    = 24.1 br/min  (was 18, now 30 — elevated throughout)
-  SpO2_mean  = mean of 97, 96, 95, ..., 86, 84 = 88.5%
-  SpO2_min   = 84%  (the nadir — worst single desaturation)
-  Temp_mean  = 38.6°C  (progressively rising from 37.1)
-  SBP_mean   = 92.3 mmHg  (declining from 118)
-  DBP_mean   = 57.1 mmHg
-  MAP_mean   = 68.8 mmHg  (declining from 90)
+HR_mean    = mean of HR over the window
+HR_std     = standard deviation of HR  (variability; 0 if only one reading)
+RR_mean    = mean of RR
+SpO2_mean  = mean of SpO₂
+SpO2_min   = lowest SpO₂ in the window
+Temp_mean  = mean of Temp
+SBP_mean   = mean of SBP
+DBP_mean   = mean of DBP
+MAP_mean   = mean of MAP
 ```
 
-**Why exactly these 9 features and not all 7×2=14 (mean + std for each vital)?**
+**Real values for Patient 3:**
 
-Each feature was chosen based on clinical significance:
+| Feature | Value |
+|---|---|
+| HR_mean | 123.3 bpm |
+| HR_std | 2.98 bpm (a steady, sustained fast heart rate) |
+| RR_mean | 29.45 br/min |
+| SpO2_mean | 85.67 % |
+| SpO2_min | 84.5 % |
+| Temp_mean | 39.11 °C |
+| SBP_mean | 84.3 mmHg |
+| DBP_mean | 49.55 mmHg |
+| MAP_mean | 61.3 mmHg |
 
-**HR_mean and HR_std — two features for heart rate:**
-- HR_mean: The average heart rate over the window (is the patient tachycardic overall?)
-- HR_std: Heart rate variability (HRV) is itself a clinical indicator. Low HRV (HR very stable at a high level) can indicate autonomic nervous system dysfunction in sepsis. High HRV (HR jumping up and down) can indicate cardiac instability. Standard deviation captures this.
-
-```
-Example: 
-  Patient A: HR readings = 120, 121, 119, 120, 122 → HR_std = 1.1 (very stable tachycardia)
-  Patient B: HR readings = 90, 130, 85, 125, 95   → HR_std = 21.3 (highly variable)
-  
-  Both have similar HR_mean (~115), but Patient B's high variability
-  suggests a different physiological process. The model can learn to distinguish them.
-```
-
-**SpO2_mean and SpO2_min — two features for oxygen saturation:**
-- SpO2_mean: The overall level of oxygenation across the window
-- SpO2_min: The worst single value — even a brief desaturation can cause tissue damage
-
-```
-Example:
-  Patient A: SpO2 readings = 95, 96, 94, 95, 70, 95, 96, 94  → mean=91.9%, min=70%
-  Patient B: SpO2 readings = 91, 92, 91, 92, 92, 91, 91, 92  → mean=91.5%, min=91%
-  
-  Both have similar SpO2_mean, but Patient A had a dangerous 70% desaturation.
-  SpO2_min captures this episode; SpO2_mean alone would hide it.
-```
-
-**RR_mean, Temp_mean, SBP_mean, DBP_mean, MAP_mean — means only:**
-The variability of these vitals is less clinically significant as a standalone predictor compared to their absolute levels. Adding their standard deviations would double the feature count (from 9 to 16) without proportional gain in predictive power.
+**Why these 9 and not mean + std for all 7 vitals (14)?** Each was chosen for clinical value:
+- **HR_mean and HR_std.** Heart-rate *variability* is a signal itself. Very low variability at a high rate can mean autonomic dysfunction in sepsis; very high variability can mean instability. (Made-up illustration: readings 120, 121, 119, 120, 122 have std ≈ 1.1; readings 90, 130, 85, 125, 95 have std ≈ 21 with a similar mean, a different physiological story.)
+- **SpO2_mean and SpO2_min.** The mean shows the overall level; the minimum catches even a brief dangerous dip that a mean would hide. (Illustration: 95, 96, 94, 95, 70, 95, 96, 94 has mean ≈ 91.9 but min 70.)
+- **The others are means only.** Their variability is a weaker predictor; adding it would raise the count from 9 to 16 for little gain.
 
 ---
 
-## 6. Step 3 — Latest Vital and CV Features (9 features)
+## 6. Step 3 — Latest Vital and Camera Features (9)
 
-**Purpose:** Include the most recent absolute values alongside the trend statistics, because trend summaries alone lose information about the current state.
-
-```
-Input:
-  7 vital sign floats entered by the clinician (the CURRENT reading)
-  GCS_eye_opening integer (1–4)
-  stress_score float (0–10)
-
-Process: Package as a dictionary
-
-Output: latest_features — dictionary with 9 key-value pairs
-  {
-    "latest_HR":       122.0,
-    "latest_RR":       30.0,
-    "latest_SpO2":     84.0,
-    "latest_Temp":     39.1,
-    "latest_SBP":      85.0,
-    "latest_DBP":      50.0,
-    "latest_MAP":      62.0,
-    "GCS_eye_opening": 2.0,
-    "stress_score":    8.0,
-  }
-```
-
-**Why keep both trend features AND latest values — aren't they redundant?**
-
-They contain different and complementary information:
+**Purpose:** include the *current* values next to the trend summaries, because a trend summary alone loses the present state.
 
 ```
-Scenario A: Patient deteriorating rapidly in the last 3 readings
-  HR readings across 20 readings: [85, 87, 88, 89, 90, 91, 92, 93, 94, 95,
-                                    96, 97, 98, 99, 100, 105, 110, 115, 118, 122]
-  
-  HR_mean = 97.7 bpm  ← pulled toward the stable early readings
-  latest_HR = 122 bpm ← current state is already at dangerous level
-  
-  The mean says "moderately elevated." The latest says "acutely high."
-  Both are true but emphasise different aspects. The model uses both.
-
-Scenario B: Patient with previously high but now recovering HR
-  HR readings: [130, 128, 125, 122, 119, 117, 115, 113, 111, 110,
-                109, 108, 107, 106, 105, 103, 102, 100, 98, 96]
-  
-  HR_mean = 110.9 bpm  ← reflects the high starting state
-  latest_HR = 96 bpm   ← now nearly normal (recovering)
-  
-  The mean would suggest dangerous tachycardia.
-  The latest corrects this: the patient is improving.
+latest_HR       124.0       latest_DBP        49.0
+latest_RR        30.0       latest_MAP        61.0
+latest_SpO2      85.0       GCS_eye_opening    2.0
+latest_Temp      39.2       stress_score       8.0
+latest_SBP       84.0
 ```
+(The 7 vitals of the current reading plus the 2 camera/observation values = 9.)
 
-Without latest values, the model would not know the current state. Without trend features, the model would not know whether the current state is a brief spike or a sustained pattern.
+**Why keep both trends and latest values?** They answer different questions (made-up illustration): a patient whose HR rose 85 → 122 over the window has `HR_mean` ≈ 98 ("moderately high") but `latest_HR` = 122 ("acutely high"). A patient recovering from 130 → 96 has `HR_mean` ≈ 111 but `latest_HR` = 96 ("nearly normal"). Without latest values the model would not know the present state; without trends it would not know whether the present state is a spike or a sustained pattern.
 
-**Why GCS_eye_opening and stress_score appear here (not in trend features):**
-
-GCS and stress score are not collected at every vital sign reading interval — they require active assessment (camera monitoring or nurse observation). They reflect the patient's current neurological and pain state, which is treated as a point-in-time measurement rather than a time series. The two values are placed in the "latest" group because they describe the current state at the time of this assessment.
+**Why GCS and stress are in this group:** they are point-in-time observations (camera or nurse), not a series of vitals.
 
 ---
 
-## 7. Step 4 — TF-IDF Text Encoding (90 features)
+## 7. Step 4 — TF-IDF Text Encoding (90)
 
-**Purpose:** Convert the free-text clinical note into 90 numerical features that the DNN can process alongside the vital sign numbers.
+**Purpose:** turn the free-text note into 90 numbers the network can use.
 
-### What is TF-IDF?
+### What TF-IDF is
+A score for each word in a fixed list:
+- **TF (term frequency):** how often the word appears in *this* note. We use `sublinear_tf`, so 1 mention scores 1.0, 5 mentions about 2.6 and 10 mentions about 3.3 (repeats count less and less).
+- **IDF (inverse document frequency):** how *rare* the word is across all training notes. A word found everywhere ("acute") gets a small boost; a rare, specific word ("oliguria") gets a big one.
 
-TF-IDF (Term Frequency – Inverse Document Frequency) is a classical text analysis method that converts a document into a bag-of-words vector where each dimension represents a vocabulary term and the value represents how important that term is in this specific document compared to all documents in the training corpus.
+Score ≈ TF × IDF, so a word is high when it is frequent in this note **and** rare overall.
 
-**Two components:**
+### Why a fixed list of 90 words
+Letting TF-IDF pick the 600 "most variable" words chose paperwork words: "tablet", "sig" (take as directed), "refills", "disp", "capsule", "afternoon", "wallet". Sicker patients have more notes, so these words measured **how much was written**, not how ill the patient was. A model trained on them learns "more paperwork = sicker", which fails on new patients.
 
-**TF (Term Frequency):** How often does a term appear in THIS note?
+The fixed list has 90 terms, each tied to a SOFA organ or to overall severity:
+
+| SOFA area | Example words in the list |
+|---|---|
+| Respiratory | intubated, ventilator, vent, cpap, bipap, hypoxia, respiratory failure, extubated |
+| Coagulation | plt, platelets, bleeding, hemorrhage, inr, ptt, coagulopathy, thrombocytopenia |
+| Hepatic | bilirubin, bili, totbili, liver, jaundice, hepatic, cirrhosis, liver failure |
+| Cardiovascular | hypotension, shock, vasopressor, pressors, norepinephrine, levophed, dopamine, septic shock |
+| Brain | sedated, sedation, coma, altered, confused, gcs, encephalopathy, delirium, unresponsive |
+| Kidney | creatinine, creat, renal, kidney, dialysis, aki, oliguria, urine output, crrt |
+| Infection | sepsis, septic, bacteremia, infection, cultures, antibiotics, fever, blood cultures |
+| Lab words | lactate, wbc, hgb, hct, sodium, potassium, hco, angap, bun |
+| General severity | failure, acute, pneumonia, ards, pulmonary, dyspnea, edema |
+
+### The configuration
+```python
+TfidfVectorizer(
+    vocabulary=list(_SOFA_VOCABULARY),             # the 90 words
+    ngram_range=(1, 2),                            # single words and two-word phrases
+    token_pattern=r'(?u)\b[a-zA-Z][a-zA-Z]{2,}\b', # words of 3+ letters
+    sublinear_tf=True,
+    norm="l2",
+)
 ```
-Example: "creatinine" appears 2 times in a 500-word note
-  TF = log(1 + 2) = 1.099  (using sublinear_tf=True — we use log count)
-  
-  Why log instead of raw count?
-  "creatinine" mentioned 10 times doesn't mean the problem is 10× as severe
-  as mentioning it once. The log scale compresses this:
-    count=1  → log(2)   = 0.69
-    count=5  → log(6)   = 1.79  (2.6× the single-mention weight, not 5×)
-    count=10 → log(11)  = 2.40  (3.5× the single-mention weight, not 10×)
-```
+**L2 normalisation** divides each note's 90 scores by their overall length, so a 5,000-word note and a 500-word note are on the same scale. Without it, a long, well-documented stable patient could look sicker than a briefly documented critical one.
 
-**IDF (Inverse Document Frequency):** How rare is this term across ALL training notes? (The document counts below are illustrative round numbers to show the arithmetic.)
-```
-IDF = log(total_documents / documents_containing_this_term)
+### Real result for Patient 3
+Of the 90 words, **13 appear** in the note; the other 77 are 0.
 
-"creatinine" appears in 2,000 of 41,179 training admissions:
-  IDF = log(41,179 / 2,000) = log(20.6) = 3.03
-  Moderately rare → moderate importance weight
-
-"acute" appears in 30,000 of 41,179 training admissions:
-  IDF = log(41,179 / 30,000) = log(1.37) = 0.31
-  Very common → low importance weight (appears everywhere, less discriminating)
-
-"oliguria" (low urine output) appears in 300 of 41,179 admissions:
-  IDF = log(41,179 / 300) = log(137) = 4.92
-  Rare but clinically important → high importance weight
-```
-
-**Final TF-IDF weight = TF × IDF:**
-A term gets a high weight when it is both frequently mentioned in this specific note (TF) AND rarely mentioned across most notes (IDF). This correctly identifies the clinically important, specific terms that distinguish this patient from the average.
-
-### The SOFA Vocabulary Whitelist — Why Not Just Use All Words?
-
-The most straightforward approach would be to let TF-IDF automatically pick the most variable terms across the training corpus. This is called data-driven TF-IDF.
-
-**Why data-driven TF-IDF fails for this application:**
-
-Clinical notes in MIMIC-III contain enormous amounts of administrative and medication dispensing language:
-```
-Top-ranked data-driven TF-IDF terms (when using 600 features):
-  "tablet"     — appears in every medication order: "take 1 tablet twice daily"
-  "sig"        — Latin "take as directed" — in every prescription
-  "refills"    — "no refills" / "1 refill" — in every discharge prescription
-  "disp"       — dispense count, in every pharmacy note
-  "capsule"    — medication form, very common
-  "afternoon"  — time references in nursing notes
-  "wallet"     — patient personal effects documentation
-```
-
-These terms correlate with **documentation volume** (sicker patients get more notes, so more medication orders and more of these terms) but NOT with organ failure severity. A model trained on these features learns "patients with many notes are sicker" — a spurious correlation that fails when applied to new patients.
-
-**The solution: an explicit 90-term SOFA vocabulary whitelist**
-
-Every term in the vocabulary directly corresponds to one of the 6 SOFA organ components:
-
-```
-SOFA Component 1 — Respiratory (PaO2/FiO2 proxy):
-  intubated, intubation, ventilator, vent, cpap, bipap,
-  hypoxia, respiratory failure, respiratory distress,
-  extubated, shortness breath
-
-SOFA Component 2 — Coagulation (Platelet proxy):
-  plt, platelets, bleed, bleeding, hemorrhage, inr, ptt,
-  coagulopathy, thrombocytopenia
-
-SOFA Component 3 — Hepatic (Bilirubin proxy):
-  bilirubin, bili, totbili, liver, jaundice,
-  hepatic, cirrhosis, liver failure
-
-SOFA Component 4 — Cardiovascular (MAP + vasopressor proxy):
-  hypotension, hypotensive, shock, vasopressor, pressors,
-  norepinephrine, levophed, dopamine, epinephrine, dobutamine,
-  septic shock
-
-SOFA Component 5 — CNS (GCS proxy in text):
-  sedated, sedation, coma, altered, confused, gcs,
-  encephalopathy, delirium, unresponsive, altered mental
-
-SOFA Component 6 — Renal (Creatinine + Urine Output proxy):
-  creatinine, creat, renal, kidney, dialysis, aki,
-  oliguria, urine, urine output, renal failure, acute kidney, crrt
-
-General severity / infection:
-  sepsis, septic, bacteremia, infection, cultures, antibiotics,
-  fever, blood cultures, lactate, wbc, hgb, hct, sodium, potassium,
-  hco, angap, bun, failure, acute, pneumonia, ards, pulmonary, dyspnea, edema
-```
-
-**Result:** Every one of the 90 features has a direct, explainable clinical meaning tied to a SOFA component or overall severity indicator.
-
-### Worked Example — Our Running Patient
-
-```
-Clinical note (after loading the tfidf_vectorizer.pkl):
-  "67-year-old male. SpO2 declining despite high-flow O2 therapy.
-   History of COPD and hypertension. Creatinine elevated. Urine output low.
-   On vasopressors."
-
-After applying the 90-term vocabulary TF-IDF:
-
-Feature          | TF-IDF value | Explanation
------------------|--------------|------------------------------------------
-"creatinine"     | 0.42         | Mentioned once → renal SOFA signal
-"urine"          | 0.31         | "urine output low" → renal SOFA signal
-"urine output"   | 0.38         | Bigram — more specific than "urine" alone
-"vasopressor"    | 0.35         | "on vasopressors" → cardiovascular SOFA
-"hypoxia"        | 0.28         | Implied by "SpO2 declining" context
-(86 other terms) | 0.00         | Not mentioned in this note
-
-Total non-zero entries: ~5 (most of the 90 terms are not present → 0.0)
-```
-
-The resulting 90-dimensional vector encodes which SOFA-relevant clinical concepts appear in this patient's note and how prominent they are.
-
-### L2 Normalisation
-
-```
-norm="l2" in the TF-IDF configuration
-```
-
-After computing all 90 TF-IDF values, the vector is divided by its total length (L2 norm):
-```
-norm = √(0.42² + 0.31² + 0.38² + 0.35² + 0.28² + ...)
-normalised_vector = original_vector / norm
-```
-
-This ensures that a patient whose note is 5,000 words long and a patient whose note is 500 words long are on the same scale, even though the longer note naturally has higher raw term frequencies. Without L2 normalisation, verbose documentation style would inflate TF-IDF values — a well-documented stable patient might appear more severe than a briefly-documented critical patient.
-
----
-
-## 8. Step 5 — Feature Fusion and Alignment (108 features)
-
-**Purpose:** Merge the three feature groups (trend vitals, latest vitals, TF-IDF text) into a single 108-dimensional input vector for the DNN.
-
-### The Three Feature Groups
-
-| Group | Count | What it represents |
+| Word | TF-IDF | Why it fires |
 |---|---|---|
-| Trend vitals | 9 | Patient trajectory over last 20 readings (HR_mean, HR_std, SpO2_mean, SpO2_min, etc.) |
-| Latest vitals + CV | 9 | Current state (latest HR, SpO2, MAP, GCS_eye_opening, stress_score) |
-| TF-IDF text | 90 | Clinical note SOFA vocabulary encoding |
-| **Total** | **108** | Complete feature vector for the DNN |
+| vasopressor | 0.619 | "norepinephrine vasopressor support", "vasopressor requirement" |
+| oliguria | 0.320 | "oliguria less than 0.3 mL/kg/h" |
+| norepinephrine | 0.304 | named drug |
+| septic shock | 0.297 | two-word phrase |
+| septic | 0.253 | |
+| kidney | 0.230 | "chronic kidney disease" |
+| blood cultures | 0.226 | "blood cultures pending" |
+| shock | 0.210 | |
+| ventilator | 0.190 | "despite ventilator" |
+| cultures | 0.175 | |
+| intubated | 0.151 | |
+| creatinine | 0.130 | "creatinine critically elevated" |
+| antibiotics | 0.122 | "broad-spectrum antibiotics" |
 
-### The Fusion Process
+These 90 numbers tell the model that the cardiovascular, kidney, respiratory and infection areas are all mentioned strongly. A note with none of the 90 words gives all zeros, which is valid.
 
-```
-Input:
-  trend_features  = {"HR_mean": 101.5, "HR_std": 14.2, "RR_mean": 24.1,
-                      "SpO2_mean": 88.5, "SpO2_min": 84.0, "Temp_mean": 38.6,
-                      "SBP_mean": 92.3, "DBP_mean": 57.1, "MAP_mean": 68.8}
-  
-  latest_features = {"latest_HR": 122.0, "latest_RR": 30.0, "latest_SpO2": 84.0,
-                      "latest_Temp": 39.1, "latest_SBP": 85.0, "latest_DBP": 50.0,
-                      "latest_MAP": 62.0, "GCS_eye_opening": 2.0, "stress_score": 8.0}
-  
-  tfidf_df        = DataFrame(1, 90) — 90 TF-IDF values
+**At the bedside** the note is transformed with the saved `tfidf_vectorizer.pkl`; words outside the list are ignored and the vocabulary and IDF weights are exactly those used in training.
 
-Step A: Merge trend and latest into one DataFrame
-  input_df = pd.DataFrame([{**trend_features, **latest_features}])
-  Shape: (1, 18)  — 18 vital/CV features in one row
+---
 
-Step B: Horizontal concatenation with TF-IDF
-  final_df = pd.concat([input_df, tfidf_df], axis=1).fillna(0)
-  Shape: (1, 108)  — all 108 features
+## 8. Step 5 — Feature Fusion and Alignment (108)
 
-Step C: Column alignment to training order
-  expected_cols = joblib.load("models/feature_columns.pkl")
-  final_df = final_df.reindex(columns=expected_cols, fill_value=0)
-  Shape: (1, 108) — columns in the EXACT order the model expects
-```
+**Purpose:** join the three groups into one 108-number vector for the network.
 
-### Why Column Alignment Is Critical
+| Group | Count | Content |
+|---|---|---|
+| Trend vitals | 9 | Step 2 |
+| Latest vitals + camera | 9 | Step 3 |
+| TF-IDF words | 90 | Step 4 |
+| **Total** | **108** | The model input |
 
-This step appears redundant — why would columns be in the wrong order? The answer lies in how pandas DataFrames are concatenated.
-
-When two DataFrames are concatenated horizontally, the column order depends on which DataFrame was created first and how they were merged. In different Python versions, Pandas versions, or execution environments, this order can subtly differ.
-
-The `feature_columns.pkl` file stores the exact column order that was present during training. The model's weight matrix at Layer 1 has a specific neuron for each of the 108 positions:
-- Position 0 = HR_mean
-- Position 17 = stress_score
-- Position 18 = first TF-IDF term (e.g., "aki")
-- ...
-- Position 107 = last TF-IDF term
-
-If the columns are shuffled, the StandardScaler applies HR_mean's statistics to a different feature. The model applies the weights it learned for HR_mean to a completely different clinical variable. The prediction becomes meaningless.
-
-```
-Example of what goes wrong without column alignment:
-
-Correct order (position 0 = HR_mean, value = 101.5):
-  First StandardScaler operation: (101.5 - 85.2) / 19.7 = +0.83 → correct z-score
-
-Wrong order (position 0 = "creatinine" TF-IDF, value = 0.42):
-  StandardScaler treats this as HR_mean: (0.42 - 85.2) / 19.7 = -4.31
-  The model's HR_mean weight (learned for values around +0.83) gets applied to -4.31
-  → catastrophically wrong computation → meaningless prediction
+```python
+input_df = pd.DataFrame([{**trend_features, **latest_features}])    # (1, 18)
+final_df = pd.concat([input_df, tfidf_df], axis=1).fillna(0)        # (1, 108)
+for col in feature_cols:                                            # add any missing column as 0
+    if col not in final_df.columns:
+        final_df[col] = 0
+final_df = final_df[list(feature_cols)].astype(float)               # force the exact training order
 ```
 
-**This is called multimodal early fusion:** all three modalities (trend vitals, latest vitals, clinical text) are combined into one flat vector before entering the model. The DNN sees all 108 features simultaneously and can learn cross-modal relationships — for example, "high HR_mean AND 'vasopressor' mentioned in notes → especially high SOFA, because both confirm cardiovascular failure."
+**Why alignment matters.** The network's first layer has one weight column per position: position 0 is `HR_mean`, position 17 is `stress_score`, position 18 is the first TF-IDF word (`acute`) and position 107 the last (`wbc`). If columns were shuffled, the scaler would apply `HR_mean`'s statistics to another feature and the network would apply its learned weights to the wrong variable, giving a meaningless prediction. `feature_columns.pkl` stores the exact order used in training (the same as `scaler.feature_names_in_`).
+
+(Made-up illustration of the failure: if position 0 held a TF-IDF value of 0.42, scaling it as a heart rate with mean 83.3 and spread 15.6 would give −5.3, a value the model never saw for heart rate.)
+
+This is **early multimodal fusion**: vitals, camera values and text enter one flat vector, so the network can learn cross-modal patterns such as "high HR_mean *and* 'vasopressor' in the note → especially high SOFA".
 
 ---
 
 ## 9. Step 6 — StandardScaler Normalisation
 
-**Purpose:** Convert all 108 raw feature values to a common numeric scale so the DNN can learn equally from all features regardless of their natural units.
+**Purpose:** put all 108 numbers on a common scale so each is learned from fairly.
 
+```python
+final_scaled = np.clip(scaler.transform(final_df), -10, 10)
 ```
-Input:
-  final_df — DataFrame (1, 108) with raw clinical values
-  scaler   — sklearn StandardScaler fitted on 41,798 training ICU stays
+Each input becomes `(value − training mean) / training spread`, then is clipped to −10…+10.
 
-Process:
-  For each of the 108 features:
-    scaled_value = (raw_value - mean_of_training_set) / std_of_training_set
-  
-  Then clip: scaled_value = max(-10, min(10, scaled_value))
+**Why scale.** The raw inputs differ hugely in size (heart rate ≈ 100, TF-IDF ≈ 0.3). Without scaling the network's first layer would be dominated by the big numbers and almost ignore the words. After scaling, every input has average 0 and spread 1 across the training set.
 
-Output: final_scaled — numpy array (1, 108) with z-scores clipped to [-10, 10]
-```
+**Real values for Patient 3** (training mean and spread come from `scaler.pkl`):
 
-### Why Normalisation Is Necessary
+| Feature | Raw | Training mean | Training spread | Scaled (z) |
+|---|---|---|---|---|
+| HR_mean | 123.3 | 83.3 | 15.62 | **+2.56** |
+| latest_HR | 124.0 | 82.2 | 17.61 | +2.37 |
+| SpO2_mean | 85.67 | 91.08 | 21.42 | −0.25 |
+| SpO2_min | 84.5 | 89.5 | 21.49 | −0.23 |
+| latest_SpO2 | 85.0 | 88.67 | 25.45 | −0.14 |
+| MAP_mean | 61.3 | 76.07 | 18.46 | −0.80 |
+| latest_MAP | 61.0 | 72.56 | 24.54 | −0.47 |
+| GCS_eye_opening | 2.0 | 3.61 | 1.01 | **−1.61** |
+| stress_score | 8.0 | 1.29 | 2.34 | **+2.86** |
 
-The 108 features have wildly different natural scales:
+**Why some training spreads look large** (for example SpO₂ ≈ 21 and temperature ≈ 8): the training data stored missing readings as 0 (`fillna(0)`), which widens the spread of those inputs. The model learned with exactly these statistics, so inference uses the same ones.
 
-| Feature | Typical range | Natural magnitude |
-|---|---|---|
-| HR_mean | 60–150 bpm | ~100 |
-| SpO2_min | 70–100% | ~90 |
-| MAP_mean | 50–100 mmHg | ~75 |
-| "creatinine" TF-IDF | 0.0–0.8 | ~0.3 |
-| "septic" TF-IDF | 0.0–0.5 | ~0.2 |
+**Why clip at ±10.** A very rare word can give an extreme scaled value (made-up illustration: raw 1.5, training mean 0.05, spread 0.12 → z ≈ 12). Unclipped, such a value could blow up through the network (an early experiment predicted a SOFA of 10,001). Clipping keeps "this word is strongly present" without the explosion.
 
-The DNN's first layer computes a weighted sum: `h = W × x + b`. Without normalisation, this sum would be dominated by HR_mean (value ~100) and completely ignore TF-IDF features (values ~0.3). The weights for HR_mean would receive 300× larger gradients than the weights for TF-IDF features during training.
-
-After StandardScaler, every feature has mean=0 and std=1 in the training set. Now all 108 features contribute on equal footing, and the model can learn from all modalities.
-
-### Worked Example — Our Patient's 9 Vital Features After Scaling
-
-```
-Feature          | Raw value | Training mean | Training std | Z-score
------------------|-----------|---------------|--------------|--------
-HR_mean          | 101.5     | 85.2          | 19.7         | +0.83
-HR_std           | 14.2      | 8.1           | 7.3          | +0.84
-RR_mean          | 24.1      | 18.7          | 6.2          | +0.87
-SpO2_mean        | 88.5      | 96.4          | 4.8          | −1.65
-SpO2_min         | 84.0      | 93.2          | 7.1          | −1.30
-Temp_mean        | 38.6      | 37.0          | 0.9          | +1.78
-SBP_mean         | 92.3      | 119.4         | 24.3         | −1.12
-DBP_mean         | 57.1      | 73.8          | 14.7         | −1.14
-MAP_mean         | 68.8      | 88.7          | 17.2         | −1.16
-
-After scaling:
-  HR_mean = +0.83     (heart rate 0.83 standard deviations above training mean)
-  SpO2_mean = −1.65   (oxygen saturation 1.65 std deviations below training mean — very low)
-  Temp_mean = +1.78   (temperature significantly above normal — fever)
-  MAP_mean = −1.16    (blood pressure below training mean — hypotension)
-```
-
-The model now sees our patient as someone with elevated HR and temperature, severely low oxygen, and significantly low blood pressure — all expressed in the same unit (standard deviations from training mean).
-
-### Why Clipping at ±10 Is Essential
-
-Some TF-IDF terms are very rare in the training corpus:
-
-```
-"bacteremia" (bloodstream infection) appears in only 0.1% of training admissions:
-  IDF = log(41,179 / 41) ≈ 6.9
-  
-  For a patient with "bacteremia" prominently in their notes:
-    TF-IDF raw value ≈ 1.5
-    Training mean ≈ 0.05 (most notes don't contain it)
-    Training std  ≈ 0.12
-    Z-score = (1.5 - 0.05) / 0.12 ≈ 12.1 standard deviations above mean
-    
-  Without clipping: 12.1 propagates through the DNN
-    First layer weight (say, 0.5) × 12.1 = 6.05 for this feature alone
-    After 4 layers: could produce predictions of hundreds
-    → "bacteremia" in the note would push SOFA prediction to 1,000+ (impossible)
-  
-  With clipping: 12.1 → clipped to 10.0
-    The model still correctly knows "this term is very strongly present"
-    But the value cannot become catastrophically large
-```
-
-**Critical rule:** The scaler is fitted ONLY on the training data (the 41,798 MIMIC-III training ICU stays). It is never updated at inference time. Using the training set's mean and std ensures that new patient data is interpreted relative to the same reference distribution the model was trained on.
+**Critical rule:** the scaler is fitted on the **training set only** and never updated at inference. Using the training mean and spread keeps new patients on the same reference scale the model learned with.
 
 ---
 
-## 10. Step 7 — DNN Inference (108 → SOFA score)
+## 10. Step 7 — Network Inference (108 → SOFA)
 
-**Purpose:** Run the 108 normalised features through the trained neural network to produce a predicted SOFA score.
+**Purpose:** run the 108 scaled numbers through the trained network.
 
-### The Architecture Recap
-
+### The architecture
 ```
-Input layer:    108 neurons  (one per scaled feature)
-Hidden layer 1: 256 neurons  + ReLU + Dropout(0.3)
-Hidden layer 2: 128 neurons  + ReLU + Dropout(0.3)
-Hidden layer 3:  64 neurons  + ReLU + Dropout(0.3)
-Output layer:     1 neuron   (no activation — raw regression output)
+Input:           108 numbers
+Hidden layer 1:  256 neurons + ReLU + Dropout(0.3)
+Hidden layer 2:  128 neurons + ReLU + Dropout(0.3)
+Hidden layer 3:   64 neurons + ReLU + Dropout(0.3)
+Output:            1 neuron  (no activation — a raw number)
 
 Total trainable parameters: 69,121
 ```
+**Dropout (0.3)** randomly switches off 30% of a layer's neurons during *training* so the network learns patterns that generalise instead of memorising patients. At prediction time it is **off**, so every neuron is used and the same patient always gets the same score.
 
-**What Dropout(0.3) means:** during training, each hidden layer randomly switches off 30% of its neurons on every batch. The network cannot lean on a few neurons, so it learns patterns that generalise instead of memorising the training stays. At prediction time dropout is **off** — every neuron is used, so the same patient always gets the same SOFA score.
-
-*(Earlier versions used 108 → 128 → 64 → 32 → 1 with no dropout.)*
-
-### The Forward Pass — Step by Step With Our Patient
-
+### The forward pass
 ```python
-model.eval()           # prediction mode — switches Dropout off
-with torch.no_grad():  # do not track gradients — saves memory and computation
+model.eval()                  # prediction mode: dropout off
+with torch.no_grad():         # no gradient tracking: faster, and no accidental accumulation
     X_tensor = torch.tensor(final_scaled, dtype=torch.float32)
     raw_pred = model(X_tensor).numpy().flatten()[0]
 ```
 
-**What happens inside the model:**
+What each layer does, in words:
+- **Layer 1 (108 → 256)** detects simple patterns: "low oxygen", "fast heart rate", "vasopressor mentioned".
+- **Layer 2 (256 → 128)** combines them into syndromes: "septic respiratory failure", "kidney stress".
+- **Layer 3 (128 → 64)** compresses them into severity signals.
+- **Output (64 → 1)** is a weighted sum of the 64 signals: the predicted SOFA.
 
-(The neuron weights and activation numbers below are illustrative, to show the idea — they are not read from the trained model.)
+**Result for Patient 3: raw prediction ≈ 8.2.**
 
-```
-Layer 1 computation (108 → 256):
-  h1 = ReLU(W1 @ x + b1)
-  
-  W1 is a 256×108 weight matrix. For each of the 256 neurons, this computes
-  a different weighted combination of the 108 input features.
-  
-  Example — one neuron in Layer 1 (illustrative numbers):
-    This neuron might have learned:
-      Large weight on SpO2_mean (−0.71): "fires when SpO2 is very low"
-      Large weight on "vasopressor" TF-IDF (+0.62): "fires when vasopressors mentioned"
-      Large weight on MAP_mean (−0.55): "fires when MAP is low"
-      
-    z = (−0.71)×(−1.65) + 0.62×scaled_vasopressor + (−0.55)×(−1.16) + ...
-      = 1.17 + 0.54 + 0.64 + (contributions from other features)
-      = ~2.8 (before ReLU)
-    
-    After ReLU: max(0, 2.8) = 2.8  (neuron is ACTIVE — pattern found)
-    
-    This neuron is detecting something like "hypoxic cardiovascular failure"
-    All 256 neurons detect different patterns simultaneously.
-    (Dropout would zero 30% of them during training; at prediction time all are used.)
-
-Layer 2 computation (256 → 128):
-  h2 = ReLU(W2 @ h1 + b2)
-  
-  Takes the 256 pattern activations from Layer 1 and combines them into 128
-  higher-level clinical syndrome representations.
-  
-  Example: a Layer 2 neuron might combine Layer 1's "hypoxic failure" detector
-  with Layer 1's "renal stress" detector and Layer 1's "tachycardia" detector
-  to produce a "multi-organ failure" syndrome signal.
-
-Layer 3 computation (128 → 64):
-  h3 = ReLU(W3 @ h2 + b3)
-  
-  Further compression — 64 final severity representations.
-
-Output layer (64 → 1):
-  y = W4 @ h3 + b4
-  
-  Linear combination of 64 severity signals → single SOFA prediction.
-  No activation function — the output is an unrestricted real number.
-  
-Output:
-  raw_pred = 8.37  (for our septic shock patient)
-             (model predicts SOFA ≈ 8.4 — above the alert threshold of 7)
-```
-
-**Why `model.eval()` matters:**
-
-The model has Dropout layers. In training mode they randomly switch off 30% of neurons, which would make predictions jump around. `model.eval()` turns dropout off, so every prediction uses the full network and is deterministic. The backend, SHAP and test-set evaluation all run the model in `eval()` mode.
-
-**Why `torch.no_grad()` matters:**
-
-During training, PyTorch tracks every computation to enable backpropagation (the gradient computation). At inference time, we don't need gradients — we just want the prediction. `no_grad()` tells PyTorch to skip this tracking, saving memory and computation time. For a model this small, the difference is modest, but it is a correctness guarantee: no accidental gradient accumulation across inference calls.
+`model.eval()` matters because dropout would otherwise make predictions jump around. `torch.no_grad()` matters because gradients are only needed for training.
 
 ---
 
-## 11. Step 8 — SOFA Post-processing and Alert Classification
+## 11. Step 8 — SOFA Post-processing, Risk Level and Alert
 
-**Purpose:** Convert the raw DNN output (which is an unrestricted float) into a clinically meaningful score, risk level, and alert banner.
-
-### SOFA Clipping
-
-```
-Input:  raw_pred — float (can be any real number, e.g., 8.37, or −0.3, or 26.1)
-
-Process:
-  sofa_score = float(np.clip(raw_pred, 0, 24))
-
-Output: sofa_score — float in [0.0, 24.0]
-```
-
-The model is a regression function trained to output values in the SOFA range, but there is no mathematical guarantee that it stays within [0, 24]. For most patients, the raw output falls within range. For unusual patients near the boundary, it might predict slightly negative values or values slightly above 24. Clipping enforces the physiologically valid range.
-
-```
-Examples:
-  raw_pred =  8.37 → sofa_score =  8.37  (unchanged)
-  raw_pred = −0.31 → sofa_score =  0.00  (clipped to minimum — "no organ failure")
-  raw_pred = 25.8  → sofa_score = 24.00  (clipped to maximum — "worst possible")
-```
-
-### Risk Classification
-
-```
-if sofa_score < 5.0:   risk = "Low Risk"       → green indicator
-if sofa_score < 10.0:  risk = "Moderate Risk"  → amber indicator
-else:                  risk = "High Risk"       → red indicator
-
-Our patient: sofa_score = 8.37 → "Moderate Risk" (amber)
-```
-
-Note: 8.37 falls in the Moderate Risk band (5–10), even though the alert fires (threshold 7.0). This is intentional — the risk classification uses the standard clinical SOFA bands, while the alert threshold is calibrated separately for optimal sensitivity.
-
-### The Alert Banner — Why Threshold 7 and Not 10?
-
-The SOFA score is divided into standard clinical bands (Low: <5, Moderate: 5–10, High: ≥10). Naively, one might expect the alert to fire at SOFA ≥ 10 — the clinical High Risk boundary.
-
-**But our model systematically under-predicts high SOFA scores:**
-
-```
-Why the model under-predicts:
-  Training data (each hospital): Low (SOFA < 5)  = 67% of ICU stays
-                                 Moderate (5–9)  = 27% of ICU stays
-                                 High (≥ 10)     =  6% of ICU stays
-  
-  The model sees many more low-SOFA examples during training,
-  so its predictions are pulled toward the majority.
-  
-  Observed pattern on the held-out test set:
-    Patients whose actual SOFA is ≥ 10 get a mean predicted SOFA of only ≈ 9.7
-```
-
-If the alert threshold were set at 10, the model would stay silent for many truly high-risk patients whose prediction lands just below 10 — dangerous misses.
-
-**Calibration at threshold 7** (`ALERT_THRESHOLD = 7.0`, defined once in `model_utils.py` and imported by `backend/services/ml_service.py`):
-
-```
-Held-out test set: 10,450 ICU stays, 602 of them truly High (SOFA ≥ 10)
-
-Alert threshold = 7 (current):
-  Recall (sensitivity)  = 67.1%  (404 of 602 high-risk stays get an alert)
-  Specificity           = 96.3%  (non-high-risk stays that correctly get no alert)
-  Precision             = 52.9%  (about half of alerts are true high-risk stays)
-  Missed (FN) = 198   False alarms (FP) = 360
-  AUROC = 0.9254   PR-AUC = 0.6456
-
-Threshold sweep (same model):
-  ≥ 8.0 : recall 61.1%  specificity 97.8%   (earlier setting)
-  ≥ 7.5 : recall 64.3%  specificity 97.1%
-  ≥ 7.0 : recall 67.1%  specificity 96.3%   ← current
-  ≥ 6.5 : recall 69.9%  specificity 95.3%
-  ≥ 6.0 : recall 73.1%  specificity 93.9%
-
-Moving from 8 to 7: 36 fewer missed high-risk patients (234 → 198)
-for 140 more false alarms (220 → 360). AUROC and MAE do not change.
-```
-
-For our patient: sofa_score = 8.37 ≥ 7 → **RED ALERT BANNER fires**.
-
-### Prediction History
-
-Every prediction is appended to `models/prediction_history.csv`:
-```
-Columns: timestamp, sofa_score, risk_level, HR, RR, SpO2, Temp, SBP, DBP, MAP, GCS, stress
-Max rows: 50 (older predictions are dropped when the file exceeds 50 rows)
-```
-
-This enables the clinician to see a table of all recent predictions and visually track SOFA trends over successive assessments.
-
----
-
-## 12. Step 9 — SHAP Explainability
-
-**Purpose:** Compute how much each of the 108 features contributed to the predicted SOFA score, and present the most important ones to the clinician in plain language.
-
-### The Clinical Need for Explanation
-
-A SOFA score of 8.37 tells the clinician "this patient is deteriorating." But it does not tell them: is it the lungs that are failing? The kidneys? The cardiovascular system? All three? This is exactly what SHAP answers.
-
-Without SHAP, the prediction is a black box — the clinician must independently assess every system. With SHAP, the system highlights the most impactful clinical factors for this specific patient, guiding the clinical assessment.
-
-### What SHAP DeepExplainer Computes
-
-SHAP (SHapley Additive exPlanations) comes from cooperative game theory. The original problem was: if a team of players wins a prize together, how should the prize be fairly divided among them based on each player's contribution?
-
-Transposed to ML: if the model's output deviates from the baseline prediction by +4.57 points, how much of that +4.57 is attributable to each of the 108 input features?
-
-**The SHAP guarantee:** The attributions are additive and complete:
-```
-Σ(all 108 SHAP values) = predicted_SOFA − baseline_SOFA
-
-Where baseline_SOFA is the model's average prediction across the 300 background patients.
-
-Our example (illustrative baseline — the real value depends on the trained model and background set):
-  baseline_SOFA ≈ 3.80  (average SOFA prediction for "typical" training patients)
-  predicted_SOFA = 8.37
-  
-  Total to attribute = 8.37 − 3.80 = +4.57
-  
-  Sum of all 108 SHAP values must equal exactly +4.57 ✓
-```
-
-### The Background Dataset — Why 300 Patients?
-
-```
-models/shap_background.npy — shape (300, 108)
-```
-
-The 300 background patients represent the "average" or "baseline" patient the model has seen. SHAP DeepExplainer answers: "If we replaced THIS patient's value for feature j with values drawn from the background distribution, how much would the prediction change?"
-
-With 300 background samples, SHAP marginalises over 300 possible "average" values for each feature. This gives a statistically robust attribution rather than depending on a single arbitrary reference value.
-
-**Why training data for the background, not a "zero vector"?**
-
-Using zeros as background would mean asking "how much does this feature matter relative to a patient with all-zero features?" — which corresponds to a physiologically impossible patient (HR=0, SpO2=0, etc.). Using real training patients means asking "how much does this feature matter relative to typical real ICU patients?" — which is the clinically relevant question.
-
-### The Computation
-
+### Clipping
 ```python
-explainer = shap.DeepExplainer(model, background_tensor)  # loaded at startup
-shap_vals = explainer.shap_values(X_tensor)                # computed per patient
+sofa_score = float(np.clip(raw_pred, 0, 24))
 ```
+The network can in principle output −0.3 or 25.8; clipping forces the valid SOFA range. (Illustration: −0.31 → 0.0, 25.8 → 24.0, 8.2 stays 8.2.) On the full test set the raw outputs ranged 1.78 to 23.07.
 
-**What DeepExplainer does internally:**
+### Risk level (standard clinical bands)
 
-DeepExplainer uses a technique related to Integrated Gradients. It:
-1. Runs the patient's features through the model (the prediction to explain)
-2. For each feature j: gradually interpolates between the patient's value and each of the 300 background values
-3. Computes the gradient of the output with respect to feature j at each interpolation step
-4. Integrates these gradients to get the total attribution for feature j
-
-This is mathematically rigorous: the attributions satisfy the Shapley axioms (efficiency, symmetry, linearity, nullity) which together guarantee a fair and complete attribution.
-
-**Output — SHAP values for our patient (illustrative numbers — they show the shape of the output, not values computed with the current trained network):**
-
-```
-Feature              | Original value | SHAP value | Interpretation
----------------------|----------------|------------|------------------------
-latest_SpO2          | 84.0%          | +0.82      | Low O2 → pushed SOFA up 0.82 pts
-SpO2_mean            | 88.5%          | +0.71      | Sustained low O2 → pushed up
-latest_MAP           | 62.0 mmHg      | +0.61      | Low BP → pushed SOFA up
-MAP_mean             | 68.8 mmHg      | +0.58      | Sustained low BP → pushed up
-"vasopressor" (TF-IDF)| 0.35          | +0.44      | Vasopressor mention → pushed up
-"creatinine" (TF-IDF) | 0.42          | +0.27      | Creatinine mention → pushed up
-"urine output" (TF-IDF)| 0.38         | +0.21      | Oliguria mention → pushed up
-GCS_eye_opening      | 2.0            | +0.18      | Low GCS → pushed up
-HR_mean              | 101.5 bpm      | +0.15      | Elevated HR → small upward push
-stress_score         | 8.0            | −0.12      | High stress → slightly down (see below)
-SpO2_min             | 84.0%          | +0.09      | Nadir captures severe desaturation
-... (97 other features with small attributions)
-
-Sum of all SHAP values ≈ +4.57 = 8.37 − 3.80 ✓
-```
-
-**The counterintuitive stress_score result:**
-
-The stress score contributes −0.12 (slightly reducing the predicted SOFA). This seems wrong — shouldn't a distressed patient have a higher SOFA?
-
-SHAP explains what the **MODEL learned from MIMIC-III data**, not what clinical theory predicts. In the training data, patients who were agitated and visibly stressed (high stress score) often had lower SOFA scores than unresponsive, sedated patients (who had lower stress scores because they showed no facial expression). Consciousness and distress response are signs of a functioning brain — a SOFA=20 patient in a coma has no stress response. The model learned this correlation from training data.
-
-This is documented in the dashboard's "About SHAP" expander as a known counterintuitive pattern.
-
-### Clinical Filtering and Explanation Generation
-
-Not all 108 SHAP values are equally useful to display. Technical feature names like "HR_std" or "MAP_mean" require interpretation. The top 7 clinically meaningful features are selected and converted to plain language:
-
-```
-Filtering:
-  - Sort all 108 features by absolute SHAP value (largest impact first)
-  - Filter to features with recognisable clinical names (using CLINICAL_KEYWORDS list)
-  - Take top 7 from the filtered list
-
-Clinical explanation generation per feature:
-  Feature: "latest_SpO2", original_value = 84.0, SHAP = +0.82
-  → "SpO₂ = 84.0% → severe hypoxaemia, increasing risk"
-  
-  Feature: "creatinine" (TF-IDF), original_value = 0.42, SHAP = +0.27
-  → 'Clinical note contains "creatinine" → increasing risk'
-  (The TF-IDF weight 0.42 is meaningless to a clinician; only the term is shown)
-```
-
-These 7 explanation strings appear in the dashboard's Explainability tab alongside a bar chart showing SHAP magnitudes.
-
----
-
-## 13. Step 10 — Trend Analysis
-
-**Purpose:** Classify each vital sign's 20-reading trend as increasing, stable, or decreasing, and compare the mean to the normal range. This is used exclusively to enrich the LLM prompt — it is NOT a second input to the DNN.
-
-```
-For each vital sign:
-  1. Fit a linear regression line to the 20 readings
-     (find the slope: is the trend going up or down over time?)
-  
-  2. Classify slope:
-     slope > +0.1 → "increasing"
-     slope < -0.1 → "decreasing"
-     otherwise   → "stable"
-  
-  3. Classify mean relative to normal range:
-     mean < normal_low → "low"
-     mean > normal_high → "high"
-     otherwise → "normal"
-  
-  4. Combine: "[vital] → [range_status] & [direction]"
-
-Output for our patient:
-  "HR → high & increasing"
-  "RR → high & increasing"
-  "SpO₂ → low & decreasing"
-  "Temp → high & increasing"
-  "SBP → low & decreasing"
-  "DBP → low & decreasing"
-  "MAP → low & decreasing"
-```
-
-**Why linear regression for trend, and not just comparing first to last value?**
-
-Comparing first to last is sensitive to outlier values. If the 20th reading happened to be slightly higher due to measurement noise, a comparison would say "increasing" even if the overall trend was flat or declining.
-
-A linear regression fits a line through all 20 points. The slope of that line represents the average rate of change, which is more robust to individual noisy readings. For a clinically meaningful trend (like SpO2 declining from 97% to 84% over 20 readings), the regression slope would be clearly negative — unambiguously "decreasing."
-
-This trend description goes directly into the LLM prompt in Step 11. The LLM can then state: "SpO₂ is trending downward despite high-flow oxygen therapy, suggesting worsening respiratory failure" — incorporating the temporal context that the DNN sees only as summary statistics.
-
----
-
-## 14. Step 11 — LLM Prompt Construction
-
-**Purpose:** Package all computed results into a structured natural-language prompt that gives the LLM everything it needs to generate a clinically useful assessment.
-
-The LLM (accessed via Groq's API) receives a single text prompt containing 7 components:
-
-### Component 1 — Risk-Adaptive Urgency Prefix (Conditional)
-
-```
-IF sofa_score ≥ ALERT_THRESHOLD (7.0):
-  Add at the very beginning of the prompt:
-  
-  "⚠️ CLINICAL ALERT — Predicted SOFA 8.4 (alert threshold ≥ 7)
-   This patient shows signs of significant organ dysfunction.
-   Structure your response for IMMEDIATE clinical action."
-   
-IF sofa_score < 7.0:
-  No prefix — the prompt begins with the standard assessment request.
-```
-
-**Why this matters:** The LLM's instructions tell it to structure its response differently for high-risk patients. For SOFA ≥ 7, the "Immediate Actions" section appears first in the output — the clinician sees what to do right now before reading any background. For lower-risk patients, the "Condition" section appears first to give context before recommendations.
-
-### Component 2 — Section Structure Instructions
-
-```
-For SOFA ≥ 7 (urgent — our patient):
-  "Provide your assessment in this EXACT format:
-   ## IMMEDIATE ACTIONS
-   ## CURRENT CONDITION
-   ## LIKELY CAUSES
-   ## RECOMMENDED MONITORING"
-   (Actions first — urgency communicated immediately)
-
-For SOFA < 7 (monitoring):
-  "Provide your assessment in this EXACT format:
-   ## CURRENT CONDITION
-   ## LIKELY CAUSES
-   ## RECOMMENDED MONITORING
-   ## IMMEDIATE ACTIONS"
-   (Context first, actions at the end)
-```
-
-### Component 3 — SOFA Score and Risk Level
-
-```
-"SOFA Score: 8.4 / 24   (higher = worse organ failure)
- Risk Level: Moderate Risk
- Alert: SOFA ≥ 7.0 threshold exceeded"
-```
-
-### Component 4 — Clinical Notes (verbatim)
-
-```
-"CLINICAL NOTES FROM CARE TEAM:
- 67-year-old male. SpO2 declining despite high-flow O2 therapy.
- History of COPD and hypertension. Creatinine elevated. Urine output low.
- On vasopressors."
-```
-
-The LLM reads these notes the same way a physician would — understanding clinical context, patient history, and the significance of "despite high-flow O2 therapy" (the resistance to treatment matters).
-
-### Component 5 — Latest Vital Signs With Normal Ranges
-
-```
-"CURRENT VITAL SIGNS:
-  HR:   122 bpm    (normal: 60–100)
-  RR:   30 br/min  (normal: 12–20)
-  SpO₂: 84%        (normal: 95–100)
-  Temp: 39.1°C     (normal: 36.5–37.5)
-  SBP:  85 mmHg    (normal: 100–120)
-  DBP:  50 mmHg    (normal: 60–80)
-  MAP:  62 mmHg    (normal: 70–100)"
-```
-
-The normal ranges are included so the LLM can identify which vitals are abnormal without needing to infer from its training knowledge. This makes the assessment grounded in current clinical values.
-
-### Component 6 — Neurological and Stress Indicators
-
-```
-"NEUROLOGICAL ASSESSMENT:
-  GCS Eye Opening: 2/4 (1=No response, 2=To pain, 3=To voice, 4=Spontaneous)
-  Stress Score: 8.0/10 (0=calm, 10=severe distress)"
-```
-
-### Component 7 — SHAP Outputs, Risk Factors, and Vital Trends
-
-```
-"KEY RISK FACTORS IDENTIFIED BY PREDICTIVE MODEL:
-  - Low oxygen levels
-  - Hypotension
-  - Renal stress indicators
-
-FEATURE-LEVEL EXPLANATIONS (from SHAP attribution analysis):
-  - SpO₂ = 84.0% → severe hypoxaemia, increasing risk
-  - MAP = 62.0 mmHg → blood pressure instability, increasing risk
-  - Clinical note contains 'vasopressor' → increasing risk
-  - Clinical note contains 'creatinine' → increasing risk
-  - Clinical note contains 'urine output' → increasing risk
-  - GCS Eye Opening = 2 → neurological compromise, increasing risk
-  - SpO₂_mean = 88.5% (24h average) → sustained hypoxaemia, increasing risk
-
-VITAL SIGN TRENDS (last 20 readings):
-  - HR → high & increasing
-  - RR → high & increasing
-  - SpO₂ → low & decreasing
-  - Temp → high & increasing
-  - MAP → low & decreasing"
-```
-
-**Why include SHAP in the prompt?**
-
-Without SHAP, the LLM only sees raw numbers and clinical notes — the same information any physician would have. It would generate a generic septic shock assessment.
-
-With SHAP, the LLM knows WHICH features the predictive model found most important for THIS specific patient. The LLM can now say: "The predictive model identified SpO₂ and MAP as the dominant drivers — combined with vasopressor mentions, this suggests cardiovascular failure is the primary concern driving the SOFA score, with renal compromise as a secondary finding." This personalises the assessment to the specific pattern of organ dysfunction in this patient.
-
----
-
-## 15. Step 12 — LLM Self-Consistency Check
-
-**Purpose:** Measure how reliably the LLM responds to this patient's data by sending the identical prompt three times and measuring whether all three independent responses agree.
-
-### Why Three Independent Calls?
-
-Language models are probabilistic — given the same input, they generate somewhat different outputs each time due to temperature-controlled sampling. This variability is usually a feature (it prevents repetitive outputs), but in clinical decision support, variability raises a concern: is the LLM uncertain about what to recommend?
-
-**The self-consistency principle** (Wang et al., 2022): if the correct answer is well-determined, multiple independent reasoning paths should all arrive at the same conclusion. If the LLM gives different recommendations for the same patient three times, either the clinical picture is genuinely ambiguous (defensible) or the LLM is unreliable for this patient type (concerning).
-
-```
-Why temperature = 0.2 (not 0 and not 1.0):
-  temperature = 0.0: always picks the single highest-probability token
-    → three responses would be nearly identical → artificial high consistency
-    → does not reflect genuine robustness
-  
-  temperature = 0.2: small amount of randomness → genuine but not extreme variation
-    → if all three agree at 0.2 temperature, the LLM is genuinely confident
-    → appropriate for measuring clinical reliability
-  
-  temperature = 1.0: high randomness → responses differ even when the clinical
-    picture is clear → artificially low consistency → misleading
-```
-
-### Three API Calls
-
-```
-For each of 3 iterations:
-  response = Groq API call:
-    model       = "openai/gpt-oss-120b"
-    temperature = 0.2
-    max_tokens  = 2,500
-    messages    = [system_message, user_message_with_full_prompt]
-
-Output:
-  responses[0], responses[1], responses[2] — three complete clinical assessments
-  main_response = responses[0]  (displayed as the primary report)
-```
-
-The three responses are not shown to the clinician one-by-one — only the consistency score and the first response are shown in the main interface. All three are accessible in an expandable section for review.
-
-### The Three-Component Consistency Score
-
-**The problem with simple text similarity:**
-
-Two responses might say "Administer norepinephrine" vs "Start vasopressor support" — these are clinically identical recommendations, but share no common words. Simple text comparison would incorrectly score them as disagreeing.
-
-**The solution: measure clinical concept agreement:**
-
-```
-Component 1 — TF-IDF Cosine Similarity (20% weight):
-  Convert all 3 responses to TF-IDF vectors
-  Compute pairwise cosine similarity between all pairs: (1,2), (1,3), (2,3)
-  Average the 3 similarity scores
-  
-  Purpose: Captures overall phrasing and vocabulary overlap
-  Limitation: misses synonym clinical recommendations (why this is only 20%)
-
-Component 2 — Clinical Intervention Agreement (50% weight):
-  For each of 7 intervention categories:
-    Category: vasopressors
-    Synonyms: ["vasopressor", "norepinephrine", "levophed", "dopamine",
-               "epinephrine", "dobutamine", "pressors"]
-    
-    For each response: does ANY synonym appear? → 1 or 0
-    Agreement score for this category = max(count_yes, count_no) / 3
-    (if 3 agree "yes" or 3 agree "no" → 1.0; if 2 vs 1 → 0.67)
-  
-  Average agreement across all 7 categories
-  Categories covered: vasopressors, antibiotics, fluids, oxygen therapy,
-                      monitoring orders, lab orders, renal support
-  
-  This correctly scores "norepinephrine" and "vasopressor" as AGREEING
-  because both match the "vasopressor" synonym list.
-
-Component 3 — Clinical Condition Agreement (30% weight):
-  Same majority-agreement formula applied to 8 clinical condition categories:
-  septic shock, infection, ARDS, AKI, hypoxaemia, hypotension, tachycardia, urgency
-  
-  If all 3 responses identify "septic shock" (or its synonyms) → agreement = 1.0
-  If only 2 of 3 mention it → agreement = 0.67
-  If only 1 mentions it → agreement = 0.33
-
-Combined score = 0.20 × TF-IDF + 0.50 × interventions + 0.30 × conditions
-```
-
-**Worked example — our septic shock patient:**
-
-```
-All 3 LLM responses for our high-risk patient:
-  Response 1: "... immediately start norepinephrine for hemodynamic support,
-               broad-spectrum antibiotics given suspected septic shock,
-               urgent ICU monitoring..."
-  
-  Response 2: "... vasopressor support initiated (levophed), antibiotic coverage
-               for presumed sepsis, continuous monitoring essential..."
-  
-  Response 3: "... initiate pressors for MAP <65, empirical antibiotics for septic shock,
-               close monitoring of renal function and urine output..."
-
-Component 1 — TF-IDF similarity:
-  Responses use different words → sim(1,2)=0.55, sim(1,3)=0.52, sim(2,3)=0.57
-  Average = 0.55
-
-Component 2 — Intervention agreement:
-  vasopressors:  all 3 mention (norepinephrine, levophed, pressors) → 1.0
-  antibiotics:   all 3 mention → 1.0
-  monitoring:    all 3 mention → 1.0
-  fluids:        2 of 3 mention → 0.67
-  oxygen:        1 of 3 explicitly mentions (implied but not stated) → 0.33
-  Average = 0.80
-
-Component 3 — Condition agreement:
-  septic shock:  all 3 → 1.0
-  infection:     all 3 → 1.0
-  hypotension:   all 3 → 1.0
-  AKI:           2 of 3 → 0.67
-  Average = 0.92
-
-Combined = 0.20 × 0.55 + 0.50 × 0.80 + 0.30 × 0.92
-         = 0.11 + 0.40 + 0.28 = 0.79
-         → "Moderate ⚠️" (just below the 0.80 "High" threshold)
-```
-
-### Reliability Labels
-
-| Score | Label | Meaning |
+| Predicted SOFA | Risk | Colour |
 |---|---|---|
-| ≥ 0.80 | High ✅ | All 3 responses agree on findings, diagnoses, and interventions. |
-| 0.60–0.79 | Moderate ⚠️ | Responses agree on core findings with some variation in secondary recommendations. |
-| < 0.60 | Low ❌ | Significant disagreement — clinical picture may be ambiguous or LLM is uncertain. |
+| below 5 | Low Risk | green |
+| 5 to below 10 | Moderate Risk | amber |
+| 10 or more | High Risk | red |
 
-**What each reliability level should tell the clinician:**
+Patient 3: **8.2 → Moderate Risk (amber).**
 
-- **High:** The LLM's recommendations are robust. They appear regardless of which random sampling path the model took. Clinician can treat the report with reasonable confidence (while still applying their own judgment).
-- **Moderate:** Core recommendations are consistent, but details vary. Pay attention to the main findings and be cautious about specific medication doses or secondary interventions.
-- **Low:** Something about this patient's presentation is unusual or ambiguous. The LLM's recommendations should be treated with extra skepticism. Direct clinical assessment is especially important.
+### The alert — why threshold 7 and not 10
+`is_alert = sofa_score >= ALERT_THRESHOLD`, where `ALERT_THRESHOLD = 7.0` is defined once in `model_utils.py`; the backend imports it, and the training metrics use the same value, so the dashboard and the reports always agree.
 
----
+**Why not wait for 10?** The model **under-predicts severe patients**. For truly High Risk stays (true SOFA ≥ 10) the average true SOFA is about 13.1, but the average prediction is only about 9.5, because most of SOFA comes from lab values and drug doses that are not inputs. An alert at 10 would catch only 43.9% of High Risk patients.
 
-## 16. Step 13 — Output Display (Four Tabs)
+**Held-out test set: 10,450 ICU stays, 602 truly High Risk:**
 
-### Tab 1 — Risk Assessment
+| Alert when predicted SOFA ≥ | Recall | Specificity | Missed | False alarms |
+|---|---|---|---|---|
+| 10 | 43.9% | 99.3% | 338 | 73 |
+| 8 (earlier setting) | 59.6% | 97.9% | 243 | 207 |
+| **7 (current)** | **67.8%** | **96.6%** | **194** | **335** |
+| 6 | 73.1% | 94.1% | 162 | 578 |
 
-**What it shows:**
+At 7: precision 54.9%, AUROC 0.918, PR-AUC 0.647. Moving from 8 to 7 catches 49 more High Risk patients for 128 more false alarms; going below 7 adds false alarms quickly for small gains. **Even at 7, 194 of 602 High Risk stays (32%) get no alert**, so ClinIQ supports clinicians and does not replace them. Full discussion: `docs/VALIDATION.md`, Section 3.6.
 
-```
-┌─────────────────────────────────────────────────┐
-│  ⚠️ ALERT: Predicted SOFA = 8.4 ≥ threshold    │
-│  (red banner when SOFA ≥ 7.0)                   │
-├────────────────────────────────────────────────-┤
-│  SOFA Score: 8.4 / 24   [Moderate Risk] 🟡      │
-├─────────────────────────────────────────────────┤
-│  VITAL SIGNS TABLE:                             │
-│  HR:   122 bpm   [↑ HIGH]  (normal: 60–100)    │
-│  RR:   30 br/min [↑ HIGH]  (normal: 12–20)     │
-│  SpO₂: 84%       [↓ LOW]   (normal: 95–100)    │
-│  ...                                            │
-├─────────────────────────────────────────────────┤
-│  PREDICTION HISTORY TABLE (last 50 assessments)│
-│  timestamp | SOFA | Risk | HR | SpO2 | MAP ...  │
-├─────────────────────────────────────────────────┤
-│  VITAL TRENDS CHART (last 20 readings):        │
-│  [7 line charts, one per vital, with green      │
-│   bands showing normal ranges]                  │
-└─────────────────────────────────────────────────┘
-```
+Patient 3: 8.2 ≥ 7 → **the alert fires** (`is_alert = true`), although the band is Moderate. This is intentional: the band uses the standard clinical cut-offs, the alert is an early warning calibrated separately.
 
-The vital trends chart gives the clinician immediate visual context for whether the current values are a sudden change or the latest point in a sustained trend.
+**What the alert controls:** the `is_alert` flag and the urgent "Immediate Actions first" format of the AI report. (The red/amber **banner** at the top of the page is driven by the risk *level*: High → red "CRITICAL ALERT", Moderate → amber "ELEVATED RISK", Low → none.)
+
+### Saving the prediction
+Every prediction is appended to the `prediction_history` table (timestamp, reading number, SOFA, risk, the 7 vitals, GCS eye, stress). The newest **50** rows per patient are kept; older ones are deleted. The History button on the dashboard shows them.
 
 ---
 
-### Tab 2 — Explainability
+## 12. Step 9 — Runtime Safety Checks and the Conformal Range
 
-**What it shows:**
+**In one line:** after the prediction, the system asks "is this number even plausible?" and attaches an honest error bar. These checks **flag** a problem; they never change the predicted number. Full explanation: `docs/VALIDATION.md`, Sections 4–5.
 
+### Check 1 — SOFA floor
+Some vitals guarantee a minimum SOFA. The floor adds: MAP < 70 → +1, MAP < 65 → +1 more, SpO₂ < 94 → +1, SpO₂ < 90 → +1 more, GCS eye = 2 → +2 (or = 1 → +3).
+
+Patient 3: MAP 61 (+2), SpO₂ 85 (+2), GCS eye 2 (+2) → **floor = 6**. The prediction 8.2 is above 6, so it is plausible. A prediction below the floor would be flagged as "may be underestimated".
+
+### Check 2 — Dangerous vital combinations
+- HR > 130 **and** SBP < 90 **and** SOFA < 4 → "implies shock state — SOFA expected ≥ 4".
+- SpO₂ < 88 **and** MAP < 65 **and** SOFA < 6 → "implies multi-organ stress — SOFA expected ≥ 6".
+
+Patient 3 (HR 124, SBP 84, SOFA 8.2): neither rule fires.
+
+### Check 3 — Unexplained jumps
+If SOFA moved by more than 4 points since the previous reading **and** no vital changed meaningfully (HR by 20, RR by 4, SpO₂ by 5, SBP by 20, MAP by 15), flag it. The first reading of a patient is never flagged. Patient 3: jump 0.0, not flagged.
+
+### The conformal range (90% uncertainty)
+A single number hides how sure the model is. The system shows a range:
 ```
-┌─────────────────────────────────────────────────┐
-│  SHAP FEATURE IMPORTANCE TABLE (illustrative):  │
-│  Feature        | Value  | Impact | Direction   │
-│  latest_SpO2    | 84.0%  | +0.82  | ↑ worsening│
-│  SpO2_mean      | 88.5%  | +0.71  | ↑ worsening│
-│  latest_MAP     | 62 mmHg| +0.61  | ↑ worsening│
-│  vasopressor    | 0.35   | +0.44  | ↑ worsening│
-│  creatinine     | 0.42   | +0.27  | ↑ worsening│
-│  urine output   | 0.38   | +0.21  | ↑ worsening│
-│  GCS_eye_opening| 2.0    | +0.18  | ↑ worsening│
-├─────────────────────────────────────────────────┤
-│  CLINICAL INTERPRETATIONS:                      │
-│  • SpO₂ = 84.0% → severe hypoxaemia            │
-│  • MAP = 62 mmHg → blood pressure instability  │
-│  • Note contains "vasopressor" → risk signal   │
-│  • Note contains "creatinine" → risk signal    │
-│  ...                                            │
-├─────────────────────────────────────────────────┤
-│  KEY RISK FACTORS:                              │
-│  ⚠️ Low oxygen levels  ⚠️ Hypotension          │
-│  ⚠️ Renal stress indicators                    │
-├─────────────────────────────────────────────────┤
-│  [ℹ️ About SHAP — expander with disclaimer      │
-│   explaining counterintuitive values]           │
-└─────────────────────────────────────────────────┘
+range = prediction ± q̂,  kept within 0–24
+q̂ = the 90th percentile of absolute errors over the 41,798 training stays = 3.28
 ```
-
-The SHAP table uses original clinical values (84.0%, 62 mmHg) not z-scores (−3.2, −1.16) — the clinician sees familiar numbers, not internal model representations.
+Patient 3: 8.2 ± 3.28 → **5.0 to 11.5**. On the dashboard this is the "prediction interval" bar under the SOFA gauge. If the training data is unavailable, the code falls back to q̂ = 2.9. The confidence shown is `1 − q̂/12 = 0.727`. Because q̂ is measured on training data, real coverage on new patients is probably a little under 90% (stated in `docs/VALIDATION.md`).
 
 ---
 
-### Tab 3 — AI Clinical Report
+## 13. Step 10 — SHAP Explainability
 
-**What it shows:**
+**Purpose:** show which inputs pushed this patient's score up or down, in plain language.
 
+### Why it is needed
+A SOFA of 8.2 says "deteriorating" but not *why*: lungs, kidneys, circulation, all three? Without SHAP the number is a black box.
+
+### What SHAP computes
+SHAP splits the prediction into one contribution per input, from game theory (fairly dividing a prize among players). The contributions are **additive and complete**:
 ```
-┌─────────────────────────────────────────────────┐
-│  CONSISTENCY SCORE:  0.79   RELIABILITY: Moderate⚠️│
-│  (coloured banner explaining what it means)    │
-├─────────────────────────────────────────────────┤
-│  PRIMARY CLINICAL ASSESSMENT (Response 1):      │
-│                                                 │
-│  ## IMMEDIATE ACTIONS                           │
-│  • Initiate vasopressor support (MAP <65 mmHg)  │
-│  • Begin broad-spectrum antibiotics for sepsis  │
-│  • Urgent ICU-level monitoring                 │
-│  • Obtain blood cultures before antibiotics    │
-│                                                 │
-│  ## CURRENT CONDITION                           │
-│  Patient presents with septic shock...          │
-│  [full 4-section LLM report]                   │
-├─────────────────────────────────────────────────┤
-│  [▶ View all 3 independent LLM responses]       │
-│  (expandable — shows all 3 for comparison)     │
-├─────────────────────────────────────────────────┤
-│  ⚠️ CLINICAL DISCLAIMER:                        │
-│  This is a decision-support tool. All clinical  │
-│  decisions must be made by qualified healthcare │
-│  professionals.                                 │
-└─────────────────────────────────────────────────┘
+sum of all 108 SHAP values = predicted SOFA − baseline
+baseline = the model's average prediction over the 300 background patients = 3.85
+Patient 3: 8.2 − 3.85 = +4.35 points to be explained
 ```
+Positive = pushed the score up (worse); negative = pushed it down.
 
-**Why the 3-response expander exists:**
+### The background set
+`models/shap_background.npy` has shape (300, 108): 300 typical real training patients. SHAP compares this patient against them, which answers "how does this patient differ from typical real ICU patients?" A vector of zeros would describe an impossible patient (heart rate 0), so real patients are used. The same 300 are used every time, so explanations are comparable between patients.
 
-If the consistency score is Moderate or Low, the clinician may want to see where the LLM responses diverged. By expanding the section, they can compare all three responses side-by-side and identify which recommendations were consistent (trustworthy) and which varied (uncertain).
-
----
-
-### Tab 4 — Federated Learning
-
-**What it shows:**
-
+### The computation
+```python
+explainer = shap.DeepExplainer(model, background_tensor)   # built once, cached
+shap_vals = explainer.shap_values(X_tensor)                # per prediction (model in eval mode)
 ```
-┌─────────────────────────────────────────────────┐
-│  FL ARCHITECTURE DIAGRAM:                       │
-│  Hospital 0 ─┐                                  │
-│  Hospital 1 ─┼──► Central Server (FedAvg)  ──►  │
-│  Hospital 2 ─┘   [Aggregation + Best Round]     │
-│  ↑ Only model weights travel — never patient    │
-│    data                                         │
-├─────────────────────────────────────────────────┤
-│  TRAINING CONFIGURATION:                        │
-│  Aggregation: FedAvg                           │
-│  Client reg.: FedProx (μ=0.5)                  │
-│  Loss: plain MSE                               │
-│  Rounds: 100  |  Epochs/round: 3               │
-│  ICU stays: 41,798 across 3 hospitals          │
-├─────────────────────────────────────────────────┤
-│  PERFORMANCE METRICS (10,450 test stays):       │
-│  MAE = 1.8247 SOFA points                      │
-│  R² = 0.4725   |  AUROC = 0.9254               │
-│  Alert (≥ 7): recall 67.1%, specificity 96.3%  │
-│  Best round: 26 of 100                         │
-├─────────────────────────────────────────────────┤
-│  MODEL ARCHITECTURE:                            │
-│  108 → 256 → 128 → 64 → 1                      │
-│  69,121 parameters, ReLU activations           │
-│  Dropout 0.3 (training only)                   │
-│                                                 │
-│  PRIVACY: Differential Privacy OFF (can enable) │
-└─────────────────────────────────────────────────┘
-```
+`DeepExplainer` attributes the output to each input by backpropagation (DeepLIFT, related to Integrated Gradients).
 
-This tab contextualises the entire prediction: the clinician can see exactly how the model was trained, what privacy guarantees are in place, and what the model's validated accuracy is — giving them informed context for how much weight to place on its predictions.
+### From 108 values to something readable
+1. Sort all 108 by absolute effect.
+2. Keep clinically meaningful inputs by keyword (vitals, GCS, stress and words such as hypotension, respiratory, septic, failure, intubated, vasopressor, shock, fever, infection, oxygen, ventilat, cardiac, renal, hepatic). Short abbreviations like "hr" must match as a whole token so "hr" inside "epinephrine" is not taken as heart rate. (If fewer than 3 survive, the plain top 7 is used.)
+3. Take the **top 7** for plain-English explanations and key risks; send the **top 5** to the dashboard.
 
----
+**Real top 5 for Patient 3:**
 
-## 17. Complete Data Flow Diagram
-
-```
-┌────────────────────────────────────────────────────────────────────┐
-│                      CLINICIAN INPUTS (Sidebar)                    │
-├─────────────────┬──────────────────┬────────────────────────────────┤
-│  7 VITAL SIGNS  │  2 CV FEATURES   │     CLINICAL NOTES (text)      │
-│  HR, RR, SpO2   │  GCS Eye (1–4)   │     Free-text nurse/doctor     │
-│  Temp, SBP      │  Stress (0–10)   │     observations, history      │
-│  DBP, MAP       │                  │                                │
-└───────┬─────────┴─────────┬────────┴──────────────┬─────────────────┘
-        │                   │                        │
-        ▼ validate first    │                        ▼
-  ┌─────────────┐           │              ┌────────────────────┐
-  │ INPUT       │           │              │  TF-IDF TRANSFORM  │
-  │ VALIDATION  │           │              │  90-term SOFA      │
-  │ (halt if    │           │              │  vocabulary        │
-  │  invalid)   │           │              │  → 90 float values │
-  └──────┬──────┘           │              └──────────┬─────────┘
-         │ valid            │                         │
-         ▼                  ▼                         │
-  ┌────────────────┐  ┌─────────────────┐             │
-  │ SLIDING WINDOW │  │ LATEST FEATURES │             │
-  │ Append reading │  │ (7 vitals +     │             │
-  │ Keep last 20   │  │  GCS + stress   │             │
-  │ Save to CSV    │  │  = 9 values)    │             │
-  └───────┬────────┘  └───────┬─────────┘             │
-          │                   │                        │
-          ▼                   │                        │
-  ┌────────────────┐          │                        │
-  │ TREND FEATURES │          │                        │
-  │ 9 statistics   │          │                        │
-  │ (mean, std,    │          │                        │
-  │  min across    │          │                        │
-  │  20 readings)  │          │                        │
-  └────────┬───────┘          │                        │
-           └──────────────────┘                        │
-                    │ 9 trend + 9 latest = 18 features  │
-                    ▼                                   │
-           ┌─────────────────┐                          │
-           │ FEATURE FUSION  │◄─────────────────────────┘
-           │ 18 + 90 = 108   │
-           │ Column-aligned  │
-           │ to training     │
-           └────────┬────────┘
-                    │
-                    ▼
-           ┌─────────────────┐
-           │ STANDARDSCALER  │
-           │ z-score norm    │
-           │ + clip(±10)     │
-           │ (108 features)  │
-           └────────┬────────┘
-                    │
-                    ▼
-           ┌─────────────────┐
-           │ FEDERATED DNN   │
-           │ 108→256→128     │
-           │     →64→1       │
-           │ (ReLU, Dropout  │
-           │  0.3, off at    │
-           │  prediction)    │
-           └────────┬────────┘
-                    │ raw float
-                    ▼
-           ┌─────────────────┐
-           │ SOFA SCORE      │
-           │ clip to [0,24]  │
-           │ → Risk label    │
-           │ → Alert banner  │
-           │ → Save to CSV   │
-           └───┬─────────┬───┘
-               │         │
-      ┌────────┘         └──────────┐
-      ▼                             ▼
-┌────────────┐              ┌───────────────────┐
-│    SHAP    │              │  TREND ANALYSIS   │
-│ DeepExpl.  │              │  Linear reg per   │
-│ 300 bg     │              │  vital → trend    │
-│ samples    │              │  direction string │
-│ → 108      │              │  (LLM prompt only)│
-│ attributions│             └──────────┬────────┘
-└────┬───────┘                         │
-     │ top 7 features                  │
-     │ + clinical                      │
-     │ explanations                    │
-     └─────────────────┬───────────────┘
-                       │
-                       ▼
-              ┌─────────────────────┐
-              │  LLM PROMPT BUILD   │
-              │  Risk prefix +      │
-              │  SOFA + vitals +    │
-              │  notes + SHAP +     │
-              │  trends + structure │
-              └──────────┬──────────┘
-                         │
-                         ▼
-              ┌─────────────────────┐
-              │  3× GROQ API CALLS  │
-              │  gpt-oss-120b       │
-              │  temperature=0.2    │
-              │  max_tokens=2,500   │
-              └──────────┬──────────┘
-                         │ 3 responses
-                         ▼
-              ┌─────────────────────┐
-              │ CONSISTENCY METRIC  │
-              │ 20% TF-IDF sim      │
-              │ 50% interventions   │
-              │ 30% conditions      │
-              │ → score + label     │
-              └──────────┬──────────┘
-                         │
-                         ▼
-              ┌───────────────────────────────────────┐
-              │           4-TAB DASHBOARD              │
-              │  Tab 1: SOFA Gauge + Vital Trends     │
-              │  Tab 2: SHAP Explainability           │
-              │  Tab 3: AI Report + Consistency Score │
-              │  Tab 4: Federated Learning Info       │
-              └───────────────────────────────────────┘
-```
-
----
-
-## 18. Artifacts Loaded at Startup
-
-All model artifacts are loaded once when the application starts, using `@st.cache_resource` to prevent reloading on every user interaction:
-
-| Artifact | File size | How loaded | What it provides |
+| Feature | Original value | SHAP effect | Reading |
 |---|---|---|---|
-| `models/federated_model.pth` | ~0.3 MB | `torch.load()` | The DNN weights (108→256→128→64→1) — the core prediction model |
-| `models/scaler.pkl` | ~8 KB | `joblib.load()` | Training set mean and std for all 108 features — normalises inference inputs |
-| `models/tfidf_vectorizer.pkl` | ~2 MB | `joblib.load()` | 90-term SOFA vocabulary with IDF weights — converts clinical text to features |
-| `models/feature_columns.pkl` | ~40 KB | `joblib.load()` | Ordered list of 108 column names — enforces consistent feature ordering |
-| `models/shap_background.npy` | ~1.4 MB | `np.load()` | 300 training patients as reference for SHAP attribution |
-| `models/training_metadata.json` | ~2 KB | `json.load()` | Training stats, hyperparameters, performance metrics for Tab 4 |
+| GCS_eye_opening | 2 | **+0.94** | Eyes open only to pain → raises SOFA |
+| "septic" (note word) | 0.25 | +0.91 | Note mentions sepsis → raises |
+| "ventilator" (note word) | 0.19 | +0.69 | Note mentions ventilator → raises |
+| HR_mean | 123.3 bpm | +0.62 | Sustained fast heart rate → raises |
+| stress_score | 8 | **−0.45** | High stress → *lowers* the score (see below) |
 
-**Per-prediction file access (not cached — read/written each time):**
+**Plain-English explanations produced for the AI report (real):**
+- "GCS Eye Opening = 2/4 → impaired consciousness, increasing risk"
+- 'Clinical note contains "septic" → increasing risk'
+- 'Clinical note contains "ventilator" → increasing risk'
+- "HR mean = 123.3bpm → elevated heart rate, increasing risk"
+- "Stress Score = 8/10 → high physiological stress, reducing risk"
+- "Heart Rate = 124.0bpm → elevated heart rate, reducing risk"
+- "RR mean = 29.4br/min → elevated breathing rate, increasing risk"
 
-| Artifact | Read or Write | Purpose |
-|---|---|---|
-| `models/patient_vitals.csv` | Read + Write | The 20-reading sliding window (Step 1) |
-| `models/prediction_history.csv` | Read + Write | Log of last 50 predictions (Tab 1 history table) |
+**Key risks (real):** Neurological deterioration, Sepsis / Infection, Abnormal heart rate, High physiological stress, Respiratory distress. (Words are matched to this list; for example "septic" gives "Sepsis / Infection".)
 
----
+**Display:** the dashboard shows the **original** values (84.0%, 62 mmHg), never the scaled z-scores, and for note words it shows only the word, not the meaningless TF-IDF number.
 
-## 19. Feature Count Summary
-
-| Pipeline Stage | Feature count | Format |
-|---|---|---|
-| Clinician input — vital signs | 7 | Raw floats (bpm, %, mmHg, °C) |
-| Clinician input — CV scores | 2 | Raw float/int (1–4, 0–10) |
-| Clinician input — clinical note | 1 | Variable-length string |
-| After sliding window | 7 vitals × 20 rows | DataFrame — temporal history |
-| After trend feature engineering | 9 | Floats (means, std, min across 20 readings) |
-| After latest vital packaging | 9 | Raw floats + GCS + stress score |
-| After TF-IDF encoding | 90 | Float weights (SOFA vocabulary presence/frequency) |
-| **After feature fusion (Step 5)** | **108** | **Single flat float vector — model input** |
-| After StandardScaler | 108 | Z-scores clipped to ±10 — same scale as training |
-| After DNN inference (Step 7) | 1 | Raw SOFA prediction (unrestricted float) |
-| After SOFA clipping (Step 8) | 1 | SOFA score in [0.0, 24.0] |
-| After SHAP computation (Step 9) | 108 | Attribution values (+/−, sum = prediction − baseline) |
-| After SHAP filtering | 7 | Top clinically meaningful features displayed |
-| After trend analysis (Step 10) | 7 | Trend direction strings (for LLM prompt only) |
-| After LLM calls (Step 12) | 3 | Full clinical assessment text reports |
-| After consistency scoring | 1 | Reliability score [0.0, 1.0] |
-| **Dashboard output** | **4 tabs** | **SOFA gauge, SHAP chart, clinical report, FL info** |
+### Two counter-intuitive results (and why they are not bugs)
+SHAP explains what the **model learned**, not what medical theory says.
+- **Stress *lowers* the score.** In MIMIC-III, stressed and responsive patients often had lower SOFA than unresponsive, sedated ones (a coma shows no stress). The model learned that pattern.
+- **A high latest heart rate can show "reducing risk"** while the heart-rate *mean* shows "increasing": the two inputs overlap, and SHAP splits the credit between them in ways that can have opposite signs. Read the explanations as a set, not individually.
 
 ---
 
-*Documentation for ICU CDSS Capstone Project*
-*Pipeline: 7 vitals + 2 CV scores + clinical text → 108 features → SOFA → SHAP + LLM*
-*Model: PyTorch DNN (108→256→128→64→1, Dropout 0.3) trained via Flower Federated Learning (FedAvg + FedProx, plain MSE)*
-*LLM: gpt-oss-120b via Groq API with 3-call self-consistency verification*
+## 14. Step 11 — Trend Text
+
+**Purpose:** classify each vital's 20-reading trend for the AI report. It is **not** a second input to the network.
+
+```
+For each of the 7 vitals:
+  1. Fit a straight line through the 20 readings (numpy.polyfit); take the slope.
+       slope >  +0.1 → "increasing"
+       slope <  −0.1 → "decreasing"
+       otherwise     → "stable"            (NaN values are ignored)
+  2. Compare the window mean with the normal range → "low" / "normal" / "high".
+  3. Write "[vital] → [status] & [direction]".
+```
+(The normal ranges used here: HR 60–100, RR 12–20, SpO₂ 95–100, temperature 36.5–37.5, SBP 100–120, DBP 60–80, MAP 70–100.)
+
+**Real output for Patient 3:**
+```
+- HR → high & stable
+- RR → high & stable
+- SpO₂ → low & stable
+- Temperature → high & stable
+- SBP → low & stable
+- DBP → low & stable
+- MAP → low & stable
+```
+(For Patient 1 the same step gave "normal" for every vital and "decreasing" for HR, RR and the pressures.)
+
+**Why a fitted line and not "first vs last"?** A comparison of two points is sensitive to one noisy reading. A line through all 20 points shows the average rate of change and is far more robust. The text goes into the AI prompt so the AI can say "SpO₂ is persistently low despite ventilation".
+
+---
+
+## 15. Step 12 — The Response Sent to the Browser
+
+`POST /api/predict` returns this JSON (the prompt-building fields are removed before it leaves the server; the full copy is kept **server-side** for the report):
+
+| Field | Meaning | Patient 3 |
+|---|---|---|
+| `patient_id`, `cur_idx`, `total_rows` | Which reading | 3, 2, 30 |
+| `sofa_score` | Predicted SOFA | 8.2 |
+| `risk_level`, `risk_color`, `risk_icon` | Band | Moderate Risk, amber |
+| `is_alert`, `alert_threshold` | Alert flag and line | true, 7.0 |
+| `conformal_lo`, `conformal_hi`, `conformal_q` | 90% range | 5.0, 11.5, 3.28 |
+| `confidence` | `1 − q̂/12` | 0.727 |
+| `vitals` | The 7 vitals, GCS eye, stress | as in Section 1 |
+| `vitals_status` | low / normal / high per vital | HR high, SpO₂ low, MAP low … |
+| `clinical_note` | The note text | shown in the dashboard |
+| `shap_top5` | Top 5 drivers (value, effect, direction, relative size) | Section 13 |
+| `key_risks`, `clinical_explanations` | Plain-English risks and sentences | Section 13 |
+| `trend_text`, `vitals_history` | Trend summary and the 20-reading chart data | Section 14 |
+| `_prev_sofa`, `_sofa_jump`, `_traj_flagged`, `_traj_msg` | Runtime check 3 | none / 0.0 / false |
+| `_training_meta` | Contents of `training_metadata.json` | read by the SOFA validation drawer |
+
+Removed before sending to the browser: `_vitals_block`, `_cv_block`, `_risk_block`, `_explanation_block` (prompt scaffolding).
+
+---
+
+## 16. Step 13 — The AI Report: Prompt Construction
+
+The browser then asks for the report: `POST /api/report` with `{ "patient_id": 3, "care_mode": "hospital" }`. It sends **only** the patient ID and mode. The server uses its **own stored prediction** and never trusts data sent by the browser.
+
+Errors: invalid patient or mode → 400; no prediction yet → **409**; missing Groq key → 500; any other failure → 500 with a generic message.
+
+### When the report is requested
+The frontend builds a `reportKey` from the patient, SOFA and every vital (HR, RR, SpO₂, SBP, DBP, MAP, temperature, GCS, stress). A new report is requested only when this key **changes** or the care mode is switched. Reports for older readings are discarded. After one mode's report is ready, the other mode is generated in the background so switching is instant. The backend cache key matches this key exactly.
+
+### The prompt (what the AI receives)
+
+**1. Urgency header (alert patients only).** If SOFA ≥ 7 the prompt starts with a clinical alert line, for example "⚠️ CLINICAL ALERT — Predicted SOFA 8.2 (alert threshold ≥ 7). This patient is actively deteriorating. Lead with immediate actions." (Home Care mode uses a plain "PATIENT ALERT" line.)
+
+**2. Section instructions.** Four sections, written with the exact headings: Current Condition, Probable Cause, Risk Forecast, Immediate Actions. For an alert patient **Immediate Actions comes first**; otherwise it comes last. Each mode has its own rules:
+- **Hospital mode:** bullet points; every drug has name, dose, route and target; every vital shows value and normal range; examples of good and bad bullets are included.
+- **Home Care mode:** plain English for a home nurse and family; sub-headings "For the Nurse", "For the Family", "Home Remedies", "⚠️ Go to Hospital NOW if" (alert) ; both worsening and improving outcomes in the forecast; no unexplained jargon.
+
+**3. SOFA and risk.** "SOFA Score: 8.2 / 24 (0–4 = Low Risk, 5–9 = Moderate Risk, ≥10 = High Risk …)", the risk level, and "Predicted SOFA uncertainty: ± 3.3 points (90% conformal interval)".
+
+**4. Clinical note (verbatim)** from the patient chart.
+
+**5. Latest vitals with normal ranges (real):**
+```
+HR: 124.0 bpm (normal: 60–100)
+RR: 30.0 breaths/min (normal: 12–20)
+SpO₂: 85.0% (normal: 95–100)
+Temperature: 39.2 °C (normal: 36.5–37.5)
+Blood Pressure: 84.0/49.0 mmHg (normal: ~120/80)
+MAP: 61.0 mmHg (normal: 70–100)
+```
+The ranges are included so the AI does not have to guess which values are abnormal.
+
+**6. Neurological and stress values (real):**
+```
+GCS Eye Opening: 2 (1=No response, 2=To pain, 3=To voice, 4=Spontaneous)
+Stress Score: 8.0/10 (higher = more distress)
+```
+
+**7. SHAP key risks, SHAP explanations (Hospital mode) and the vital trends** from Sections 13–14.
+
+**Why SHAP is in the prompt.** Without it the AI sees only raw numbers and the note (what any physician sees) and writes a generic septic-shock report. With it, the AI knows which inputs the predictive model found most important for *this* patient and can say, for example, that impaired consciousness, sepsis and ventilation drive the score.
+
+**Closing instruction:** "Base all clinical reasoning strictly on the data above. Do not invent values or assume findings not present in the data."
+
+### The AI call
+| Setting | Writer | Judge |
+|---|---|---|
+| Model | `openai/gpt-oss-120b` (Groq) | the same model |
+| Temperature | 0.15 (factual, consistent) | 0.0 |
+| Max tokens | 6,000 | 1,200 |
+| Limit | — | 12 seconds; sees the first 900 characters of the report |
+
+Any `<think>…</think>` text is stripped from the reply, and the reply is split into the four sections (tolerating headings written with `#`, bold, numbers or dashes). All four keys always exist, empty if the AI omitted one.
+
+*(An earlier version asked the AI the same question three times and compared the answers; that check was removed because agreement measures consistency, not correctness. See Section 17.)*
+
+---
+
+## 17. Step 14 — The AI Report: Reliability Score
+
+**Purpose:** give a number for how much to trust the report, by checking it against the **real patient data**, not against itself. Full explanation with worked examples: `docs/VALIDATION.md`, Part 2.
+
+### Nine methods
+
+| # | Method | Weight | What it checks |
+|---|---|---|---|
+| 1 | Factual grounding | 13% | Every abnormal vital is mentioned (by related words) |
+| 2 | Clinical hard rules | 13% | The standard treatment is mentioned (6 rules, for example SpO₂ < 90 → oxygen therapy) |
+| 3 | SHAP–LLM coherence | 9% | The report discusses what actually drove the prediction |
+| 4 | Response structure | 9% | All four sections present and enough length (≥ 200 words counts as full) |
+| 5 | Severity calibration | 8% | Tone matches severity (SOFA ≥ 10 needs urgent wording; a low-risk patient should not get panic wording) |
+| 6 | Contraindication safety | 5% | No dangerous drug for these vitals (3 rules: beta-blockers in shock, opioids/benzodiazepines in severe hypoxia, NSAIDs) |
+| 7 | Numeric accuracy | 8% | Every quoted patient number is close to a real value (within 10% or 3 units) or a standard reference number |
+| 8 | G-Eval (AI judge) | 13% | Overall quality: 4 aspects scored 1–5 |
+| 9 | RAGAS faithfulness (AI judge) | 22% | Lists unsupported claims; each lowers the score |
+
+Methods 1–7 are instant rule checks (65% of the weight); 8–9 use the judge (35%). If the judge is late or fails, methods 8 and 9 score a neutral 0.5 and the report is still shown. If the judge flags a dangerous recommendation, method 6 is forced to 0.
+
+### Labels
+| Score | Label |
+|---|---|
+| ≥ 0.75 | **High** reliability (green) |
+| 0.55 – 0.75 | **Moderate** (amber) |
+| < 0.55 | **Low** (red) |
+
+A separate **caution** flag is set below 0.60. Every specific problem found (broken rules, dangerous drugs, wrong numbers, unsupported claims) is returned in `violations` for the clinician.
+
+### The report response
+```json
+{
+  "sections": { "IMMEDIATE ACTIONS": "…", "CURRENT CONDITION": "…",
+                "PROBABLE CAUSE": "…", "RISK FORECAST": "…" },
+  "raw_response": "full text",
+  "reliability_score": 0.89, "reliability_label": "High", "reliability_color": "#28a745",
+  "caution": false,
+  "violations": [],
+  "care_mode": "hospital",
+  "judge_used": true,
+  "error": null
+}
+```
+(The score and label shown are an illustration of the format; each report gets its own.)
+
+### Honest limits
+The same model writes and grades the report, and the judge sees only 900 characters, so the seven rule checks are the independent part of the score. Keyword checks look for words, not meaning.
+
+---
+
+## 18. Step 15 — What the Clinician Sees
+
+The dashboard is **one scrolling page** (no tabs), plus four floating buttons.
+
+```
+┌───────────────────────────────────────────────────────────┐
+│ HEADER: patient · live status · countdown to next reading │
+├───────────────────────────────────────────────────────────┤
+│ ALERT BANNER (Moderate: amber "ELEVATED RISK";            │
+│               High: red "CRITICAL ALERT"; Low: none)      │
+├───────────────────────────────────────────────────────────┤
+│ CURRENT STATUS                                            │
+│  SOFA gauge: 8.2 / 24  [Moderate Risk]                    │
+│    prediction interval 5.0 – 11.5, confidence 73%         │
+│  Vital cards: HR · SpO₂ · RR · Temp · SBP · MAP · DBP ·   │
+│    GCS eye · Stress   (colour-coded low / normal / high)  │
+├───────────────────────────────────────────────────────────┤
+│ VITAL TRENDS: 7 line charts (last 20 readings) with       │
+│    normal-range bands                                     │
+├───────────────────────────────────────────────────────────┤
+│ AI CLINICAL REPORT                                        │
+│  [Hospital | Home Care] toggle                            │
+│  4 section cards (Immediate Actions first for alerts)     │
+│  SHAP bars: top 5 drivers, original values                │
+│  Reliability badge (High / Moderate / Low)                │
+│  Disclaimer: decision support only                        │
+└───────────────────────────────────────────────────────────┘
+Floating buttons (right edge): History · Camera monitor ·
+                               LLM validation · SOFA validation
+```
+
+- **History drawer:** table of recent predictions (time, SOFA, risk, vitals, GCS, stress).
+- **Camera monitor:** live webcam stress and eye scores (Section 2).
+- **LLM validation drawer:** the nine-method breakdown and every violation.
+- **SOFA validation drawer ("Model Accuracy Report"):** reads every number **live** from `training_metadata.json` (the `_training_meta` field): AUROC, PR-AUC, MAE, R², alert recall, specificity, missed and false-alarm counts, the 3-band confusion matrix and its accuracy, and the sample counts. Also shows the three runtime checks and the conformal range. If the metadata is missing it shows "—". The final run's values: MAE 1.80, R² 0.48, AUROC 0.918, PR-AUC 0.647, alert recall 67.8%, specificity 96.6%, 10,450 test stays.
+- **Dark and light themes** are available.
+
+The SHAP bars, the vital cards and the gauge all show original clinical values, not model-internal numbers, so the clinician sees familiar units.
+
+---
+
+## 19. Complete Data Flow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  EVERY 90 SECONDS: browser → POST /api/predict                  │
+│  { patient_id, row_idx, [cv_gcs_eye], [cv_stress] }             │
+└───────────────────────────────┬─────────────────────────────────┘
+                                ▼
+                     ┌────────────────────┐
+                     │ INPUT CHECKS       │  patient 1–3, GCS 1–4, stress 0–10
+                     └─────────┬──────────┘
+                               ▼
+        ┌──────────────────────────────────────────────┐
+        │ READ SAMPLE ROW (sample_patients, looped)    │
+        │  7 vitals · GCS · stress · clinical note     │
+        │  live camera values override GCS / stress    │
+        └───────┬───────────────────────────┬──────────┘
+                ▼                           ▼
+      ┌──────────────────┐        ┌───────────────────┐
+      │ SLIDING WINDOW   │        │ TF-IDF            │
+      │ append, keep 20  │        │ 90-word SOFA list │
+      │ (patient_vitals) │        │ → 90 numbers      │
+      └────────┬─────────┘        └─────────┬─────────┘
+               ▼                            │
+      ┌──────────────────┐                  │
+      │ TREND FEATURES 9 │  + LATEST 9      │
+      └────────┬─────────┘  (7 vitals+2 cam)│
+               └─────────────┬──────────────┘
+                             ▼
+                    ┌─────────────────┐
+                    │ FUSION 9+9+90   │  column-aligned to feature_columns.pkl
+                    │ = 108           │
+                    └────────┬────────┘
+                             ▼
+                    ┌─────────────────┐
+                    │ STANDARDSCALER  │  z-score, clip ±10
+                    └────────┬────────┘
+                             ▼
+                    ┌─────────────────┐
+                    │ FEDERATED DNN   │  108→256→128→64→1, eval mode
+                    └────────┬────────┘
+                             ▼
+              ┌───────────────────────────────┐
+              │ SOFA = clip(raw, 0, 24)       │
+              │ risk band · is_alert (≥ 7)    │
+              │ conformal range ± 3.28        │
+              │ 3 runtime checks              │
+              │ save to prediction_history    │
+              └───────┬───────────────┬───────┘
+                      ▼               ▼
+              ┌──────────────┐ ┌───────────────┐
+              │ SHAP         │ │ TREND TEXT    │
+              │ top 7 → 5    │ │ slope per     │
+              │ explanations │ │ vital         │
+              └──────┬───────┘ └──────┬────────┘
+                     └───────┬────────┘
+                             ▼
+          server stores full result · browser gets cleaned JSON
+                             │
+        (frontend: reportKey changed or mode switched?)
+                             ▼
+                POST /api/report { patient_id, care_mode }
+                             │
+                             ▼
+              ┌────────────────────────────┐
+              │ 90 s cache? → return it    │
+              └──────────────┬─────────────┘
+                             ▼
+              ┌────────────────────────────┐
+              │ PROMPT (alert-first if ≥ 7)│
+              │ Groq gpt-oss-120b, t=0.15  │
+              └──────────────┬─────────────┘
+                             ▼
+              ┌────────────────────────────┐
+              │ 7 RULE CHECKS (instant)    │
+              │ + AI JUDGE (≤ 12 s)        │
+              │ → 9-method reliability     │
+              └──────────────┬─────────────┘
+                             ▼
+              ┌────────────────────────────┐
+              │ DASHBOARD: gauge, vitals,  │
+              │ trends, report, SHAP,      │
+              │ reliability, drawers       │
+              └────────────────────────────┘
+```
+
+---
+
+## 20. Artifacts Loaded at Startup
+
+Loaded once (on the first request) and cached for the life of the backend:
+
+| Artifact | How loaded | What it provides |
+|---|---|---|
+| `models/federated_model.pth` | `torch.load(..., weights_only=True)` | The network weights (108→256→128→64→1); set to `eval()` |
+| `models/scaler.pkl` | `joblib.load()` | Training mean and spread for the 108 inputs |
+| `models/tfidf_vectorizer.pkl` | `joblib.load()` | The 90 words and their IDF weights |
+| `models/feature_columns.pkl` | `joblib.load()` | The 108 input names in training order (falls back to `scaler.feature_names_in_`) |
+| `models/shap_background.npy` | `np.load()` | 300 background patients; the SHAP explainer is built from it on first use |
+| `models/training_metadata.json` | `json.load()` (each prediction) | Training settings and test results for the validation drawer |
+
+**Computed once at first use:** the conformal q̂ (3.28), from the training rows in the database.
+
+**Read and written on every prediction (database, not cached):**
+
+| Table | Read / write | Purpose |
+|---|---|---|
+| `sample_patients` | Read | The recorded reading to replay |
+| `patient_vitals` | Read + write | The 20-reading sliding window |
+| `prediction_history` | Read + write | Log of the newest 50 predictions per patient |
+
+The tables are created at backend start if missing (`init_db()`), so a fresh clone does not fail. A checkpoint trained with a different network size will not load; retrain instead.
+
+---
+
+## 21. Feature Count Summary
+
+| Pipeline stage | Count | Format |
+|---|---|---|
+| Recorded reading — vital signs | 7 | Raw numbers (bpm, %, mmHg, °C) |
+| Camera / observation values | 2 | GCS 1–4, stress 0–10 |
+| Clinical note | 1 | Text |
+| After the sliding window | 20 rows × 7 vitals | Temporal history |
+| Trend features | 9 | Means, std, min over 20 readings |
+| Latest features | 9 | 7 current vitals + GCS + stress |
+| TF-IDF features | 90 | Word scores (13 non-zero for Patient 3) |
+| **After fusion** | **108** | **One flat vector — the model input** |
+| After StandardScaler | 108 | z-scores clipped to ±10 |
+| Raw network output | 1 | Unrestricted number (8.2) |
+| After clipping | 1 | SOFA in 0–24 |
+| Conformal range | 2 | Lower and upper (5.0, 11.5) |
+| SHAP values | 108 | Sum = prediction − baseline (4.35) |
+| SHAP shown | 5 (7 used for text) | Top clinically meaningful drivers |
+| Trend strings | 7 | One per vital (for the AI prompt only) |
+| AI report | 1 (4 sections) | Hospital or Home Care |
+| Reliability | 1 | Score 0–1 + label + violations |
+
+---
+
+## 22. Timing, Caching and Failure Behaviour
+
+| Item | Behaviour |
+|---|---|
+| Refresh | A new prediction every **90 seconds**; the countdown never goes below 1, and resets only after data arrives |
+| Overlapping requests | Prevented (one fetch at a time); a response is discarded if the patient changed while it was in flight |
+| Resume | The reading position is kept in the browser's session storage, so a page refresh continues from the same reading |
+| Report cache | **90 seconds**; key = care mode + patient + SOFA + every vital in the prompt, so a changed reading never gets a report quoting old numbers; expired entries are cleaned on every write |
+| Identical simultaneous requests | One AI call is made; the second request waits and reuses it |
+| Both care modes | After one report is ready, the other mode is prepared in the background |
+| Cost | 2 AI calls per report (write + judge); about 4 per new reading with both modes |
+| Judge late or failing | Methods 8 and 9 score 0.5; the report is still shown with `judge_used: false` |
+| AI unavailable | The dashboard keeps showing the last report with a notice |
+| Prediction failure | The dashboard keeps the last reading, shows "Refresh failed… Retrying in 90s." |
+| Model checkpoint mismatch | The backend fails to start the model load; retrain so the weights match the 108→256→128→64→1 network |
+
+---
+
+*Documentation for the ClinIQ ICU CDSS capstone project — last updated 2026-11-24.*
+*Pipeline: 7 vitals + 2 camera/observation values + clinical text → 108 features → SOFA → conformal range, 3 runtime checks, SHAP → AI report → 9-method reliability score.*
+*Model: PyTorch network 108→256→128→64→1 (Dropout 0.3, 69,121 parameters), trained with Flower federated learning (FedAvg + FedProx, plain MSE); final run MAE 1.80, R² 0.48, AUROC 0.918.*
+*All worked examples use real outputs for demo Patient 3 (reading 3 of 30). When the model is retrained, re-run a prediction and refresh Sections 7, 9, 12, 13 and 18.*

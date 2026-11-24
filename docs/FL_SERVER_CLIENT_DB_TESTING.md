@@ -1,10 +1,25 @@
-# FL System — Complete Testing Implementation Guide
-**What every test does, why it exists, and how the FL test suite fits together**
+# FL System — Complete Testing Guide
+**What every federated-learning test does, why it exists, and how the suite fits together**
 
-> **Scope:** `train_federated.py`, `fl_dashboard.py`, `server.py`, `client.py`,
-> `db.py` (FL-specific helpers), `model_utils.py`, `migrate_to_db.py`
-> **All test files live in:** `icu_monitor/tests/fl/`
-> **Not in scope:** ClinIQ dashboard (covered in `CLINIQ_TESTING.md`)
+**Last updated:** 2026-11-24
+**Result:** **295 FL tests, all passing** (264 fast + 31 slow) · whole Python suite **513 passed** · Vitest **232 passed**
+**Measured line coverage of the FL modules:** 80% overall (details in Section 17)
+
+> **Scope:** `model_utils.py`, `db.py` (the FL helpers), `fl_dashboard.py`, `client.py`, `server.py`, `train_federated.py`, `migrate_to_db.py`
+> **All tests live in:** `icu_monitor/tests/fl/`
+> **Not covered here:** the ClinIQ dashboard and its API (see `CLINIQ_TESTING.md`)
+> **Everything below was checked against the real test files and a real run on 2026-11-24.** Every test name, count and number comes from the code, not from memory.
+
+---
+
+## How to Read This Document
+
+- **Sections 1–5** explain *why* the tests are built the way they are, the tools, and the shared setup every test uses.
+- **Sections 6–15** describe the **10 phases** of tests, one phase per section. Each phase lists its tests with the reason each one exists.
+- **Sections 16–18** give the run commands, real coverage numbers and the status table.
+- **Section 19** lists things the tests deliberately do **not** check, and known quirks, so nothing is hidden.
+
+If you only want to run the tests, jump to [Section 16](#16-run-commands).
 
 ---
 
@@ -15,67 +30,70 @@
 3. [Directory Layout](#3-directory-layout)
 4. [Tool Stack](#4-tool-stack)
 5. [Shared Fixtures — The Foundation Every Test Relies On](#5-shared-fixtures--the-foundation-every-test-relies-on)
-6. [Phase 1 — Database FL Helpers](#6-phase-1--database-fl-helpers)
-7. [Phase 2 — Model Utilities](#7-phase-2--model-utilities)
-8. [Phase 3 — FL Dashboard Pure Functions](#8-phase-3--fl-dashboard-pure-functions)
-9. [Phase 4 — Client Logic](#9-phase-4--client-logic)
-10. [Phase 5 — Server Strategy](#10-phase-5--server-strategy)
-11. [Phase 6 — Train Federated Helpers](#11-phase-6--train-federated-helpers)
-12. [Phase 7 — Database ↔ Model Integration](#12-phase-7--database--model-integration)
-13. [Phase 8 — FL Round Integration](#13-phase-8--fl-round-integration)
-14. [Phase 9 — Migration Integration](#14-phase-9--migration-integration)
-15. [Phase 10 — System Tests](#15-phase-10--system-tests)
+6. [Phase 1 — Database FL Helpers (21 tests)](#6-phase-1--database-fl-helpers-21-tests)
+7. [Phase 2 — Model Utilities (91 tests)](#7-phase-2--model-utilities-91-tests)
+8. [Phase 3 — FL Dashboard Pure Functions (50 tests)](#8-phase-3--fl-dashboard-pure-functions-50-tests)
+9. [Phase 4 — Client Logic (22 tests)](#9-phase-4--client-logic-22-tests)
+10. [Phase 5 — Server Strategy (19 tests)](#10-phase-5--server-strategy-19-tests)
+11. [Phase 6 — Train Federated Helpers (32 tests)](#11-phase-6--train-federated-helpers-32-tests)
+12. [Phase 7 — Database ↔ Model Integration (10 tests)](#12-phase-7--database--model-integration-10-tests)
+13. [Phase 8 — FL Round Integration (14 tests)](#13-phase-8--fl-round-integration-14-tests)
+14. [Phase 9 — Migration Integration (19 tests)](#14-phase-9--migration-integration-19-tests)
+15. [Phase 10 — System Tests (17 tests)](#15-phase-10--system-tests-17-tests)
 16. [Run Commands](#16-run-commands)
-17. [Coverage Targets](#17-coverage-targets)
+17. [Coverage — Measured, Not Guessed](#17-coverage--measured-not-guessed)
 18. [Implementation Status](#18-implementation-status)
+19. [What the Tests Do Not Cover, and Known Quirks](#19-what-the-tests-do-not-cover-and-known-quirks)
 
 ---
 
 ## 1. Why FL Testing Is Different From ClinIQ Testing
 
-The ClinIQ tests (in `CLINIQ_TESTING.md`) deal with a web application — HTTP requests, React components, database CRUD. The patterns are well-established: send a request, check the response.
+The ClinIQ tests deal with a web application: send an HTTP request, check the response. The federated-learning tests deal with something harder to test.
 
-The FL tests deal with something fundamentally harder to test:
+### Problem 1 — Distributed computation
+In real federated learning, three hospitals each run a Flower client process, talk to a central Flower server over the network (gRPC), and exchange model weights for 100 rounds. A unit test cannot start all of that: it would be slow, need network setup, and failures would be impossible to diagnose.
 
-**Problem 1 — Distributed computation:**
-In real federated learning, 3 hospitals each run their own Flower client process, communicate with a central Flower server over gRPC (a network protocol), and exchange model weights that are gigabytes in size per round over 100 rounds. You cannot run all of this in a unit test — it would take hours, require network infrastructure, and make failures impossible to diagnose.
+**Solution:** test the logic in pieces. Pull out the aggregation maths (`_fedavg`, `_fedyogi`), the training functions (`train_model`, `evaluate_model`), and the client and server classes, and test each with tiny synthetic data and with Flower's internals replaced by stand-ins ("mocks").
 
-**Solution:** Test the mathematical logic in isolation. Extract the aggregation functions (`_fedavg`, `_fedyogi`), the training functions (`train_model`, `evaluate_model`), and the client/server strategy classes — and test each with tiny synthetic data and mocked Flower internals.
+### Problem 2 — Files that do work the moment they are imported
+Several project files are **scripts, not libraries**. Importing them runs real work:
+- `client.py` reads the command line, loads the real `scaler.pkl`, loads a hospital's rows from the database and would connect to a Flower server.
+- `server.py` loads `scaler.pkl` and would start a server and run 100 rounds.
+- `train_federated.py` would run the **entire** federated simulation, save a model and overwrite `training_metadata.json`.
+- `fl_dashboard.py` imports Streamlit, which fails outside a running Streamlit app.
 
-**Problem 2 — External library dependencies:**
-Flower (the FL framework) uses gRPC for network communication and has its own event loop. Streamlit has a global state model that crashes if you try to import and call `st.write()` in a pytest test. PyTorch loads GPU drivers. MediaPipe needs WASM.
+**Solution:** "guards" that are put in place *before* the import and removed straight after (Section 4 explains each one). They make the import fast and, most importantly, **stop the tests overwriting the real trained model files.**
 
-**Solution:** Monkeypatching and mocking at import time. Before the module loads, replace `fl.client.NumPyClient` with a stub, replace `st.cache_resource` with a passthrough decorator, replace `torch.save` with a no-op.
+### Problem 3 — Non-determinism
+Training is random (mini-batch order, initial weights, the order hospitals finish). A test that checks "loss is exactly 4.213" would break on another machine.
 
-**Problem 3 — Non-determinism:**
-FL training is stochastic — gradient descent uses random mini-batch sampling, weight initialisation is random, the order of hospital contributions varies. A test that checks "loss is exactly 4.213" would break on a different machine or Python version.
+**Solution:** test invariants, not exact values:
+- "loss after 10 epochs is lower than after 1 epoch" (learning happens),
+- "FedProx keeps hospitals closer to the shared model than plain FedAvg" (drift is reduced),
+- "FedYogi and FedAvg give different final losses" (the two modes really are different algorithms).
 
-**Solution:** Test mathematical invariants and ordering, not exact values:
-- "Loss after 5 epochs < loss after 1 epoch" (learning happens)
-- "FedYogi and FedAvg both converge over 5 rounds and give different final losses" (the dashboard's optional FedYogi mode really is a different algorithm)
-- "FedProx delta_mean < FedAvg delta_mean" (drift is reduced)
-
-These relationships must hold regardless of random seed, hardware, or library version.
+These must hold on any seed, machine or library version.
 
 ---
 
 ## 2. Files Under Test — What Each File Does
 
-| File | Role | What it contains |
+| File | Role | What the tests exercise |
 |---|---|---|
-| `db.py` | SQLite data layer | Functions for reading and writing all database tables — both ClinIQ dashboard tables AND the FL training data table (`fl_training`) |
-| `model_utils.py` | ML core utilities | The DNN architecture (`ICUModel`), dataset class (`ICUDataset`), `ALERT_THRESHOLD = 7.0`, the optional weighted loss (`weighted_mse_loss`, off by default), training loop, evaluation, SHAP preparation, weight serialisation for Flower, trend analysis, differential privacy |
-| `fl_dashboard.py` | Streamlit FL simulator | The interactive FL simulation UI — implements `_fedavg` and `_fedyogi` in Python (the user can pick either algorithm in the simulator), manages simulation state (`_blank_state`, `_reset_state`, `_read_state`), builds Plotly charts |
-| `client.py` | Flower client | The `HospitalClient` class — each hospital runs one instance. Implements `get_parameters`, `fit`, `evaluate` per Flower's protocol. Handles LR decay, FedProx regularisation, differential privacy |
-| `server.py` | Flower server | The `SaveBestStrategy` class — extends a Flower strategy (FedAvg in the current setup; FedYogi in an earlier version). Aggregates weights from 3 hospitals, tracks the best model, saves checkpoints, writes `training_metadata.json` |
-| `train_federated.py` | Unified FL script | Standalone script that runs the full 100-round federated training. Contains `make_noniid_split` for non-IID data distribution, its own `HospitalClient` variant, and its own `SaveBestStrategy`, which extends **FedAvg** by default (`USE_FEDYOGI = False`; set it to True to switch back to FedYogi with `SERVER_ETA = 0.001`). Clients use FedProx (μ=0.5) |
-| `migrate_to_db.py` | CSV → SQLite import | One-time migration that converts all CSV data files (patient vitals, prediction history, FL training data from 3 hospitals) into the SQLite database |
+| `model_utils.py` | Shared ML code | `ICUModel` (108→256→128→64→1, Dropout 0.3), `ICUDataset`, `ALERT_THRESHOLD = 7.0`, optional `weighted_mse_loss` (off by default), `get_sample_weights`, `train_model` (AdamW, plain MSE, FedProx, gradient clipping), `evaluate_model`, `compute_sofa_risk_metrics`, `get_weights`/`set_weights`, `get_trend`, `classify_range`, differential privacy |
+| `db.py` | SQLite layer | The federated-learning helpers: `fl_training_exists()`, `get_fl_client_data()`, the `fl_training` table, and `get_conn()` (WAL mode) |
+| `fl_dashboard.py` | Streamlit simulator | `_blank_state`, `_reset_state`, `_read_state`, `_fedavg`, `_fedyogi`, `fl_thread`, the chart builders, `_network_diagram`, `load_training_metadata` |
+| `client.py` | Real Flower client | The module-level hospital setup and the `HospitalClient` class: `get_parameters`, `fit` (learning-rate decay, FedProx, optional DP) and `evaluate` |
+| `server.py` | Real Flower server | `SaveBestStrategy` (a **FedAvg** subclass): `aggregate_fit`, `aggregate_evaluate`, best-round tracking, the `federated_model_latest.pth` backup, and the partial metadata file |
+| `train_federated.py` | Simulation script | `make_noniid_split`, its own `HospitalClient` and `SaveBestStrategy` (built on `_BaseStrategy` = **FedAvg** by default, FedYogi if `USE_FEDYOGI`), and the configuration constants |
+| `migrate_to_db.py` | CSV → SQLite import | `migrate()`, idempotency, column renames, the `_check_cwd()` guard |
 
-**Why are there two `HospitalClient` implementations and two `SaveBestStrategy` implementations?**
+### Why two `HospitalClient` classes and two `SaveBestStrategy` classes?
+- `client.py` + `server.py` are the **real** distributed demo: separate processes, TCP at `127.0.0.1:8080`. `HospitalClient()` there takes **no arguments**; the hospital is chosen by the command line (`--client_id 0/1/2`) and its data and model are module-level variables.
+- `train_federated.py` has its own versions for the **simulation**, where all three hospitals run inside one process under Flower's simulation engine (which uses Ray). There `HospitalClient(X, y, hospital_id, name)` receives its data as arguments.
 
-`client.py` + `server.py` are used with the Flower framework for live distributed training (where Flower manages network communication between real processes). `train_federated.py` contains variants of both that are used in the standalone unified script — this script runs all 3 hospitals in a single process using Python threads rather than separate gRPC-connected processes.
-
-The logic is nearly identical but the entry points differ. Both are tested, because a bug in one variant will not be caught by testing the other.
+The logic is nearly the same but the entry points differ, so **both are tested**: a bug in one would not show up in tests of the other.
 
 ---
 
@@ -83,1591 +101,845 @@ The logic is nearly identical but the entry points differ. Both are tested, beca
 
 ```
 icu_monitor/tests/fl/
-├── __init__.py                          ← Makes tests/fl/ a Python package
-├── conftest.py                          ← Shared fixtures for ALL fl tests
+├── __init__.py
+├── conftest.py                      ← shared fixtures for every FL test (5 fixtures)
 │
-├── unit/                                ← Tests for individual functions/classes
-│   ├── __init__.py
-│   ├── test_db_fl.py                    ← DB helpers specific to FL (fl_training table)
-│   ├── test_model_utils.py              ← Every function in model_utils.py
-│   ├── test_fl_dashboard_fns.py         ← Pure functions from fl_dashboard.py
-│   ├── test_client_logic.py             ← HospitalClient class (client.py)
-│   ├── test_server_strategy.py          ← SaveBestStrategy class (server.py)
-│   └── test_train_federated_fns.py      ← make_noniid_split + config constants
-│
-├── integration/                         ← Tests for multiple components working together
-│   ├── __init__.py
-│   ├── test_db_model_integration.py     ← DB read → ICUDataset → train_model pipeline
-│   ├── test_fl_round_integration.py     ← Full FL round without Flower gRPC
-│   └── test_migrate_to_db.py            ← migrate() with temp DB + CSV stubs
-│
-└── system/                              ← End-to-end FL simulation tests
-    ├── __init__.py
-    └── test_fl_system.py                ← fl_thread logic with real synthetic data
+├── unit/                            ← one function or class at a time
+│   ├── test_db_fl.py                ←  21 tests  fl_training helpers (db.py)
+│   ├── test_model_utils.py          ←  91 tests  every function in model_utils.py
+│   ├── test_fl_dashboard_fns.py     ←  50 tests  pure functions of fl_dashboard.py
+│   ├── test_client_logic.py         ←  22 tests  client.py
+│   ├── test_server_strategy.py      ←  19 tests  server.py
+│   └── test_train_federated_fns.py  ←  32 tests  train_federated.py
+│                                       (235 unit tests)
+├── integration/                     ← several pieces working together
+│   ├── test_db_model_integration.py ←  10 tests  DB → dataset → train → evaluate
+│   ├── test_fl_round_integration.py ←  14 tests  a full FL round without Flower  [slow]
+│   └── test_migrate_to_db.py        ←  19 tests  migrate() on a temporary database
+│                                       (43 integration tests)
+└── system/                          ← the whole simulation from start to finish
+    └── test_fl_system.py            ←  17 tests  fl_thread with synthetic hospitals [slow]
+                                        (17 system tests)
+
+235 + 43 + 17 = 295 tests.   Slow tests: 14 (round integration) + 17 (system) = 31.
 ```
 
-**Why three levels (unit / integration / system)?**
+**Why three levels?**
+- **Unit tests** ask: "does this one function do what I think?"
+- **Integration tests** ask: "do these pieces work when connected?"
+- **System tests** ask: "does the whole simulation run from start to finish and give sensible results?"
 
-- **Unit tests** answer: "Does this one function do what I think it does?"
-- **Integration tests** answer: "Do these two functions work correctly when connected?"
-- **System tests** answer: "Does the complete FL simulation run from start to finish and produce sensible results?"
-
-Each level answers a different question and catches a different class of bug.
+Each level catches a different kind of bug.
 
 ---
 
 ## 4. Tool Stack
 
-### pytest (same as ClinIQ)
+### pytest
+The test runner. The project's `pytest.ini` (in `icu_monitor/`) sets the test folder, file and function naming, `-v --tb=short`, and four markers: `slow`, `unit`, `api`, `system`. Only `slow` is used in the FL tests.
 
-Same `pytest.ini` at `icu_monitor/` root — test discovery, fixtures, markers. See `CLINIQ_TESTING.md` Section 4 for a full explanation.
+### `unittest.mock` and pytest's `monkeypatch` — the two tools actually used
+These are the only mocking tools in the suite (`MagicMock`, `mock_open`, `patch` and `monkeypatch`).
 
-### `unittest.mock` and `pytest-mock`
+- **`unittest.mock.MagicMock`** is a stand-in object that accepts any call and remembers how it was called. Tests use it to replace `train_model`, `evaluate_model` or Flower pieces and then check "was it called once?" or "with what arguments?".
+- **`monkeypatch`** (a pytest built-in) temporarily replaces a global variable or function and **restores it automatically** after the test. Used for `db.DB_PATH`, module constants such as `USE_DP`, and functions inside `client`, `server` or `train_federated`.
 
-These are Python's built-in and extended mocking tools. They allow replacing a real object (a function, a class, a module) with a fake version ("mock") for the duration of a test.
-
-**Why mocking is essential for FL tests:**
-
-```python
-# Without mocking: importing client.py triggers this chain:
-import flwr as fl          # Flower initialises gRPC client infrastructure
-import torch               # PyTorch initialises CUDA/GPU subsystem
-from db import get_conn    # Opens the real production database
-
-# Your unit test now:
-# - Might fail if GPU drivers aren't installed
-# - Reads the real DB (tests should never touch production data)
-# - Takes 10 seconds just to import
-
-# With mocking: replace before import
-import unittest.mock as mock
-with mock.patch('flwr.client.NumPyClient'):
-    from client import HospitalClient
-    # Flower is now a stub — no gRPC, no network, no GPU
-    # Test runs in milliseconds
-```
-
-**`pytest-mock`** provides the `mocker` fixture — a cleaner way to do the same thing:
-
-```python
-def test_fit_calls_train_model(mocker):
-    mock_train = mocker.patch('client.train_model', return_value=0.5)
-    client = HospitalClient(client_id=0, X_train=X, y_train=y)
-    client.fit(initial_params, config={'server_round': 1})
-    mock_train.assert_called_once()   # verify train_model was actually called
-```
-
-### `monkeypatch` (pytest built-in)
-
-`monkeypatch` is a pytest fixture for temporarily replacing global variables, environment variables, or module attributes. Unlike `mock.patch`, `monkeypatch` changes are automatically reversed after each test — you never need to remember to clean up.
+> **Earlier versions of this document said the suite used the `pytest-mock` plugin (the `mocker` fixture). It does not:** `mocker` appears in zero tests, and `pytest-mock` is not installed. Likewise the `pytest-cov` plugin is not installed (see Section 17 for how coverage is measured).
 
 ```python
 def test_db_uses_temp_file(monkeypatch, tmp_path):
-    # Replace the real DB path with a temp file — ONLY for this test
-    monkeypatch.setattr('db.DB_PATH', str(tmp_path / 'test.db'))
-    
-    # Now every db.get_conn() call opens the temp file, not the real DB
-    conn = get_conn()
-    
-    # After the test: DB_PATH is restored to its original value
-    # The temp file is deleted automatically
+    monkeypatch.setattr(db_mod, "DB_PATH", str(tmp_path / "test.db"))   # only for this test
+    # every db.get_conn() now opens the temp file; the real database is untouched
+    # after the test, DB_PATH is restored automatically
 ```
 
-### `numpy.testing.assert_allclose`
+### Import-time guards (the most important trick in this suite)
+Because `client.py`, `server.py`, `train_federated.py` and `fl_dashboard.py` do work when imported (Section 1, Problem 2), each test file sets up guards **before** importing the module and **restores everything immediately after**:
 
-Floating-point arithmetic is not exact. `0.1 + 0.2 == 0.3` is `False` in Python (the actual result is `0.30000000000000004`). Using `==` to compare floats in tests causes random failures that have nothing to do with bugs.
+| File imported | Guard put in place before the import | Why |
+|---|---|---|
+| `client.py` | `sys.argv = ["client.py", "--client_id", "0"]`; `flwr.client.start_numpy_client` replaced with a no-op | The script needs a command-line argument and would otherwise try to connect to a server and block |
+| `server.py` | `flwr.server.start_server` replaced with a no-op; `builtins.open` redirected to a throw-away `StringIO` whenever a `training_metadata` file is opened for writing | The script would run 100 rounds, and its closing metadata write contains `best_eval_loss = inf` (invalid JSON), which would **corrupt the real `models/training_metadata.json`** |
+| `train_federated.py` | `flwr.simulation.start_simulation` replaced by a function that fills `_best_weights`/`_last_weights` with a fresh random model; `np.save` skipped for `shap_background.npy`; `torch.save` replaced by a no-op; `builtins.open` redirected for `training_metadata` writes | The script would run the full 100-round simulation and **overwrite the real trained model, SHAP background and metadata** |
+| `fl_dashboard.py` | `sys.modules["streamlit"]` replaced by a `MagicMock` (with `cache_resource` as a pass-through decorator and `tabs`/`columns` returning proper-length lists) | Streamlit cannot run outside its own server; the module calls `st.*` at import time |
 
-`assert_allclose` compares floats with a tolerance:
+After the import the originals (`builtins.open`, `np.save`, `torch.save`) are put back so other test files are not affected.
 
-```python
-import numpy.testing as npt
+**Safety check, done on 2026-11-24:** after running the whole FL suite, `models/federated_model.pth` and `models/training_metadata.json` still carry their training-day timestamps and the metadata still reads MAE 1.8006, R² 0.4806, best round 37. The tests do not change the real model.
 
-# Wrong — fails due to floating-point representation:
-assert weighted_loss == 1.5
-
-# Correct — passes if result is within 0.1% of expected:
-npt.assert_allclose(weighted_loss, 1.5, rtol=1e-3)
-```
-
-This is especially important for FL tests where weight values go through many floating-point operations (training → serialisation → network transfer → deserialisation → aggregation → next round's training).
+### `numpy.testing`
+Floating-point numbers are not exact (`0.1 + 0.2 != 0.3` in Python). `npt.assert_allclose` and `assert_array_equal`, and `pytest.approx`, compare with a tolerance, which matters here because weights go through many floating-point steps.
 
 ### `@pytest.mark.slow`
-
-Long-running tests are marked `slow`. The system tests run real FL simulations — even with tiny synthetic data, training a DNN for 3 rounds across 3 hospitals takes 20–60 seconds. During development, you skip these:
-
+Tests that run real training are marked `slow`. Run only the fast ones during development:
 ```bash
-pytest tests/fl/ -m "not slow"   # skip slow tests — fast feedback loop
-pytest tests/fl/ -m slow          # run ONLY slow tests — before a presentation
+pytest tests/fl -m "not slow"     # 264 tests, about 7 seconds
+pytest tests/fl -m slow           # 31 tests, about 6 seconds
 ```
+(On this machine both groups are quick because the synthetic networks are tiny; "slow" is relative to the unit tests.)
 
 ---
 
 ## 5. Shared Fixtures — The Foundation Every Test Relies On
 
-All fixtures are defined in `tests/fl/conftest.py` and are automatically available to every test file under `tests/fl/` without any import statement.
+Defined in `tests/fl/conftest.py` and available to every FL test without an import. There are exactly **five** fixtures.
 
-### `tmp_db` — Isolated Test Database
-
+### `tmp_db` — an isolated temporary database
 ```python
 @pytest.fixture
-def tmp_db(tmp_path, monkeypatch):
-    # Create a fresh SQLite database in a temporary directory
-    db_path = tmp_path / "test_fl.db"
-    
-    # Redirect db.DB_PATH to this temp file
-    # (monkeypatch automatically restores the original value after the test)
-    monkeypatch.setattr('db.DB_PATH', str(db_path))
-    
-    # Run schema creation — same init_db() the real app uses
-    conn = sqlite3.connect(str(db_path))
-    init_db(conn)
-    
-    yield conn   # provide the connection to the test
-    conn.close() # cleanup after test completes
+def tmp_db(monkeypatch, tmp_path):
+    import db as db_mod
+    db_path = str(tmp_path / "test_fl.db")
+    monkeypatch.setattr(db_mod, "DB_PATH", db_path)   # redirect the database file
+    db_mod.init_db()                                  # create the normal tables
+    return db_path                                    # a path string, not a connection
 ```
+**Why every database test needs it:** the real `models/icu_monitor.db` is about 56 MB of MIMIC-III-derived data. Tests must never read or write it: writes could corrupt it, reads are slow and machine-dependent, and results would depend on its contents. With `tmp_db` every test gets its **own empty database** with the right tables, which is deleted afterwards.
 
-**Why every FL test needs this:**
+It returns the **path string** so a test can open its own connection. `fl_training` is *not* created by `init_db()`; tests create it with pandas where needed, exactly as `migrate_to_db.py` does.
 
-The production database at `models/icu_monitor.db` contains real MIMIC-III derived data (~23 MB). Tests must NEVER read or write to it because:
-- Tests that write could corrupt or pollute the real data
-- Tests that read are slow (23 MB load) and environment-dependent (fails on machines without the file)
-- Test outcomes would depend on the contents of the production database — tests must be deterministic
-
-With `tmp_db`, every test gets its own empty database that:
-- Starts with the correct schema (tables created by `init_db()`)
-- Is completely empty (no leftover data from other tests)
-- Is automatically deleted when the test finishes
-- Has no connection to the production database
-
-### `synthetic_client_data(n=200, input_dim=10)` — Fake Training Data
-
+### `synthetic_client_data` — fake training data
 ```python
 @pytest.fixture
 def synthetic_client_data():
-    np.random.seed(42)   # fixed seed for reproducibility
-    
-    n = 200
-    input_dim = 10
-    
-    # Generate X: n samples × input_dim features
-    X = np.random.randn(n, input_dim).astype(np.float32)
-    
-    # Generate y: SOFA scores with realistic class distribution
-    # 70% Low Risk (SOFA 0-4), 24% Moderate (5-9), 6% High (10-24)
-    low_count      = int(n * 0.70)   # 140 patients
-    moderate_count = int(n * 0.24)   # 48 patients
-    high_count     = n - low_count - moderate_count  # 12 patients
-    
-    y_low      = np.random.uniform(0, 5, low_count)
-    y_moderate = np.random.uniform(5, 10, moderate_count)
-    y_high     = np.random.uniform(10, 24, high_count)
-    y          = np.concatenate([y_low, y_moderate, y_high]).astype(np.float32)
-    np.random.shuffle(y)   # mix so early samples aren't all Low Risk
-    
-    return X, y
-```
-
-**Why 70/24/6 class distribution?**
-
-This mirrors the real MIMIC-III distribution: most ICU patients are stable (Low Risk), a minority are deteriorating (Moderate), and very few are in critical multi-organ failure (High). The model was trained on this imbalanced distribution — tests should use the same imbalance.
-
-**Why `input_dim=10` instead of 108?**
-
-The full production model has 108 input features. Using 108 in every test would require 200×108 = 21,600 float32 values per test, and the full 108→256→128→64→1 DNN (69,121 parameters) is much slower to train than 10→256→128→64→1. The `mini_model` and `synthetic_client_data` use `input_dim=10` to make tests run in milliseconds instead of seconds. The architecture logic (layer counts, activations, weight shapes) is identical regardless of input dimension.
-
-### `mini_model(input_dim=10)` — Tiny DNN for Fast Testing
-
-```python
-@pytest.fixture
-def mini_model():
-    model = ICUModel(input_dim=10)
-    return model
-```
-
-This is an `ICUModel` with input dimension 10 instead of 108. The architecture is identical — same 4 Linear layers (10→256→128→64→1), same ReLU activations, same 3 Dropout(0.3) layers, same output layer. Using this in tests means training completes in a fraction of a second.
-
-### `mini_weights(model)` — Serialised Weight List
-
-```python
-@pytest.fixture
-def mini_weights(mini_model):
-    return get_weights(mini_model)
-```
-
-`get_weights(model)` returns the model's parameters as a list of numpy arrays — this is the format Flower uses to transmit model weights between client and server. Having this pre-computed as a fixture saves repeating the call in every test that needs a valid weight list.
-
-### `fl_training_rows(client_id, n=50)` — Synthetic FL Database Rows
-
-```python
-@pytest.fixture
-def fl_training_rows(tmp_db):
-    def _insert(client_id=0, n=50):
-        # Generate n rows with 108 feature columns + sofa_score
-        np.random.seed(42)
-        X = np.random.randn(n, 108).astype(np.float32)
-        y = np.random.uniform(0, 24, n).astype(np.float32)
-        
-        df = pd.DataFrame(X, columns=[f'feat_{i}' for i in range(108)])
-        df['sofa_score'] = y
-        df['client_id'] = client_id
-        
-        # Write to the fl_training table in tmp_db
-        df.to_sql('fl_training', tmp_db, if_exists='append', index=False)
-    
-    return _insert
-```
-
-This fixture is a "factory" — it returns a function `_insert()` rather than the data directly. The test calls `fl_training_rows(client_id=0, n=50)` to insert data for Hospital 0, then `fl_training_rows(client_id=1, n=50)` for Hospital 1. This flexibility allows each test to set up exactly the data distribution it needs.
-
----
-
-## 6. Phase 1 — Database FL Helpers (`test_db_fl.py`)
-
-**Goal:** Test every `db.py` function related to the FL training table that is NOT already covered by `test_db_unit.py`. The ClinIQ DB tests cover `patient_vitals`, `prediction_history`, and `sample_patients`. This file covers `fl_training`, the table that stores the MIMIC-III patient rows used for federated training (tens of thousands of rows, split across the 3 hospitals).
-
-**No ML model load. No real database touched.**
-
-### 1A — `fl_training_exists()` (Tests 1–4)
-
-This function answers one question: "Has FL training data been migrated into the database yet?" It is called at application startup to decide whether to prompt the user to run the data migration.
-
-```python
-def fl_training_exists(conn):
-    cursor = conn.execute(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='fl_training'"
-    )
-    if cursor.fetchone()[0] == 0:
-        return False    # table doesn't even exist yet
-    cursor = conn.execute("SELECT COUNT(*) FROM fl_training")
-    return cursor.fetchone()[0] > 0   # True only if at least 1 row exists
-```
-
-| # | Test | Why this specific case matters |
-|---|---|---|
-| 1 | Returns `False` when `fl_training` table is absent | The table is created dynamically by `migrate_to_db.py` — on a fresh install, it doesn't exist yet. The function must handle this without crashing ("table doesn't exist" SQLite error) |
-| 2 | Returns `False` when table exists but has 0 rows | An interrupted migration could leave an empty table. A table with no data is equivalent to no migration having happened |
-| 3 | Returns `True` after inserting at least 1 row | The normal post-migration case |
-| 4 | Returns `True` for client_id=2 rows only | `fl_training_exists` should return True regardless of which client_id the rows belong to — it checks for ANY FL data, not data for a specific hospital |
-
-### 1B — `get_fl_client_data(client_id)` (Tests 5–15)
-
-This is the most important FL database function. It is called by each hospital's training client to load its portion of the training data:
-
-```python
-df = get_fl_client_data(client_id=0)   # Hospital 0 loads its 16,050 rows
-X = df.drop('sofa_score', axis=1).values   # 108 feature columns
-y = df['sofa_score'].values                 # target column
-```
-
-**All 11 tests with explanations:**
-
-| # | Test | What it verifies | Why it matters |
-|---|---|---|---|
-| 5 | Returns a `pd.DataFrame` | Return type | The downstream code does `.drop()`, `.values`, `.fillna()` — all DataFrame operations. A dict or list would crash immediately |
-| 6 | Drops `id` column from result | DB-only column removed | `id` is the SQLite primary key — it is meaningless as a training feature. If left in, the model would learn to use row number as a predictor, which is pure memorisation |
-| 7 | Drops `client_id` column from result | DB-only column removed | `client_id` encodes which hospital the row came from. If left in, the model learns "Hospital 0 patients are Low Risk" instead of learning clinical patterns — a form of data leakage |
-| 8 | Only returns rows for requested `client_id` | WHERE clause correctness | Hospital 0 must only train on its own data — privacy requirement. Returning all hospitals' data would defeat the entire purpose of federated learning |
-| 9 | Returns 0 rows for client_id=99 (unknown) | Empty result safety | An invalid client ID should return an empty DataFrame, not crash |
-| 10 | Rows with NULL `sofa_score` are dropped | `dropna(subset=["sofa_score"])` | SOFA is the training target. A row with no target is useless for supervised learning and would crash the PyTorch DataLoader when it tries to compute loss against a NaN |
-| 11 | Warning is emitted when NULL rows are dropped | `warnings.warn` triggered | The caller should know that data was silently discarded — a silent discard could mask data corruption |
-| 12 | NaN in feature columns replaced with 0 | `fillna(0)` applied | Feature NaNs crash PyTorch tensor creation. Replacing with 0 (the scaled mean) is the correct imputation strategy for normalised data |
-| 13 | `sofa_score` column is present in result | Label column kept | The downstream code extracts `y = df['sofa_score'].values` — if the column is missing, this crashes |
-| 14 | Returns same row count as inserted (no NULL SOFA) | Count correctness | With clean data, no rows should be dropped |
-| 15 | Two clients return independent DataFrames | Cross-client isolation | Hospital 0's DataFrame must not contain Hospital 1's rows — this is the fundamental FL data isolation guarantee |
-
-**Example — what the isolation test does:**
-
-```python
-def test_cross_client_isolation(tmp_db, fl_training_rows):
-    fl_training_rows(client_id=0, n=30)   # Hospital 0: 30 rows
-    fl_training_rows(client_id=1, n=40)   # Hospital 1: 40 rows
-    
-    df0 = get_fl_client_data(conn=tmp_db, client_id=0)
-    df1 = get_fl_client_data(conn=tmp_db, client_id=1)
-    
-    assert len(df0) == 30   # Hospital 0 gets exactly its 30 rows
-    assert len(df1) == 40   # Hospital 1 gets exactly its 40 rows
-    
-    # The DataFrames share no rows
-    assert not df0.index.intersection(df1.index).any()
-```
-
-### 1C — `fl_training` Table Schema and Triggers (Tests 16–19)
-
-Unlike the ClinIQ tables (`patient_vitals`, etc.), the `fl_training` table is created dynamically by pandas' `to_sql()` during migration — it does not have a pre-written `CREATE TABLE` statement. These tests verify the table is created with the right structure.
-
-| # | Test | Why it matters |
-|---|---|---|
-| 16 | `fl_training` table created when populated via pandas `to_sql` | Verifies that the migration's `df.to_sql('fl_training', conn)` call actually creates the table with the right columns |
-| 17 | `client_id` index (`idx_ft_client`) exists after first insert | `get_fl_client_data` uses `WHERE client_id = ?`. Without an index, this query scans ALL rows (tens of thousands) for every client data load — 3× per training round × 100 rounds = 300 full table scans. The index makes this query ~100× faster |
-| 18 | `created_at` timestamp auto-set on INSERT (trigger) | The `trg_ft_created_at` trigger automatically sets the timestamp. Without it, every insert would need to manually include the current time |
-| 19 | `init_db()` safely skips `fl_training` trigger if table absent | `init_db()` is called before migration. If the trigger creation references the `fl_training` table and the table doesn't exist yet, SQLite would throw an error. The `IF NOT EXISTS` guard prevents this |
-
-### 1D — `get_conn()` Extended (Tests 20–21)
-
-| # | Test | Why it matters |
-|---|---|---|
-| 20 | `PRAGMA foreign_keys` is ON | Foreign key constraints are disabled by default in SQLite. The FL schema uses `client_id` as a logical foreign key to ensure data belongs to a valid hospital. Without this PRAGMA, SQLite silently accepts invalid values |
-| 21 | Multiple connections don't corrupt (WAL mode) | In the real system, the Flower server and all 3 client processes open the database simultaneously. WAL (Write-Ahead Logging) allows concurrent readers while a writer is active — without it, the second process to open the DB would get "database is locked" errors, crashing the FL round |
-
----
-
-## 7. Phase 2 — Model Utilities (`test_model_utils.py`)
-
-**Goal:** Test every function in `model_utils.py` as pure Python with small synthetic data. No database, no file I/O. Uses the `mini_model` fixture (10-dimensional input instead of 108).
-
-This is the largest single test file — 91 tests across 11 sub-sections.
-
-### 2A — `ICUModel` Architecture Tests (Tests 1–9, plus 7a and 7b)
-
-`ICUModel` is the PyTorch DNN. These tests verify its architecture is exactly correct. The current network is **108 → 256 → 128 → 64 → 1** with ReLU and Dropout 0.3 after each hidden layer (69,121 trainable parameters). In an earlier version it was 108 → 128 → 64 → 32 → 1 with no Dropout.
-
-```python
-class ICUModel(nn.Module):
-    def __init__(self, input_dim, hidden=(256, 128, 64), dropout=0.3):
-        super().__init__()
-        layers = []
-        prev = input_dim
-        for width in hidden:
-            layers += [nn.Linear(prev, width), nn.ReLU()]
-            if dropout > 0:
-                layers.append(nn.Dropout(dropout))
-            prev = width
-        layers.append(nn.Linear(prev, 1))
-        self.net = nn.Sequential(*layers)
-    
-    def forward(self, x):
-        return self.net(x)
-```
-
-| # | Test | Why this specific check matters |
-|---|---|---|
-| 1 | `ICUModel(10).forward(x)` returns tensor of shape `(n, 1)` | The output shape `(n, 1)` not `(n,)` is critical — the loss function expects `(batch_size, 1)` predictions and `(batch_size, 1)` targets. A shape mismatch causes a broadcasting error during loss computation |
-| 2 | `ICUModel(108).forward(x)` works with real input dim | Verifies that the production 108-dimensional model can do a forward pass without shape errors |
-| 3 | Architecture: 4 Linear layers + 3 ReLU + 3 Dropout layers (p = 0.3) in `.net` | Documents the intended architecture. If someone removes Dropout, changes its rate, or adds an extra layer (e.g., LayerNorm, which collapsed the prediction range in an earlier experiment), this test fails |
-| 4–7 | Layer dimensions: `(input→256)`, `(256→128)`, `(128→64)`, `(64→1)` | Each dimension is load-bearing. If anyone changes `256` to `128` to "speed up training," the model's weights become incompatible with the saved `federated_model.pth`, causing a shape mismatch when loading |
-| 7a | Dropout is ON in train mode and OFF in eval mode | In `model.train()` two forward passes on the same input give different outputs (random dropout masks); in `model.eval()` they are identical. Training uses dropout, while evaluation, SHAP and the backend all call `model.eval()` so predictions are repeatable |
-| 7b | Custom `hidden=` and `dropout=` arguments are respected | `ICUModel(10, hidden=(8, 4), dropout=0.0)` builds Linear layers of width 8 → 4 → 1 and no Dropout layers. This keeps the class usable for experiments (e.g., the earlier no-dropout network) without editing code |
-| 8 | Eval mode outputs deterministic values | `model.eval()` turns Dropout off, so there is no stochastic behaviour. Verifies that the same input always produces the same output in inference mode |
-| 9 | Parameter count matches architecture formula | For `input_dim=10`: `(10×256+256) + (256×128+128) + (128×64+64) + (64×1+1) = 2,816 + 32,896 + 8,256 + 65 = 44,033`. For `input_dim=108`: `(108×256+256) + 32,896 + 8,256 + 65 = 69,121`. Dropout has no parameters. This locks in the exact model size |
-
-**Why the parameter count test matters:**
-
-When Flower serialises model weights for transmission between client and server, it sends flat numpy arrays. If the server's model and the client's model have different parameter counts (because one was changed), `set_weights()` fails with a shape mismatch. The parameter count test immediately catches any architecture change that would break FL communication.
-
-### 2B — `ICUDataset` (Tests 10–13)
-
-`ICUDataset` is the PyTorch Dataset that wraps the numpy X and y arrays for use with a DataLoader.
-
-```python
-class ICUDataset(Dataset):
-    def __init__(self, X, y):
-        self.X = torch.tensor(X, dtype=torch.float32)
-        self.y = torch.tensor(y, dtype=torch.float32).view(-1, 1)
-    
-    def __len__(self):
-        return len(self.X)
-    
-    def __getitem__(self, idx):
-        return self.X[idx], self.y[idx]
-```
-
-| # | Test | What it verifies |
-|---|---|---|
-| 10 | `len(dataset)` == number of samples | DataLoader uses `len()` to compute the number of batches per epoch |
-| 11 | `dataset[0]` returns `(X_tensor, y_tensor)` tuple | DataLoader calls `dataset[i]` for each sample — must return a 2-tuple |
-| 12 | X tensor dtype is `float32` | PyTorch requires matching dtypes. The model weights are `float32`; if X were `float64`, the matrix multiplication would fail or implicitly convert, losing precision |
-| 13 | y tensor shape is `(1,)` not `()` | `.view(-1, 1)` is critical. Without it, y has shape `(batch_size,)`. The loss function computes `predictions - targets` where predictions have shape `(batch_size, 1)` and targets `(batch_size,)` — PyTorch broadcasts this incorrectly, producing a `(batch_size, batch_size)` matrix instead of a `(batch_size, 1)` vector |
-
-**The shape bug explained:**
-
-```
-Without .view(-1, 1):
-  predictions shape: (64, 1)
-  targets shape: (64,)
-  
-  PyTorch broadcasts: (64, 1) - (64,) → (64, 64) matrix!
-  Instead of element-wise differences, you get:
-    pred[0]-target[0], pred[0]-target[1], ..., pred[0]-target[63]
-    pred[1]-target[0], pred[1]-target[1], ..., pred[1]-target[63]
+    rng = np.random.default_rng(42)         # fixed seed → reproducible
+    n, input_dim = 200, 10
+    X = rng.standard_normal((n, input_dim)).astype(np.float32)
+    # y: 70% Low (0–5), 24% Moderate (5–10), 6% High (10–24), shuffled
     ...
-  
-  Loss becomes an average over 64×64=4096 numbers, most of which are wrong.
-  The model "trains" but learns nothing useful — loss never decreases.
-
-With .view(-1, 1):
-  predictions shape: (64, 1)
-  targets shape: (64, 1)
-  (64, 1) - (64, 1) → (64, 1) ← correct: one difference per sample
+    return X, y        # X: (200, 10) float32,  y: (200,) float32, range 0–24
 ```
+**Why 70/24/6?** It mirrors the real mix: most ICU stays are Low Risk and few are High. **Why 10 inputs and not 108?** Speed. The full 108-input network has 69,121 weights; the 10-input version has 44,033. The *structure* (4 linear layers, 3 ReLU, 3 dropout, same widths after the first layer) is identical, so what the tests prove about the architecture holds for the real model too.
 
-### 2C — `weighted_mse_loss()` (Tests 14–18)
+### `mini_model` — a tiny network
+`ICUModel(10)`: the same architecture as production but with 10 inputs.
 
-An **optional** loss function that gives more training weight to high-SOFA patients. In an earlier version this was the training loss. The current model trains with **plain MSE**; `weighted_mse_loss` is only used when `train_model(..., weighted_loss=True)` is passed (on the dataset_v2 data the weighted loss pushed every prediction upward and raised MAE without catching more high-risk patients). The function is still tested so that option keeps working:
+### `mini_weights` — its weights as numpy arrays
+`get_weights(mini_model)`: the list-of-arrays format Flower uses to send weights between hospital and server.
 
+### `fl_training_rows` — a factory that inserts synthetic hospital rows
 ```python
-def weighted_mse_loss(predictions, targets):
-    weights = 1.0 + targets * 0.5     # SOFA=0 → weight=1.0, SOFA=24 → weight=13.0
-    weights = weights / weights.mean() # Normalize so mean weight = 1.0
-    squared_errors = (predictions - targets) ** 2
-    return (weights * squared_errors).mean()
+def test_foo(tmp_db, fl_training_rows):
+    fl_training_rows(tmp_db, client_id=0, n=50)                       # 50 rows for hospital 0
+    fl_training_rows(tmp_db, client_id=1, n=40, with_null_sofa=True)  # one row has no SOFA answer
 ```
+Signature: `_insert(db_path, client_id, n=50, with_null_sofa=False, with_nan_feature=False)`. It writes rows with columns `client_id`, `feature1`, `feature2` and `sofa_score` into `fl_training` (creating it, plus the `idx_ft_client` index, if needed). Two options create the two data problems the code must survive: a missing SOFA answer in row 0, and a NaN feature in row 1. The fixture is a *factory* (it returns a function) so each test can set up exactly the hospitals it needs.
 
-| # | Test | What it verifies | Why it matters |
-|---|---|---|---|
-| 14 | Perfect predictions → loss == 0 | Identity case | If this fails, the loss function has a bug that causes non-zero loss even when correct |
-| 15 | Higher SOFA targets get larger weights | Core property | High-SOFA patients must influence training more heavily than low-SOFA patients |
-| 16 | `weight = 1 + target * 0.5` before normalization | Formula correctness | This exact formula was chosen to balance sensitivity — locks it in against accidental changes |
-| 17 | Loss is positive for non-zero error | Positivity | Negative loss would cause the optimizer to minimise in the wrong direction |
-| 18 | Loss is batch-mean normalized | Normalization check | Without normalization, a batch of high-SOFA patients would have ~13× higher loss than a low-SOFA batch, causing wildly variable gradient magnitudes across rounds |
-
-**Worked example — what weighting does (used only with `weighted_loss=True`):**
-
-```
-Without weighting (plain MSE):
-  Patient A: true SOFA=2,  predicted=3   → error²=1   → gradient pulls model toward SOFA=2
-  Patient B: true SOFA=20, predicted=12  → error²=64  → gradient pulls model toward SOFA=20
-  Average: Patient B gets 64× more influence than Patient A (proportional to error²)
-  
-  BUT: Patient B is one of the rare 6% high-SOFA patients.
-  Over a whole batch: 57 Low-Risk patients dominate, 3 High-Risk patients are drowned out.
-  
-With weighting (custom):
-  Patient A: weight = 1 + 2×0.5 = 2.0
-  Patient B: weight = 1 + 20×0.5 = 11.0
-  
-  Patient B now has 5.5× more explicit weight than Patient A.
-  Combined with the error² term: 5.5 × (64/1) = 352× more influence.
-  High-SOFA patients drive learning far more aggressively.
-```
-
-### 2D — `get_sample_weights()` (Tests 19–23)
-
-This function provides sample weights for `WeightedRandomSampler` — it controls how often each sample is drawn during mini-batch creation.
-
-```python
-def get_sample_weights(y):
-    weights = np.where(y < 5, 1.0,
-              np.where(y < 10, 2.0, 5.0))
-    return weights.astype(np.float32)
-```
-
-| # | Test | What it verifies |
-|---|---|---|
-| 19 | Low SOFA (< 5) → weight == 1.0 | Base sampling rate for majority class |
-| 20 | Moderate SOFA (5–9) → weight == 2.0 | Drawn 2× more often than Low-Risk |
-| 21 | High SOFA (≥ 10) → weight == 5.0 | Drawn 5× more often than Low-Risk |
-| 22 | Output length equals input length | Each sample gets exactly one weight |
-| 23 | Output dtype is `float32` | PyTorch's `WeightedRandomSampler` requires float32 |
-
-**Why these exact weight values (1.0, 2.0, 5.0)?**
-
-The dataset has roughly 70% Low / 24% Moderate / 6% High. With uniform sampling, a 64-sample batch contains on average:
-- 45 Low-Risk patients
-- 15 Moderate patients  
-- 4 High-Risk patients
-
-With weights 1/2/5:
-- Effective probability: Low=70×1=70, Moderate=24×2=48, High=6×5=30
-- Normalized: Low=47%, Moderate=32%, High=20%
-- A 64-sample batch now has: 30 Low, 21 Moderate, 13 High patients
-
-This dramatically increases the High-Risk representation in each batch without removing Low-Risk patients entirely.
-
-### 2E — `train_model()` (Tests 24–34)
-
-This is the core training function — it runs one epoch of gradient descent on a hospital's local data.
-
-```python
-def train_model(model, X, y, epochs=10, lr=0.001, batch_size=64,
-                grad_clip=None, oversample=False, global_params=None, mu=0.0,
-                weighted_loss=False):
-    # Setup DataLoader (with or without WeightedRandomSampler)
-    # For each batch:
-    #   Forward pass → predictions
-    #   Compute loss: plain MSE by default, weighted_mse_loss if weighted_loss=True
-    #   If FedProx (mu > 0): add proximal term
-    #   Backward pass → gradients
-    #   If gradient clipping: clip
-    #   Optimizer step
-    # Return: mean batch loss
-```
-
-| # | Test | Why this specific case is tested |
-|---|---|---|
-| 24 | Returns a `float` | The return value is used to track training progress — must be a Python float, not a PyTorch tensor |
-| 25 | Returned loss is finite (not NaN/inf) | NaN loss means gradient explosion. The test catches this immediately — without it, NaN propagates silently through 100 training rounds |
-| 26 | Loss decreases from epoch 1 to epoch 5 on same data | Verifies that gradient descent is actually working. If this fails, the optimizer, loss function, or model forward pass is broken |
-| 27–28 | Works with `global_params=None, mu=0` AND with `global_params=weights, mu=0.5` | Tests both code paths — FedAvg (no proximal term) and FedProx (with proximal term). Both must work |
-| 29–30 | Works with `oversample=True` AND `oversample=False` | Tests both DataLoader configurations |
-| 30a | Works with `weighted_loss=True` (returns a finite loss) | Keeps the optional weighted-loss branch working, so the earlier loss can be restored with one argument |
-| 30b | Default loss is plain MSE | Trains one epoch with `lr=0`, one full-size batch and `dropout=0.0`, then checks the returned loss equals the batch-mean `(pred − y)²` exactly. If someone silently switches the default back to the weighted loss, this test fails |
-| 31–32 | Works with `grad_clip=1.0` AND `grad_clip=None` | Tests both gradient clipping configurations |
-| 33 | `lr=1e-5` still trains without NaN | The LR decay formula can reduce LR to very small values over 100 rounds. At `lr=1e-5`, gradient updates are tiny but must not underflow to NaN |
-| 34 | FedProx proximal term is added to loss when `mu > 0` | The FedProx term `(mu/2) × ||w - w_global||²` must visibly increase the loss compared to no proximal term on the same data. This verifies the term is actually being added, not silently skipped |
-
-**The FedProx proximal term test explained:**
-
-```python
-def test_fedprox_proximal_term_added(mini_model, synthetic_client_data):
-    X, y = synthetic_client_data
-    optimizer = torch.optim.AdamW(mini_model.parameters())
-    
-    global_weights = get_weights(mini_model)   # initial weights as "global"
-    
-    # Train WITHOUT FedProx
-    loss_no_prox = train_model(mini_model, X, y, optimizer,
-                               global_params=None, mu=0.0)
-    
-    # Reset model weights
-    set_weights(mini_model, global_weights)
-    
-    # Train WITH FedProx (proximal term pulls weights toward global)
-    loss_with_prox = train_model(mini_model, X, y, optimizer,
-                                 global_params=global_weights, mu=0.5)
-    
-    # With proximal term: loss includes both MSE and the proximity penalty
-    assert loss_with_prox > loss_no_prox   # proximal term adds a positive penalty
-```
-
-### 2F — `evaluate_model()` (Tests 35–42)
-
-```python
-def evaluate_model(model, X_val, y_val):
-    model.eval()
-    with torch.no_grad():
-        predictions = model(X_tensor)
-    
-    mse = mean_squared_error(y_val, preds)
-    mae = mean_absolute_error(y_val, preds)
-    r2  = r2_score(y_val, preds)
-    return {"mse": mse, "mae": mae, "r2": r2}
-```
-
-| # | Test | The mathematical invariant being verified |
-|---|---|---|
-| 35 | Returns dict with keys `mse`, `mae`, `r2` | The Flower `evaluate` method passes these to the server for logging |
-| 36 | All values are Python `float` | Flower serialises metrics as floats for transmission — PyTorch tensors or numpy scalars would fail |
-| 37 | MSE is non-negative | MSE = mean of squared errors. Squared numbers are always ≥ 0. If this fails, the formula is wrong |
-| 38 | MAE is non-negative | MAE = mean of absolute errors. Absolute values are always ≥ 0. Same reasoning |
-| 39 | R² ≤ 1.0 always | R² = 1 − (SS_res / SS_tot). Since SS_res ≥ 0, R² ≤ 1. Can be negative (model worse than mean), but never > 1 |
-| 40 | Perfect predictions → MAE == 0, R² == 1.0 | The identity case — verifies all three metrics compute correctly for the trivial case |
-| 41 | Constant predictions → R² ≤ 0 | If the model always predicts the mean SOFA (a degenerate model), R² = 0. If it always predicts ANY constant, R² ≤ 0. This test catches a bug where R² is erroneously positive for bad models |
-| 42 | Model set to eval mode | `model.eval()` is needed so that if Dropout or BatchNorm ever get added, they don't interfere with evaluation. Calling `evaluate_model` with a training-mode model could give different results on each call |
-
-**The constant predictions (degenerate) test explained:**
-
-```python
-def test_constant_predictions_r2_leq_zero(mini_model, synthetic_client_data):
-    X, y = synthetic_client_data
-    
-    # Bias all output biases to produce constant predictions
-    with torch.no_grad():
-        mini_model.net[-1].bias.fill_(5.0)     # always predict SOFA=5
-        mini_model.net[-1].weight.fill_(0.0)   # ignore all input
-    
-    metrics = evaluate_model(mini_model, X, y)
-    assert metrics['r2'] <= 0   # a model that ignores inputs is useless
-```
-
-### 2G — `compute_sofa_risk_metrics()` (Tests 43–58)
-
-This is the most comprehensive single function test in the entire test suite — 16 tests covering return structure, mathematical invariants, edge cases, and input validation.
-
-`compute_sofa_risk_metrics(y_true, y_score)` takes actual SOFA scores and predicted SOFA scores, and computes the full clinical performance report shown in the SOFA Validation Drawer.
-
-**Return structure tests (43–46):**
-
-```
-risk_bands:
-  labels: ["Low (<5)", "Moderate (5-<10)", "High (>=10)"]
-  confusion_matrix: 3×3 list of lists
-  per_class: {Low: {...}, Moderate: {...}, High: {...}}
-  macro: {precision, recall, f1, ...}
-
-high_risk_alert:
-  predicted_sofa_threshold: 7.0      # = ALERT_THRESHOLD (default argument)
-  sensitivity: ...
-  specificity: ...
-```
-
-| # | Test | Why this exact structure |
-|---|---|---|
-| 43 | Returns dict with `risk_bands` and `high_risk_alert` keys | Two-level structure: classification metrics and alert-threshold metrics |
-| 44 | `risk_bands.labels` in exact order: Low, Moderate, High | The confusion matrix rows/columns must correspond to this label order. Wrong order means a "High" row is labelled "Low" |
-| 45 | `confusion_matrix` is 3×3 list | Three classes = 3×3 matrix. Wrong dimensions mean a class was merged or added |
-| 46 | Per-class dict has all 5 keys: `precision`, `recall`, `sensitivity`, `specificity`, `f1` | All 5 are displayed in the SOFA Validation Drawer |
-| 47 | `sensitivity == recall` for all classes | `sensitivity` and `recall` are the same metric (TP / (TP + FN)). They are aliased in the return value — the test verifies the alias is consistent |
-| 48 | `high_risk_alert.predicted_sofa_threshold == 7.0` by default | `compute_sofa_risk_metrics()` defaults to `ALERT_THRESHOLD` from `model_utils.py`, now 7.0 (it was 8.0 in an earlier version). Locks in the value: if anyone changes this threshold without understanding why it was chosen (explained in INPUT_OUTPUT.md), this test fails immediately. The ClinIQ backend tests separately check that `ml_service.py` imports the same value |
-
-**Mathematical invariant tests (49–51, 55–58):**
-
-| # | Test | The invariant |
-|---|---|---|
-| 49 | AUROC is `float` when both classes present | AUROC requires at least one positive and one negative sample to be defined |
-| 50 | AUROC is `None` when only one class in `y_true` | If all patients are Low Risk, AUROC is undefined (can't rank positives vs negatives). `None` is the correct sentinel — not 0.0, not NaN |
-| 51 | PR-AUC is `None` when only one class present | Same reasoning — Precision-Recall curve requires both classes |
-| 55 | Predictions clipped to `[0, 24]` before band assignment | A predicted SOFA of 24.3 should be assigned to the "High" band, not create an out-of-range error. `np.clip` ensures this |
-| 57 | Confusion matrix rows sum to actual class counts | A 3×3 confusion matrix must have each row summing to the true count of that class. If row sums don't match class counts, a sample was counted twice or not counted |
-| 58 | TP + TN + FP + FN == len(y_true) | Every sample must be assigned to exactly one cell in the confusion matrix. If this doesn't hold, a sample is missing or double-counted |
-
-**Input validation tests (52–54):**
-
-| # | Test | Why fail-fast is correct |
-|---|---|---|
-| 52 | Raises `ValueError` for empty inputs | An empty y_true would produce division by zero in recall computation. Raising immediately with a clear message is better than propagating NaN |
-| 53 | Raises `ValueError` when lengths differ | y_true[i] and y_score[i] must correspond to the same patient. Different lengths mean the pairing is broken |
-| 54 | Raises `ValueError` for NaN/inf values | NaN SOFA scores propagate into all metrics, producing NaN everywhere. Catching it early gives a diagnostic error instead of a silent all-NaN result |
-
-### 2H — `get_weights()` and `set_weights()` (Tests 59–64)
-
-These two functions are the bridge between PyTorch and Flower. Flower transmits model parameters as lists of numpy arrays; PyTorch models store them as tensors. These functions convert between the two formats.
-
-```python
-def get_weights(model):
-    return [val.cpu().numpy() for val in model.state_dict().values()]
-
-def set_weights(model, weights):
-    state_dict = dict(zip(model.state_dict().keys(),
-                         [torch.tensor(w) for w in weights]))
-    model.load_state_dict(state_dict, strict=True)
-```
-
-| # | Test | Why it matters |
-|---|---|---|
-| 59–60 | Returns a list of numpy arrays | Flower's `NDArrays` type is literally `List[np.ndarray]`. Wrong type = Flower communication failure |
-| 61 | Length equals number of parameter tensors | The state_dict has 8 entries (4 weight matrices + 4 bias vectors). Any mismatch means a layer was missed |
-| 62–63 | Round-trip: `set_weights(model, get_weights(model))` → identical state | The most important test: serialize → deserialize must produce the same model. If this fails, every FL round corrupts the model slightly |
-| 64 | `set_weights` with wrong layer count raises | If the server sends weights from a different architecture, the client must raise an error, not silently load wrong shapes |
-
-**The round-trip test explained:**
-
-```python
-def test_weights_round_trip(mini_model):
-    original_weights = get_weights(mini_model)
-    
-    # Simulate Flower transmission: weights become numpy arrays,
-    # go through the network, arrive at another client
-    received_weights = [w.copy() for w in original_weights]
-    
-    # Load received weights back into the model
-    set_weights(mini_model, received_weights)
-    
-    # Get weights again
-    restored_weights = get_weights(mini_model)
-    
-    # Must be bit-for-bit identical
-    for orig, restored in zip(original_weights, restored_weights):
-        npt.assert_array_equal(orig, restored)
-```
-
-### 2I — `get_trend()` and `classify_range()` (Tests 65–75)
-
-These are pure utility functions used in the ClinIQ dashboard's trend analysis (Step 10 of the inference pipeline, documented in INPUT_OUTPUT.md).
-
-**`get_trend()` — linear regression slope classifier:**
-
-The function fits a linear regression line to the list of values and classifies the slope:
-
-| # | Test | Edge case it covers |
-|---|---|---|
-| 65 | `[1,2,3,4,5]` → `"increasing"` | Clear positive slope |
-| 66 | `[5,4,3,2,1]` → `"decreasing"` | Clear negative slope |
-| 67 | `[3,3,3,3]` → `"stable"` | Zero slope |
-| 68 | `[5]` → `"stable"` (single element) | A single point has undefined slope — must default to "stable" not crash |
-| 69 | `[]` → `"stable"` (empty) | Empty list — must not crash with "division by zero" in linear regression |
-| 70 | Slope exactly 0.1 → `"stable"` (boundary) | The threshold is `> 0.1` for "increasing", not `≥ 0.1`. Exactly 0.1 is "stable". This boundary test locks in the comparison operator |
-
-**`classify_range()` — vital sign status classifier:**
-
-| # | Test | Boundary being tested |
-|---|---|---|
-| 71 | `classify_range(70, 60, 100)` → `"normal"` | 70 is strictly between 60 and 100 |
-| 72 | `classify_range(120, 60, 100)` → `"high"` | 120 exceeds the high boundary |
-| 73 | `classify_range(40, 60, 100)` → `"low"` | 40 is below the low boundary |
-| 74 | `classify_range(60, 60, 100)` → `"normal"` (not low) | Exactly AT the lower bound = normal, not low |
-| 75 | `classify_range(100, 60, 100)` → `"normal"` (not high) | Exactly AT the upper bound = normal, not high |
-
-Tests 74 and 75 are boundary tests that clarify the comparison operators used (closed bounds → `≥ low_val AND ≤ high_val`). Without these, a developer could accidentally use strict inequalities and misclassify patients at the exact boundary of the normal range.
-
-### 2J — `apply_dp_to_update()` (Tests 76–81)
-
-Differential Privacy is the optional mechanism that adds calibrated Gaussian noise to weight updates before sending them to the server, preventing the server from inferring individual patient data from weight changes.
-
-```python
-def apply_dp_to_update(local_weights, global_weights, sensitivity, sigma):
-    # Compute update: delta = local - global
-    delta = [l - g for l, g in zip(local_weights, global_weights)]
-    
-    # Compute L2 norm of the update
-    total_norm = np.sqrt(sum(np.sum(d**2) for d in delta))
-    
-    # Clip: if update is too large, scale it down
-    clip_factor = min(1.0, sensitivity / (total_norm + 1e-8))
-    clipped_delta = [d * clip_factor for d in delta]
-    
-    # Add Gaussian noise
-    noised_delta = [d + np.random.normal(0, sigma * sensitivity, d.shape)
-                    for d in clipped_delta]
-    
-    # Apply noised update to global weights
-    return [g + d for g, d in zip(global_weights, noised_delta)]
-```
-
-| # | Test | What it verifies |
-|---|---|---|
-| 76 | Returns list of arrays same shape as `local_weights` | DP must not change the shape of the weight update — the server expects exact weight arrays |
-| 77 | When update L2 norm ≤ sensitivity, no clipping applied | If the update is already small enough, the `clip_factor = min(1.0, ...)` = 1.0, meaning no change |
-| 78 | When update L2 norm > sensitivity, clipped to sensitivity | Verifies that large updates are scaled down correctly |
-| 79 | Gaussian noise is added (output differs from input + zero noise) | The core DP guarantee — even if sigma is small, the output must differ from the un-noised update |
-| 80 | Output dtype is `float32` | The noised weights go directly into Flower's transmission format — must be float32 |
-| 81 | With `sigma=0`, noise std is 0 (no noise) | `sigma=0` is a special case meaning "no DP". The function must handle this gracefully without dividing by zero or adding NaN |
-
-### 2K — `estimate_privacy_budget()` (Tests 82–87)
-
-The privacy budget ε (epsilon) quantifies how much privacy is lost per round of FL. Smaller ε = more privacy.
-
-```
-ε = (√(2 × ln(1.25 / δ)) / σ) × rounds
-```
-
-Where `σ` is the noise multiplier and `δ` is the failure probability (typically 1e-5).
-
-| # | Test | What it verifies |
-|---|---|---|
-| 82 | Returns a `float` | Used in the FL dashboard's privacy meter display |
-| 83 | `estimate_privacy_budget(0, 1.0)` == 0 | Zero rounds → zero privacy cost (nothing was shared) |
-| 84 | 100 rounds, σ=1.0 matches formula | Verifies the formula is implemented correctly — not an approximation |
-| 85 | `sigma ≤ 0` returns `inf` | Zero or negative noise means infinite privacy cost (DP guarantee is violated completely). `inf` is the correct sentinel — training with σ=0 offers no privacy |
-| 86 | Higher sigma → lower epsilon | More noise = better privacy = smaller ε. This is the fundamental DP monotonicity property |
-| 87 | More rounds → higher epsilon | Each round leaks a bit more. After 100 rounds, ε is larger than after 10 rounds. Privacy degrades with training time |
+> **Note:** these rows use two tiny feature columns, not the real 108. That is enough to test the database code, which does not care how many feature columns there are.
 
 ---
 
-## 8. Phase 3 — FL Dashboard Pure Functions (`test_fl_dashboard_fns.py`)
+## 6. Phase 1 — Database FL Helpers (21 tests)
 
-**Goal:** Test every extractable pure function from `fl_dashboard.py` without launching Streamlit.
+**File:** `tests/fl/unit/test_db_fl.py` · **Goal:** test the `db.py` functions that touch the `fl_training` table (the 41,798 hospital training rows). The ClinIQ tests cover the other tables. **No model is loaded and the real database is never touched.**
 
-**The challenge with Streamlit:**
+Helpers in the file: `_make_rows(client_id, n, with_null_sofa, with_nan_feature, with_timestamps)` builds row dictionaries and `_create_fl_table(db_path, rows)` creates `fl_training` with pandas `to_sql` (as the migration does) plus its index.
 
-`fl_dashboard.py` imports Streamlit at the top: `import streamlit as st`. When pytest tries to import this module, Streamlit initialises its server, tries to connect to the Streamlit runtime, and either crashes or blocks indefinitely.
+### 1A — `fl_training_exists()` (4 tests)
+It answers: "has the training data been loaded into the database yet?" The code checks that the table exists, has at least one row, **and** has a `sofa_score` column.
 
-**The solution — mock before import:**
+| Test | Why it matters |
+|---|---|
+| `…false_when_table_absent` | On a fresh install the table does not exist; the function must return False, not crash |
+| `…false_when_empty` | A table with no rows (for example an interrupted migration) counts as "no data" |
+| `…true_after_one_row` | The normal post-migration case |
+| `…true_for_any_client` | It checks for *any* FL data, not one hospital's |
 
-```python
-# At the top of the test file — before any imports of fl_dashboard
-import sys
-import unittest.mock as mock
+### 1B — `get_fl_client_data(client_id)` (11 tests)
+Each hospital's training code calls this to load **only its own rows**.
 
-# Create a fake streamlit module
-fake_st = mock.MagicMock()
-fake_st.cache_resource = lambda f: f   # passthrough — don't cache, just call
-sys.modules['streamlit'] = fake_st
-
-# NOW it's safe to import
-from fl_dashboard import _blank_state, _reset_state, _fedavg, _fedyogi, ...
-```
-
-After this setup, every `st.write()`, `st.sidebar.slider()`, etc. in `fl_dashboard.py` calls the MagicMock, which accepts any arguments and returns a mock object — no crash, no output.
-
-### 3A — State Management (Tests 1–11)
-
-The FL simulation state is a Python dictionary stored in a module-level variable `_STATE`. All functions read and write this dict through controlled functions.
-
-**`_blank_state()` tests (1–6):**
-
-| # | Test | Why this initial value matters |
+| Test | What it checks | Why it matters |
 |---|---|---|
-| 1 | `status == "idle"` | The UI shows "idle" as the initial state — any other value would show a running or error indicator on load |
-| 2 | `current_round == 0` | Round 0 means no rounds have run. The round counter drives the chart x-axis |
-| 3 | `total_rounds == 10` | The default simulation runs 10 rounds. This is intentionally much less than the real 100 rounds — long enough for convergence trends to appear, short enough for a live demo |
-| 4 | `client_losses == [[], [], []]` | Three empty lists — one per hospital. The list grows by one entry per round as each hospital's per-round loss is recorded |
-| 5 | `best_loss == float("inf")` | Infinity is the correct initial "worst possible" value — any real loss will be less than infinity, so the first round always becomes the "best" |
-| 6 | Has all 20 required keys | Completeness check — if a new key is added to `_blank_state()` but not to this test, the test needs updating. Prevents silently missing state fields |
+| `…returns_dataframe` | Returns a pandas DataFrame | Downstream code uses `.drop`, `.values`, `.fillna` |
+| `…drops_id_column` | The database row number `id` is removed | It is not a medical feature; leaving it in would let the model learn the row number |
+| `…drops_client_id_column` | `client_id` is removed | Otherwise the model could learn "hospital 0 = Low Risk", a form of leakage |
+| `…filters_by_client_id` | Only that hospital's rows come back | The core privacy rule of federated learning |
+| `…empty_for_unknown_client` | An unknown id gives an empty DataFrame | No crash on a bad id |
+| `…drops_null_sofa_rows` | Rows with no SOFA answer are dropped | A row without a target would crash the loss computation |
+| `…warns_on_null_sofa` | A warning tells how many rows were dropped | A silent drop could hide data corruption |
+| `…fills_nan_features_with_zero` | NaN features become 0 | NaN would crash PyTorch tensor creation |
+| `…sofa_score_present` | The label column is kept | Training reads `df["sofa_score"]` |
+| `…correct_row_count` | Clean data: no row lost | Count correctness |
+| `…cross_client_isolation` | Two hospitals get separate row sets (8 and 6 rows) | The fundamental FL data-isolation guarantee |
 
-**`_reset_state()` tests (7–9):**
+### 1C — The `fl_training` table (4 tests)
+The table is **not** created by a `CREATE TABLE` statement. `train_federated.py` and `migrate_to_db.py` create it with pandas `to_sql`, so these tests check what that produces.
 
-`_reset_state(n_rounds, algorithm)` is called when the clinician clicks "Start Training" with new settings.
+| Test | Why it matters |
+|---|---|
+| `…table_created_via_pandas_to_sql` | The table appears when written the way the project writes it |
+| `…client_id_index_created` | `idx_ft_client` exists. Every hospital loads data with `WHERE client_id = ?`; without the index each load scans every row |
+| `init_db_never_installs_fl_training_trigger` | `fl_training` has no timestamp columns, so `init_db()` must **not** put a timestamp trigger on it, and ordinary inserts must keep working |
+| `init_db_skips_fl_trigger_when_table_absent` | `init_db()` runs before the data exists and must not fail or create a trigger |
 
-```python
-def test_reset_clears_previous_losses():
-    _reset_state(5, "FedAvg")
-    _STATE["global_losses"].append(1.5)   # simulate one round
-    _reset_state(5, "FedAvg")              # reset again
-    assert _read_state()["global_losses"] == []   # must be empty again
-```
+> **Corrected from earlier versions:** an older version of this document described a trigger `trg_ft_created_at` that sets `created_at` automatically. **No such trigger exists any more**; the tests now assert the opposite (it must *not* be installed). Also, no test checks `PRAGMA foreign_keys`.
 
-If `_reset_state` doesn't clear `global_losses`, the second training run's chart would show the previous run's loss values before the new ones, confusing the clinician.
-
-**`_read_state()` thread safety tests (10–11):**
-
-`fl_thread` modifies `_STATE` from a background thread. The UI thread reads `_STATE` via `_read_state()`. If `_read_state()` returns a reference to `_STATE` itself (not a copy), the UI could see partial updates mid-modification — values from two different rounds simultaneously.
-
-```python
-def test_read_state_returns_copy():
-    snapshot = _read_state()
-    snapshot["status"] = "mutated"   # mutate the snapshot
-    assert _read_state()["status"] != "mutated"   # original unchanged
-```
-
-If `_read_state()` returns the dict directly (not a copy), this test fails — mutations to the snapshot would corrupt `_STATE`. The deep copy guarantee is essential for thread-safe rendering.
-
-### 3B — `_fedavg()` (Tests 12–17)
-
-`_fedavg` implements Federated Averaging: combine the 3 hospitals' local weight updates into one global update by taking a weighted average proportional to each hospital's sample count.
-
-```python
-def _fedavg(client_weights, client_sizes):
-    total = sum(client_sizes)
-    weighted = [s/total for s in client_sizes]   # e.g., [0.33, 0.33, 0.34]
-    
-    # For each layer, compute the weighted average of all 3 clients' weights
-    aggregated = []
-    for layer_idx in range(len(client_weights[0])):
-        layer_avg = sum(w * client_weights[i][layer_idx]
-                        for i, w in enumerate(weighted))
-        aggregated.append(layer_avg.astype(np.float32))
-    
-    return aggregated
-```
-
-| # | Test | Why it matters |
-|---|---|---|
-| 12 | Equal sample counts → arithmetic mean | With equal sizes (33/33/34), the average is simply the arithmetic mean of the 3 weight arrays |
-| 13 | Different sample counts → weighted average | A hospital with 40,000 patients should influence the global model more than a hospital with 8,000 patients. This verifies proportional weighting |
-| 14 | Single client → returns that client's weights unchanged | Trivial case but must not crash — used when only 1 hospital has data |
-| 15 | Output shape matches input shape per layer | FedAvg must never change the number of layers or the dimensions of any layer |
-| 16 | Output dtype is `float32` | The aggregated weights go directly into the global model via `set_weights()` |
-| 17 | Result is between min and max of inputs | FedAvg is an average — it cannot produce values outside the range of its inputs. If this fails, the weighting formula has an error |
-
-**The weighted average test explained:**
-
-```python
-def test_fedavg_weighted_by_sample_count():
-    # Hospital 0: weights all 1.0, sample size 80
-    # Hospital 1: weights all 3.0, sample size 20
-    # Hospital 2: weights all 5.0, sample size 0 (not participating)
-    
-    # Expected: (80×1.0 + 20×3.0) / (80+20) = (80+60)/100 = 1.4
-    
-    client_weights = [
-        [np.array([1.0, 1.0])],  # Hospital 0
-        [np.array([3.0, 3.0])],  # Hospital 1
-    ]
-    client_sizes = [80, 20]
-    
-    result = _fedavg(client_weights, client_sizes)
-    npt.assert_allclose(result[0], [1.4, 1.4], rtol=1e-5)
-```
-
-### 3C — `_fedyogi()` (Tests 18–25)
-
-`_fedyogi` is more complex than `_fedavg`. It implements the FedYogi adaptive optimisation strategy. Note: FedYogi is now an **optional** algorithm in the Streamlit simulator — the real training run (`train_federated.py`) uses FedAvg + FedProx by default (`USE_FEDYOGI = False`). These tests keep the optional mode correct:
-
-```
-delta    = global_weights - averaged_client_weights   (pseudo-gradient)
-m_t      = β₁ × m_{t-1} + (1-β₁) × delta            (momentum)
-v_t      = v_{t-1} - (1-β₂) × delta² × sign(v_{t-1} - delta²)  (Yogi variance)
-new_w    = global_weights + η × m_t / (√v_t + τ)
-```
-
-Key test for numerical stability (Test 21):
-
-```python
-def test_fedyogi_v_t_stays_above_tau_squared():
-    TAU = 1e-3   # stability constant
-    _, _, v_t = _fedyogi(client_weights, client_sizes, global_weights,
-                         m_t=None, v_t=None)
-    
-    for v_layer in v_t:
-        # v_t is used as the denominator: √v_t + τ
-        # If v_t → 0, the denominator → τ (safe)
-        # But v_t must never be negative (√ of negative = NaN)
-        assert np.all(v_t >= TAU**2)
-```
-
-The `np.maximum(v_t, tau²)` guard in the implementation prevents v_t from going negative due to floating-point cancellation. This test verifies the guard is in place — without it, a single round with near-zero gradients could produce NaN in all subsequent rounds.
-
-Test 23 (zero gradient test):
-
-```python
-def test_fedyogi_zero_delta_no_update():
-    # When all client weights equal global weights: delta = 0
-    # FedYogi should produce unchanged global weights
-    same_weights = [global_weights.copy(), global_weights.copy(), global_weights.copy()]
-    new_weights, _, _ = _fedyogi(same_weights, [33,33,34], global_weights, None, None)
-    npt.assert_allclose(new_weights[0], global_weights[0], rtol=1e-5)
-```
-
-If clients learned nothing (their weights stayed at the global weights), FedYogi should not change the global model. This verifies the algorithm doesn't introduce drift when there's nothing to learn.
-
-### 3D — `load_training_metadata()` (Tests 26–32)
-
-This function loads `models/training_metadata.json` if it exists, or returns default fallback values if it doesn't.
-
-```python
-def load_training_metadata():
-    try:
-        with open("models/training_metadata.json") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return {
-            "num_rounds": 100,
-            "final_mae": 1.8968,   # historical fallback (earlier model)
-            "final_r2": 0.5995,    # historical fallback (earlier model)
-            "hospitals": 3,
-            ...
-        }
-```
-
-Tests 27–30 lock in the fallback values. **Historical note:** the fallback numbers (`final_mae 1.8968`, `final_r2 0.5995`) are from an earlier model on the old dataset; they are only shown if `training_metadata.json` is missing. The current model's real numbers (MAE 1.8247, R² 0.4725) always come from `training_metadata.json`, and the file-override tests (31–32) check that the file wins over the fallback. The fallback tests just stop these placeholder values from changing silently.
-
-### 3E — Chart Builder Tests (Tests 33–41)
-
-The chart functions build Plotly Figure objects for the training curves, weight histograms, and weight heatmaps. Each has a "null/empty input → None" test and a "valid input → Figure" test.
-
-**The null guard tests (33, 36, 39) are important:**
-
-When the FL simulation first starts, no training data exists yet. The UI code calls all three chart functions at initial render time. If any chart function crashes on empty input, the entire Streamlit page crashes with an error on load.
-
-```python
-def test_training_chart_returns_none_for_empty_data():
-    result = _training_chart([], [], [])   # no rounds yet
-    assert result is None   # UI checks for None and shows "No data yet" message
-```
-
-**The heatmap slice test (Test 41):**
-
-```
-_heatmap_chart slices: weights.T[:40, :64]
-```
-
-The weight heatmap shows the first layer's weight matrix as a colour grid. The full first layer matrix is `256 × 108`. Plotting all 27,648 pixels would be slow — the slice takes the first 40 neurons × first 64 features as a representative sample. The test verifies the correct slice is used — if the dimensions are wrong, the heatmap shows data from the wrong layer or wrong neurons.
-
-### 3F — `_network_diagram()` (Tests 42–50)
-
-`_network_diagram()` generates an HTML string containing an animated network diagram showing the FL communication in real time. The diagram shows 3 hospital nodes connected to a central server, with animated dots flowing up (aggregating) or down (distributing weights).
-
-| # | Test | Why this is tested |
-|---|---|---|
-| 43 | Contains `<!DOCTYPE html>` | A valid HTML document that the browser can render — not a partial HTML fragment |
-| 44 | `"distributing"` → `dotDown` in HTML | When the server sends weights to hospitals, dots animate downward |
-| 45 | `"aggregating"` → `dotUp` in HTML | When hospitals send weights to server, dots animate upward |
-| 46 | `"idle"` → no `dotDown`/`dotUp` | Static display when not training |
-| 47 | `"done"` → `best_round` number in HTML | After training completes, the diagram shows which round was the best |
-| 50 | `best_loss=inf` → displays `0.0` not `inf` | When `best_loss` is still infinity (no rounds completed), displaying "inf" in the HTML would look like a bug. The function should show `0.0` as the initial state |
+### 1D — `get_conn()` (2 tests)
+| Test | Why it matters |
+|---|---|
+| `…uses_wal_journal_mode` | WAL (write-ahead logging) lets the API and training read and write at once without "database is locked" errors |
+| `…concurrent_wal_writes` | Two connections can write and read in turn: a write committed on one is visible on the other, with no corruption |
 
 ---
 
-## 9. Phase 4 — Client Logic (`test_client_logic.py`)
+## 7. Phase 2 — Model Utilities (91 tests)
 
-**Goal:** Test `HospitalClient` from `client.py` — the class that each hospital's process runs. Tests use mocked Flower internals and DB access.
+**File:** `tests/fl/unit/test_model_utils.py` · **Goal:** test every public function in `model_utils.py` as plain Python with tiny data. No database, no file I/O. The largest test file.
 
-**What `HospitalClient` does:**
+> **The count is 91.** The file's own docstring header still says "87 tests" (it was not updated when four tests were added); this document uses the real count, which pytest confirms.
 
-```python
-class HospitalClient(fl.client.NumPyClient):
-    def __init__(self, client_id):
-        self.client_id = client_id
-        # Load this hospital's data from DB
-        df = get_fl_client_data(client_id)
-        self.X_train, self.X_val, self.y_train, self.y_val = train_test_split(df, ...)
-        self.model = ICUModel(108)
-    
-    def get_parameters(self, config):
-        return get_weights(self.model)
-    
-    def fit(self, parameters, config):
-        set_weights(self.model, parameters)   # receive global weights
-        server_round = config["server_round"]
-        lr = max(1e-4, 0.001 * LR_DECAY ** (server_round - 1))  # LR decay
-        optimizer = AdamW(self.model.parameters(), lr=lr)
-        loss = train_model(self.model, self.X_train, self.y_train, optimizer,
-                           global_params=parameters, mu=MU_FEDPROX)
-        return get_weights(self.model), len(self.X_train), {}
-    
-    def evaluate(self, parameters, config):
-        set_weights(self.model, parameters)
-        metrics = evaluate_model(self.model, self.X_val, self.y_val)
-        return metrics["mse"], len(self.X_val), {"mae": metrics["mae"], "r2": metrics["r2"]}
-```
+Group sizes: 2A ICUModel **11** · 2B ICUDataset **4** · 2C weighted_mse_loss **5** · 2D get_sample_weights **5** · 2E train_model **13** · 2F evaluate_model **8** · 2G compute_sofa_risk_metrics **16** · 2H get/set_weights **6** · 2I trend and range **11** · 2J differential privacy **6** · 2K privacy budget **6**. (Total 91.)
 
-**The LR decay tests (7–9) — why these exact values:**
+### 2A — `ICUModel` architecture (11 tests)
+The current network is **108 → 256 → 128 → 64 → 1**: ReLU and Dropout 0.3 after each hidden layer, 69,121 weights. (It was 108→128→64→32→1 with no dropout in an earlier version.)
 
-```
-LR at round 1:    max(1e-4, 0.001 × 0.99⁰)  = max(1e-4, 0.001)    = 0.001
-LR at round 50:   max(1e-4, 0.001 × 0.99⁴⁹) = max(1e-4, 0.000607) = 0.000607
-LR at round 1000: max(1e-4, 0.001 × 0.99⁹⁹⁹) = max(1e-4, ≈0.00000)= 0.0001 (floor)
-```
-
-The LR decay floor (`1e-4`) prevents learning rate from going to zero, which would stop all learning. The tests lock in the exact formula values — if anyone changes `LR_DECAY = 0.99` to `0.95` for faster decay, the round-50 test immediately fails.
-
-**The DP branch tests (10–11):**
-
-```python
-def test_dp_disabled_branch(mocker):
-    mock_dp = mocker.patch('client.apply_dp_to_update')
-    client = HospitalClient(client_id=0)
-    client.fit(initial_params, {"server_round": 1})
-    mock_dp.assert_not_called()   # USE_DP=False → DP function never called
-
-def test_dp_enabled_branch(mocker, monkeypatch):
-    monkeypatch.setattr('client.USE_DP', True)   # temporarily enable DP
-    mock_dp = mocker.patch('client.apply_dp_to_update', return_value=initial_params)
-    client = HospitalClient(client_id=0)
-    client.fit(initial_params, {"server_round": 1})
-    mock_dp.assert_called_once()  # USE_DP=True → DP function must be called
-```
-
-These two tests verify the `if USE_DP:` branch is correctly wired. Without them, a developer could accidentally move `apply_dp_to_update` outside the `if` block (always runs) or delete the `if` block (never runs) without any test catching it.
-
-**Config constant tests (15–19):**
-
-```
-MU_FEDPROX == 0.5   (FedProx regularisation strength)
-USE_DP == False     (DP disabled by default)
-EPOCHS == 3         (local training epochs per round)
-BATCH_SIZE == 64    (mini-batch size)
-SERVER_ADDR == "127.0.0.1:8080"  (Flower server address)
-```
-
-These tests document and lock in the finalized hyperparameters. Each value was chosen after the optimization journey documented in `TRAIN_FEDERATED.md`. If anyone "tries a quick change" like `EPOCHS=5`, the test fails immediately — prompting them to understand why 3 epochs was the correct choice before changing it.
-
----
-
-## 10. Phase 5 — Server Strategy (`test_server_strategy.py`)
-
-**Goal:** Test `SaveBestStrategy` from `server.py` — the class that runs on the central server, aggregates client weights, and saves model checkpoints.
-
-**The key responsibility of `SaveBestStrategy`:**
-
-1. After each round: call the parent `FedAvg` aggregation (`super().aggregate_fit`) — in an earlier version the parent was FedYogi
-2. Set the aggregated weights into the global model
-3. Save the aggregated model as `federated_model.pth` (latest checkpoint)
-4. After evaluating: if this round's loss < best loss seen so far, save `federated_model_best.pth`
-5. Update `_best_round` and `_best_loss`
-6. After training: write `training_metadata.json`
-
-**The best-model tracking tests (7–12):**
-
-```
-Round 1: avg_loss = 5.2   → 5.2 < inf → new best (save federated_model_best.pth)
-Round 2: avg_loss = 4.8   → 4.8 < 5.2 → new best (save federated_model_best.pth)
-Round 3: avg_loss = 4.9   → 4.9 > 4.8 → NOT new best (do NOT save best model)
-Round 4: avg_loss = 4.7   → 4.7 < 4.8 → new best (save federated_model_best.pth)
-```
-
-Test 8 ("Second round with higher loss → `_best_loss` unchanged") is especially important:
-
-```python
-def test_higher_loss_does_not_update_best(mocker):
-    mock_save = mocker.patch('server.torch.save')
-    strategy = SaveBestStrategy(global_model=mock_model)
-    
-    # Round 1: loss = 5.0 → becomes best
-    strategy.aggregate_evaluate(1, [(client1_result, 50), ...])
-    
-    # Round 2: loss = 6.0 → worse than 5.0
-    strategy.aggregate_evaluate(2, [(client1_result_worse, 50), ...])
-    
-    # torch.save should have been called ONCE (for round 1) not TWICE
-    best_save_calls = [c for c in mock_save.call_args_list 
-                       if 'best' in str(c)]
-    assert len(best_save_calls) == 1   # only round 1 triggered a best save
-```
-
-Without this test, a bug could cause the server to save the round-2 (worse) model as the "best" model — overwriting the actual best checkpoint.
-
-**The metadata merge test (Test 18):**
-
-```python
-def test_metadata_merge_with_existing_file(mocker, tmp_path):
-    # Existing metadata.json already has final_mae and final_r2 from real training
-    # (the test uses fixed example values — historical numbers from an earlier model)
-    existing_metadata = {"final_mae": 1.8968, "final_r2": 0.5995, "best_round": 10}
-    
-    # Write existing file
-    (tmp_path / "training_metadata.json").write_text(json.dumps(existing_metadata))
-    
-    # Now aggregate_evaluate finds a new best at round 24
-    strategy.aggregate_evaluate(24, client_results)
-    
-    # The new metadata must PRESERVE final_mae and final_r2 from the existing file
-    new_metadata = json.loads((tmp_path / "training_metadata.json").read_text())
-    assert new_metadata["final_mae"] == 1.8968   # not overwritten
-    assert new_metadata["best_round"] == 24      # updated
-```
-
-The server runs `aggregate_evaluate` after each round, before the final `final_mae` and `final_r2` (which are computed only at the end). If the metadata write doesn't merge with the existing file, it would overwrite `final_mae` and `final_r2` with zeros or None on every round — and the Validation Drawer would show 0.00 for all metrics.
-
----
-
-## 11. Phase 6 — Train Federated Helpers (`test_train_federated_fns.py`)
-
-**Goal:** Test the standalone `train_federated.py` script's helper functions — especially `make_noniid_split()`, which creates the intentionally skewed data distribution for non-IID federated learning experiments.
-
-### 6A — `make_noniid_split()` (Tests 1–8)
-
-In the real MIMIC-III data, hospitals specialise:
-- A cardiac ICU sees mostly cardiovascular patients (lower SOFA variation)
-- A trauma ICU sees high-acuity polytrauma patients (high SOFA)
-- A general medical ICU sees a mix
-
-`make_noniid_split` creates this specialisation artificially for the non-IID experiment:
-
-```python
-def make_noniid_split(X, y, seed=42):
-    low_idx  = np.where(y < 5)[0]   # Low-Risk patients
-    mod_idx  = np.where((y >= 5) & (y < 10))[0]
-    high_idx = np.where(y >= 10)[0]
-    
-    # Hospital 0: specialises in Low-Risk (cardiac ICU)
-    # Hospital 1: balanced mix (general medical ICU)
-    # Hospital 2: specialises in High-Risk (trauma ICU)
-    ...
-```
-
-| # | Test | Why this exactly |
+| Test | What it checks | Why it matters |
 |---|---|---|
-| 1 | Returns list of exactly 3 tuples | Three hospitals — not 2, not 4 |
-| 2 | Each tuple is `(X_array, y_array)` | The downstream `ICUDataset(X, y)` call requires this exact structure |
-| 3 | Total samples across 3 splits == input total | No patients lost or duplicated during the split |
-| 4 | Hospital 0 has ≥ 50% Low-SOFA samples | The specialisation bias must be meaningful — if Hospital 0 only has 35% Low-Risk, the non-IID effect is too weak to demonstrate |
-| 5 | Hospital 2 has ≥ 50% High-SOFA samples | Same reasoning for the high-acuity specialisation |
-| 6 | Same seed → identical splits | Reproducibility — the demo must produce the same splits every time |
-| 7 | Different seed → different splits | Verifies the function actually uses the seed — not hardcoded splits |
-| 8 | Works with empty High-SOFA class | Edge case: if the synthetic data has no High-SOFA patients (rare but possible with small test datasets), the function must not crash |
+| `forward_output_shape` | Output shape is `(n, 1)` | The loss expects `(batch, 1)`; `(batch,)` would broadcast wrongly |
+| `production_input_dim` | A 108-input model does a forward pass | The real model works |
+| `layer_count` | 4 Linear, 3 ReLU and 3 Dropout layers (all p = 0.3) | If someone removes dropout or adds LayerNorm, this fails |
+| `first/second/third/output_layer_dims` (4 tests) | Widths 10→256, 256→128, 128→64, 64→1 | Changing a width would make the model incompatible with the saved `federated_model.pth` |
+| `dropout_off_in_eval_on_in_train` | Two train-mode passes on the same input differ; two eval-mode passes are identical | Dropout trains the network, but prediction must be repeatable (the backend and SHAP use `eval()`) |
+| `custom_hidden_and_no_dropout` | `ICUModel(10, hidden=(8,4), dropout=0.0)` gives widths 8→4→1 and no dropout | Keeps the class usable for experiments |
+| `eval_mode_deterministic` | Same input → same output in eval mode | Deterministic predictions |
+| `parameter_count` | For 10 inputs: `(10·256+256)+(256·128+128)+(128·64+64)+(64·1+1) = 44,033` | Locks the exact model size. For 108 inputs the same formula gives **69,121** |
 
-### 6B and 6C — HospitalClient and SaveBestStrategy (train variant)
+**Why the parameter count matters:** Flower sends weights as flat arrays. If server and client models differ in size, `set_weights()` fails. This test catches any architecture change that would break federated communication.
 
-These are nearly identical to the tests in Phases 4 and 5, but for the variants in `train_federated.py`. In this script `SaveBestStrategy` extends `_BaseStrategy`, which is **FedAvg by default** and FedYogi only if `USE_FEDYOGI = True`. The strategy tests patch `_BaseStrategy` so they work for either parent, and `test_strategy_aggregate_evaluate_calls_super` checks the call goes to the parent strategy (FedAvg by default). The key additional test:
+### 2B — `ICUDataset` (4 tests)
+| Test | Why it matters |
+|---|---|
+| `len` | The DataLoader uses `len()` to count batches |
+| `getitem_returns_tuple` | The DataLoader needs `(x, y)` |
+| `x_dtype_float32` | The weights are float32; a mismatch fails or silently converts |
+| `y_shape` | `y` is reshaped to a column `(n, 1)` so each item has shape `(1,)` |
 
-**Test 16 — `configure_fit` adds `server_round` to config:**
+**The shape bug this prevents:** with `y` of shape `(64,)` and predictions `(64, 1)`, PyTorch broadcasts `pred − y` into a `(64, 64)` matrix, so the loss averages 4,096 meaningless numbers and the model never learns. The `.view(-1, 1)` in `ICUDataset` avoids it.
 
-```python
-def test_configure_fit_adds_round_to_config(mocker):
-    strategy = SaveBestStrategy(global_model=mock_model, ...)
-    fit_instructions = strategy.configure_fit(server_round=5, parameters=..., 
-                                               client_manager=...)
-    
-    # Each client's config dict must contain {"server_round": 5}
-    for _, fit_config in fit_instructions:
-        assert fit_config.config.get("server_round") == 5
-```
+### 2C — `weighted_mse_loss` (5 tests)
+An **optional** loss that gives high-SOFA patients more weight (`weight = 1 + 0.5 × SOFA`, normalised by the batch mean). The **final model does not use it**: it trains with plain MSE, because on `dataset_v2` the weighted loss pushed every prediction upward and raised the error. The function is only used when `train_model(..., weighted_loss=True)`, and it stays tested so that option keeps working.
 
-Without this, `HospitalClient.fit()` would receive an empty config dict, and `config["server_round"]` would raise a `KeyError`, crashing the entire FL round.
+| Test | What it checks |
+|---|---|
+| `zero_for_perfect_predictions` | Perfect predictions give zero loss |
+| `higher_sofa_gets_larger_weight` | High-SOFA errors count more |
+| `formula_correctness` | One patient with target 10 and prediction 0: weight normalises to 1, loss = 100 |
+| `positive_for_nonzero_error` | Loss is positive |
+| `batch_mean_normalized` | After dividing by the batch mean, weights average 1.0, so the loss stays comparable to plain MSE |
 
-### 6D — Config Constants (Tests 21–30)
+### 2D — `get_sample_weights` (5 tests)
+Used only for the optional oversampling (off in the final model, because oversampling the 6% High group caused overfitting). Weights: Low (< 5) → 1.0, Moderate (5–9) → 2.0, High (≥ 10) → 5.0; tests check each band, the output length and the `float32` type.
 
-```
-NUM_ROUNDS == 100
-EPOCHS_PER_ROUND == 3
-BATCH_SIZE == 64
-MU_FEDPROX == 0.5
-SERVER_ETA == 0.001      # only used if USE_FEDYOGI is True
-USE_FEDYOGI is False     # → strategy is FedAvg, not FedYogi
-SERVER_BETA1 == 0.9
-SERVER_BETA2 == 0.99
-USE_DP == False
-OVERSAMPLE == False
-LR_DECAY == 0.99
-```
+### 2E — `train_model` (13 tests)
+The local training function (one hospital, one round). Real signature: `train_model(model, X, y, epochs, lr, batch_size, grad_clip, oversample, global_params, mu, weighted_loss)`; it builds its own AdamW optimiser (weight decay 1e-4) internally.
 
-Every one of these constants was determined through the optimization journey documented in `TRAIN_FEDERATED.md`. The full rationale:
+| Test | Why it matters |
+|---|---|
+| `returns_float` | The loss is a Python float, not a tensor |
+| `loss_is_finite` | NaN/inf means exploding gradients |
+| `loss_decreases_with_more_epochs` | 10 epochs on an easy constant target end lower than 1 epoch, so learning really happens |
+| `no_fedprox` / `with_fedprox` | Both code paths work (plain and FedProx) |
+| `oversample_true` / `oversample_false` | Both DataLoader branches work |
+| `weighted_loss_true` | The optional weighted-loss branch still works |
+| **`default_is_plain_mse`** | With `lr = 0`, one full-size batch and `dropout = 0.0`, the reported loss equals the batch-mean `(pred − y)²`. If someone silently switches the default back to the weighted loss, this fails |
+| `grad_clip` / `no_grad_clip` | Both gradient-clipping branches work |
+| `very_low_lr` | `lr = 1e-5` (the learning-rate floor region) still gives a finite loss |
+| **`fedprox_increases_loss`** | With a large `mu = 100` and global weights far from the local ones (all zeros), the proximal penalty makes the reported loss larger than without it, which proves the FedProx term is really added |
 
-- `USE_FEDYOGI=False`: The server aggregates with plain **FedAvg** (FedProx stays on at the clients). `test_use_fedyogi_default_is_false` checks the flag, and `test_strategy_is_fedavg_by_default` checks the built strategy is a `FedAvg` and not a `FedYogi`. In an earlier version FedYogi (η=0.01) was the aggregator; on dataset_v2 it made the server loss explode, and FedAvg + plain MSE gave better results.
-- `SERVER_ETA=0.001`: FedYogi's global learning rate — only used if `USE_FEDYOGI` is set back to True. It was 0.01 in an earlier version, which made the server loss explode.
-- `SERVER_BETA1=0.9`: FedYogi momentum decay (only used if `USE_FEDYOGI` is True). Standard Adam value.
-- `SERVER_BETA2=0.99`: FedYogi adaptive variance decay (only used if `USE_FEDYOGI` is True). The `0.99` (not `0.999` as in standard Adam) causes faster adaptation to changing gradient statistics between rounds.
-- `MU_FEDPROX=0.5`: Proximal weight. At 0.5, drift is reduced by 23% compared to FedAvg without significantly slowing convergence. Values above 1.0 over-constrain learning.
+### 2F — `evaluate_model` (8 tests)
+Returns `{"mse", "mae", "r2"}` on the 0–24 scale (predictions are clipped to 0–24).
 
-These tests are "configuration documentation" — they fail if anyone "tries" a different value, forcing them to understand the optimization history before making changes.
+| Test | The invariant |
+|---|---|
+| `returns_dict_keys` | Keys `mse`, `mae`, `r2` are present |
+| `values_are_float` | Plain floats (Flower serialises metrics as floats) |
+| `mse_nonnegative`, `mae_nonnegative` | Squares and absolute values cannot be negative |
+| `r2_at_most_one` | R² ≤ 1 by definition |
+| `perfect_predictions` | A stand-in model that returns `y` exactly gives MAE 0 and R² 1 |
+| `constant_mean_predictions_r2_zero` | Always predicting the true mean gives R² 0 |
+| `sets_eval_mode` | Calling it leaves the model in eval mode, so dropout cannot make two evaluations differ |
 
----
+### 2G — `compute_sofa_risk_metrics` (16 tests)
+Builds the clinical performance report shown in the SOFA validation drawer. The default alert threshold is `ALERT_THRESHOLD` (**7.0**).
 
-## 12. Phase 7 — Database ↔ Model Integration (`test_db_model_integration.py`)
+| Test | Why it matters |
+|---|---|
+| `return_keys` | Top-level keys `risk_bands` and `high_risk_alert` |
+| `risk_band_labels` | Labels in the order Low, Moderate, High, matching the matrix rows |
+| `confusion_matrix_is_3x3` | Three classes, 3×3 |
+| `per_class_keys` | Each class has precision, recall, sensitivity, specificity, f1 |
+| `sensitivity_equals_recall` | The two are aliases of the same number |
+| **`default_alert_threshold`** | `predicted_sofa_threshold == 7.0` by default. If someone changes the line without reading why 7 was chosen (see `VALIDATION.md` Section 3.6), this fails. (The backend tests separately check that `ml_service.py` imports the same constant.) |
+| `auroc_float_when_both_classes` | AUROC is a float when both classes exist |
+| `auroc_none_when_single_class` | With one class AUROC is undefined, so the answer is `None` (not 0 or NaN) |
+| `pr_auc_none_when_single_class` | Same for PR-AUC |
+| `raises_empty_input` | Empty input raises `ValueError` rather than dividing by zero |
+| `raises_length_mismatch` | `y_true` and `y_score` must pair up |
+| `raises_non_finite` | NaN or infinity raises an error, not an all-NaN report |
+| `predictions_clipped_to_0_24` | 24.3 is treated as 24 (High band), not an error |
+| `macro_keys_match_per_class` | The macro summary has the same keys |
+| `confusion_rows_sum_to_class_counts` | Rows sum to the true class sizes (40, 30, 30 on perfect predictions) |
+| `binary_confusion_total` | TP + FP + TN + FN equals the number of patients |
 
-**Goal:** Test the complete pipeline from `db.get_fl_client_data()` through model training and evaluation. This is the first integration test — it connects the DB layer to the ML layer.
+### 2H — `get_weights` / `set_weights` (6 tests)
+The bridge between PyTorch and Flower. Flower sends weights as a list of numpy arrays.
 
-**Why this integration is needed, beyond the unit tests:**
+| Test | Why it matters |
+|---|---|
+| `get_weights_returns_list`, `…elements_are_ndarrays` | Flower's weight type is `List[np.ndarray]` |
+| `…length_matches_state_dict` | One array per weight and bias tensor (8 for this network) |
+| `set_weights_round_trip`, `get_set_weights_identity` | Send then receive gives back **exactly** the same model; otherwise every round would slowly corrupt it |
+| `set_weights_wrong_count_raises` | Weights from a different architecture are refused, not loaded silently |
 
-The DB unit tests (Phase 1) verify that `get_fl_client_data()` returns the right DataFrame. The model unit tests (Phase 2) verify that `train_model()` works on synthetic numpy arrays. But neither test verifies that the DataFrame produced by the DB function has the right shape and content to be fed directly into the training pipeline.
+### 2I — `get_trend` and `classify_range` (11 tests)
+Used for the trend text in the AI report. `get_trend` fits a straight line and calls a slope above +0.1 "increasing", below −0.1 "decreasing" and otherwise "stable".
 
-A real bug this catches:
+| Test | Case |
+|---|---|
+| increasing / decreasing / stable_flat | Clear up, clear down, flat |
+| `single_element`, `empty` | Too few points: "stable", no crash |
+| **`slope_exactly_boundary`** | `[0, 0.1, 0.2, 0.3]` has slope exactly 0.1 and is "stable", locking in the "strictly greater than" rule |
+| `classify_range` normal / high / low | 70 in 60–100 is normal, 120 high, 40 low |
+| `…lower_boundary_is_normal`, `…upper_boundary_is_normal` | Exactly 60 and exactly 100 are **normal**, so a patient on the boundary is not mislabelled |
 
-> The DB function returns a DataFrame with columns in alphabetical order. The training pipeline's StandardScaler was fitted with columns in a different order. When the alphabetically-ordered DataFrame is normalised, feature 0 gets feature 17's statistics. R² collapses from 0.47 to 0.02. Neither the DB test nor the model test would catch this — only the integration test that runs both together would.
+### 2J — `apply_dp_to_update` (6 tests)
+Differential privacy (off by default) clips each hospital's update and adds Gaussian noise.
 
-| # | Test | What it verifies |
-|---|---|---|
-| 1 | `get_fl_client_data(0)` → `ICUDataset` → `len(dataset) > 0` | The DB-produced DataFrame can be wrapped in ICUDataset without errors |
-| 2 | X values from DB match what ICUDataset produces | Column alignment check — the feature order is preserved through the DB → DataFrame → ICUDataset chain |
-| 3 | `get_fl_client_data` → `train_model` completes without error | The full "load data → train" path works end-to-end |
-| 4 | `get_fl_client_data` → `evaluate_model` returns finite metrics | All three metrics (MSE, MAE, R²) are finite real numbers — not NaN/inf |
-| 5 | Client_id=1 produces different data than client_id=0 | Data isolation holds through the full stack, not just at the DB level |
-| 6 | Model trained on client_0 data has different weights than untrained model | Training actually modifies the model — verifies the optimizer is working through the full pipeline |
-| 7 | `get_weights` → `set_weights` → `get_weights` round-trip on DB-trained model | Weight round-trip holds even after training has modified the weights |
-| 8 | `compute_sofa_risk_metrics` works with SOFA values from DB | The clinical metrics function accepts real DB-sourced SOFA scores |
-| 9 | NaN values from DB filled with 0 before feeding to ICUDataset | The `fillna(0)` in `get_fl_client_data` is applied before the data reaches training |
-| 10 | `get_fl_client_data` + `train_test_split` → correct train/val sizes | 80/20 split produces the expected sizes — the DataFrames are compatible with sklearn's split function |
+| Test | What it checks |
+|---|---|
+| `returns_list_of_ndarrays` | Same shape and type as the input weights |
+| `no_clip_when_norm_small` | A small update is not rescaled |
+| `clips_large_update` | A large update is scaled down to the sensitivity limit |
+| `noise_is_added` | The output differs from the un-noised update |
+| `output_dtype_float32` | float32 for Flower |
+| `zero_sigma_no_noise` | `sigma = 0` adds no noise and does not crash |
 
----
+### 2K — `estimate_privacy_budget` (6 tests)
+Formula: `ε ≈ sqrt(2·ln(1.25/δ)) / σ × rounds` (δ = 1e-5).
 
-## 13. Phase 8 — FL Round Integration (`test_fl_round_integration.py`)
-
-**Goal:** Simulate a complete FL round — distribute global weights to 3 hospitals, have each train locally, aggregate their updates — without using Flower's gRPC infrastructure.
-
-**How this test works (no Flower needed):**
-
-```python
-# Step 1: Create global model
-global_model = ICUModel(input_dim=10)
-global_weights = get_weights(global_model)
-
-# Step 2: Simulate 3 hospitals training in parallel
-client_weights_after = []
-for client_id in range(3):
-    # Each hospital receives the global weights, trains locally
-    local_model = ICUModel(input_dim=10)
-    set_weights(local_model, global_weights)   # receive from server
-    optimizer = AdamW(local_model.parameters())
-    train_model(local_model, X_clients[client_id], y_clients[client_id], optimizer)
-    client_weights_after.append(get_weights(local_model))
-
-# Step 3: Server aggregates
-client_sizes = [len(y) for y in y_clients]
-global_weights_round2 = _fedavg(client_weights_after, client_sizes)
-
-# This is one complete FL round without any Flower gRPC
-```
-
-The complete test list:
-
-| # | Test | What it verifies |
-|---|---|---|
-| 1 | 3 hospitals each train → produce 3 weight lists | All 3 training runs complete successfully |
-| 2 | `_fedavg` on 3 weight sets → correct layer shapes | Aggregation preserves all layer dimensions |
-| 3 | After `_fedavg`, forward pass produces valid output | The aggregated model is a working DNN — not corrupted |
-| 4 | `_fedyogi` on 3 weight sets → bounded weights | Numerical stability of the simulator's optional FedYogi mode holds in practice |
-| 5 | Round 2 loss < Round 1 loss | Convergence — the aggregated model improves with each round |
-| 6 | `fl_thread` state transitions: idle→running→distributing→training→done | The simulation state machine progresses correctly through all phases |
-| 7 | `_read_state()["current_round"]` == 1 after 1 round | State is updated after each round |
-| 8 | `_read_state()["global_losses"]` has length 1 | Loss is recorded for each completed round |
-| 9 | `_read_state()["client_losses"]` has 1 entry per client | Each hospital's per-round loss is recorded separately |
-| 10 | `_STOP.set()` → status becomes "stopped" | The stop signal is respected — simulation can be halted |
-| 11 | FedProx (μ=0.5) → smaller weight delta vs FedAvg (μ=0) | FedProx reduces client drift — the key clinical property it was chosen for |
-| 12 | `_read_state()["best_round"]` == 1 after single round | The only round is always the best round |
-| 13 | `layer1_weights` shape is `(256, input_dim)` | The heatmap visualization gets the first layer's weight matrix in the correct shape |
-| 14 | `pre_agg_flat` and `post_agg_flat` have same length | Before/after aggregation histograms must have compatible shapes for comparison |
-
-**The FedProx drift reduction test (Test 11) explained:**
-
-```python
-def test_fedprox_reduces_drift(synthetic_splits):
-    global_weights = get_weights(ICUModel(10))
-    
-    # Without FedProx (mu=0.0): hospitals can drift far from global
-    fedavg_deltas = []
-    for X, y in synthetic_splits:
-        local_model = ICUModel(10)
-        set_weights(local_model, global_weights)
-        train_model(local_model, X, y, optimizer, global_params=None, mu=0.0)
-        delta = np.mean([np.mean(np.abs(lw - gw))
-                         for lw, gw in zip(get_weights(local_model), global_weights)])
-        fedavg_deltas.append(delta)
-    
-    # With FedProx (mu=0.5): proximal term pulls weights toward global
-    fedprox_deltas = []
-    for X, y in synthetic_splits:
-        local_model = ICUModel(10)
-        set_weights(local_model, global_weights)
-        train_model(local_model, X, y, optimizer, global_params=global_weights, mu=0.5)
-        delta = np.mean([np.mean(np.abs(lw - gw))
-                         for lw, gw in zip(get_weights(local_model), global_weights)])
-        fedprox_deltas.append(delta)
-    
-    # FedProx hospitals stay closer to global weights
-    assert np.mean(fedprox_deltas) < np.mean(fedavg_deltas)
-```
-
-This test directly verifies the clinical motivation for FedProx: with heterogeneous ICU data (Hospital 0 sees mostly Low-Risk, Hospital 2 sees mostly High-Risk), unconstrained local training causes Hospital 2's model to drift heavily toward "always predict High." FedProx constrains this drift, making the aggregated global model more balanced.
+| Test | Why it matters |
+|---|---|
+| `returns_float` | The value is shown in the dashboard |
+| `zero_rounds` | 0 rounds → ε = 0 |
+| `formula` | The implementation matches the formula (for σ = 1, 100 rounds: about 484.5, a very weak guarantee) |
+| `sigma_nonpositive_returns_inf` | No noise means no privacy, so ε is infinite |
+| `monotone_in_sigma` | More noise → smaller ε |
+| `monotone_in_rounds` | More rounds → larger ε |
 
 ---
 
-## 14. Phase 9 — Migration Integration (`test_migrate_to_db.py`)
+## 8. Phase 3 — FL Dashboard Pure Functions (50 tests)
 
-**Goal:** Test `migrate_to_db.migrate()` — the one-time import that converts all CSV data files into the SQLite database.
+**File:** `tests/fl/unit/test_fl_dashboard_fns.py` · **Goal:** test the pure functions of `fl_dashboard.py` (the Streamlit federated-learning simulator) **without launching Streamlit**.
 
-**What `migrate()` does:**
+**How:** Streamlit is replaced by a mock **before** `fl_dashboard` is imported (Section 4). An autouse fixture resets the shared simulation state before and after every test (`_reset_state(10, "FedYogi + FedProx")`).
 
-```
-Input CSV files:                     Output SQLite tables:
-  data/patient_vitals.csv       →      patient_vitals
-  data/prediction_history.csv   →      prediction_history
-  data/sample_patients.csv      →      sample_patients
-  data/fl_training_0.csv        →      fl_training (client_id=0)
-  data/fl_training_1.csv        →      fl_training (client_id=1)
-  data/fl_training_2.csv        →      fl_training (client_id=2)
-```
+Groups: 3A state **11** · 3B `_fedavg` **6** · 3C `_fedyogi` **8** · 3D `load_training_metadata` **7** · 3E chart builders **9** · 3F `_network_diagram` **9**.
 
-The test uses `tmp_path` to create fake CSV files and a temp database, then verifies the migration populates all tables correctly.
+### 3A — State management (11 tests)
+The simulation runs in a background thread and writes into one shared dictionary, `_STATE`; the page reads it.
 
-| # | Test | Why this is tested |
-|---|---|---|
-| 1 | `migrate()` completes without raising | Basic sanity — the function runs without crashing |
-| 2–5 | All 4 tables have rows after migration | Each table is populated (not just created empty) |
-| 6 | `migrate()` called twice → row counts unchanged | **Idempotency** — if the user accidentally runs the migration script twice, the database must not double all its rows |
-| 7–9 | Column renames are applied | SpO₂ → SpO2, Temp (°C) → Temp, GCS Eye → GCS_Eye — the original CSV column names contain Unicode and spaces that SQLite and pandas handle inconsistently |
-| 10–11 | `fl_training` rows have correct `client_id` | Each hospital's CSV gets assigned the right client_id (Hospital 0 CSV → client_id=0) |
-| 12 | Missing CSV → skipped without crash | Some CSV files might not exist on a fresh install — the migration must skip them gracefully and continue |
-| 13 | Empty CSV → skipped without crash | An empty CSV is a degenerate case that must not crash |
-| 14 | `patient_vitals` rows have `patient` column values 1, 2, 3 | The patient ID assignment is correct — row counts per patient_id match the input distribution |
-| 15 | `fl_training` index `idx_ft_client` exists | The performance index (created after FL data is inserted) must be present for fast query performance |
-| 16 | `sample_patients` has `row_idx` column starting at 0 | The cycling mechanism uses `row_idx` to advance through the dataset — must start at 0, not at the CSV row number |
-| 17 | `os.path.getsize()` call doesn't crash | The migration prints a summary including the DB file size — must not crash if the file system returns unexpected results |
+| Test | Why it matters |
+|---|---|
+| `blank_state_status_is_idle` | The page starts idle |
+| `…current_round_is_zero` | Round 0 means nothing has run |
+| `…total_rounds_is_ten` | The default demo is 10 rounds: long enough to show a trend, short enough for a live demo (the real run is 100) |
+| `…client_losses_three_empty_lists` | One empty list per hospital |
+| `…best_loss_is_inf` | Infinity is the correct "worst possible" start, so the first round always becomes the best |
+| `…has_twenty_keys` | Locks the state's shape (20 keys) |
+| `reset_state_sets_total_rounds`, `…sets_algorithm` | A new run uses the chosen settings |
+| `reset_state_clears_global_losses` | A new run must not show the previous run's curve |
+| `read_state_returns_copy_not_reference` | The page gets a snapshot; changing it must not change the real state |
+| `read_state_client_losses_is_deep_copy` | Nested lists are copied too, so the background thread and the page never share a mutable object |
 
-**The idempotency test explained:**
+### 3B — `_fedavg` (6 tests)
+Weighted average of the hospitals' weights, each hospital counting in proportion to its number of samples.
 
-```python
-def test_migrate_idempotent(stub_csvs, tmp_db):
-    # Run migration once
-    migrate()
-    
-    # Count rows in each table
-    counts_after_first = {
-        table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        for table in ["patient_vitals", "prediction_history", "fl_training"]
-    }
-    
-    # Run migration a second time
-    migrate()
-    
-    # Counts must be identical — no rows added
-    counts_after_second = {
-        table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-        for table in ["patient_vitals", "prediction_history", "fl_training"]
-    }
-    
-    assert counts_after_first == counts_after_second
-```
+| Test | What it checks |
+|---|---|
+| `equal_samples_gives_arithmetic_mean` | Equal sizes give a plain average |
+| `unequal_samples_weighted` | Example: weights 1.0 (80 samples) and 3.0 (20 samples) give (80·1 + 20·3)/100 = **1.4** |
+| `single_client_unchanged` | One hospital returns its own weights |
+| `output_shape_matches_input` | Layer shapes never change |
+| `output_dtype_float32` | float32 |
+| `result_bounded_by_inputs` | An average cannot fall outside min and max of its inputs |
 
-The implementation achieves idempotency by checking `fl_training_exists()` before inserting FL data, and by using `if_exists='replace'` (with pre-truncation) or checking existing row hashes for other tables. Without this test, a user running the migration script twice would end up with duplicate data — every vital sign reading appearing twice, the dashboard charts showing the same readings back-to-back.
+### 3C — `_fedyogi` (8 tests)
+FedYogi (momentum plus an adaptive step) is an **optional** algorithm in the simulator; the real training uses FedAvg + FedProx. The tests keep the option correct. Defaults in `_fedyogi`: η = 0.01, β1 = 0.9, β2 = 0.99, τ = 1e-3.
 
-**The column rename tests (7–9) explained:**
+| Test | What it checks |
+|---|---|
+| `returns_triple` | Returns `(new_weights, m, v)` |
+| `output_shape_matches_global` | Shapes are preserved |
+| `cold_start_none_mt_vt` | `m_t = v_t = None` initialises to zeros and τ² |
+| **`vt_never_below_tau_squared`** | The variance estimate never drops below τ², so the denominator `√v + τ` is never zero or NaN |
+| `new_m_shape_matches_delta` | Momentum has the right shape |
+| `zero_delta_no_weight_change` | If hospitals learned nothing, the global model does not move |
+| `output_dtype_float32` | float32 |
+| `warm_start_uses_previous_mt_vt` | A second round continues from the saved momentum and variance |
 
-The original CSV files exported from the Streamlit version of the app used display-friendly column names:
+### 3D — `load_training_metadata` (7 tests)
+Loads `models/training_metadata.json`, or returns built-in defaults if the file is missing.
 
-```
-CSV column name → SQLite column name
-"SpO₂"         → "SpO2"      (remove Unicode ₂ subscript)
-"Temp (°C)"     → "Temp"      (remove unit suffix)
-"GCS Eye"       → "GCS_Eye"   (replace space with underscore)
-```
+| Test | What it checks |
+|---|---|
+| `returns_dict` | Always a dictionary |
+| `fallback_num_rounds` (100), `fallback_final_mae` (1.8968), `fallback_final_r2` (0.5995), `fallback_hospitals` (3) | The fallback values are locked so they cannot change unnoticed |
+| `reads_from_file`, `file_overrides_final_r2` | When the file exists, **its** values win over the fallback |
 
-The tests verify these renames because the ClinIQ backend's SQL queries use the renamed column names. If the migration fails to rename, every `SELECT SpO2 FROM patient_vitals` would return an error ("no such column: SpO2").
+> **Historical placeholder, not the current model.** The fallback numbers (MAE 1.8968, R² 0.5995) belong to an **earlier model on the old dataset**. They are shown only if `training_metadata.json` is missing. The current model's real numbers (MAE 1.8006, R² 0.4806) always come from the file. The tests exist to stop these placeholders changing silently; they are not claims about the current model. (The fallback block in `fl_dashboard.py` itself still holds the old values.)
+
+### 3E — Chart builders (9 tests)
+Three Plotly builders: `_training_chart`, `_hist_chart`, `_heatmap_chart`.
+
+| Test | Why it matters |
+|---|---|
+| `training_chart_empty_returns_none`, `hist_chart_none_inputs_returns_none`, `heatmap_chart_none_returns_none` | **Empty-input guards.** When the simulation first opens there is no data yet; the page calls every chart at once, so each builder must return `None` instead of crashing |
+| `training_chart_with_data_returns_figure`, `hist_chart_with_data_returns_figure`, `heatmap_chart_with_weights_returns_figure` | With data they return a real figure |
+| `training_chart_has_secondary_y_axis` | The training chart has a second axis (loss and R²) |
+| `hist_chart_barmode_overlay` | Before and after aggregation histograms are overlaid for comparison |
+| `heatmap_chart_slice_shape` | The heatmap shows a slice of the first-layer matrix, not all 27,648 weights, so the page stays fast |
+
+### 3F — `_network_diagram` (9 tests)
+Returns an HTML string with an animated picture of hospitals and the server.
+
+| Test | Why it matters |
+|---|---|
+| `returns_nonempty_string`, `contains_doctype` | A complete HTML document the browser can render |
+| `distributing_has_dotdown` | Weights flowing from server to hospitals animate downward |
+| `aggregating_has_dotup` | Weights flowing back animate upward |
+| `idle_no_animation` | No animation when idle |
+| `done_contains_best_round` | After training, the best round number is shown |
+| `hospital_names_present`, `algorithm_name_present` | The diagram labels the three hospitals and the algorithm |
+| `inf_best_loss_no_crash` | An infinite best loss (nothing finished yet) does not crash the diagram |
 
 ---
 
-## 15. Phase 10 — System Tests (`test_fl_system.py`)
+## 9. Phase 4 — Client Logic (22 tests)
 
-**Goal:** End-to-end FL simulation using the actual `fl_thread` function with real synthetic data. These are the most realistic tests — they run the full simulation loop from `status="idle"` through `status="done"`.
+**File:** `tests/fl/unit/test_client_logic.py` · **Goal:** test `client.py`, the real federated client one hospital runs.
 
-**All tests in this phase are `@pytest.mark.slow`.** A 1-round simulation takes 5–15 seconds; a 3-round simulation takes 15–45 seconds depending on hardware.
+> **The count is 22.** The file's docstring says "19 tests" (its `fit()` group has 12 tests, not the number it lists); the real total is 22: 2 + 12 + 3 + 5.
 
-**How the test harness works:**
+### How the real `client.py` is built (important for understanding the tests)
+`client.py` is a **script**. At import it does all of this at module level:
+1. reads `--client_id` (0, 1 or 2) with `argparse`,
+2. loads `scaler.pkl`,
+3. loads that hospital's rows with `get_fl_client_data(CLIENT_ID)`,
+4. splits them 85% train / 15% validation,
+5. creates the module-level `model`, then defines `HospitalClient` and connects to the server.
 
-```python
-def run_simulation(n_rounds, algorithm="FedAvg", mu=0.0, use_dp=False):
-    # Reset state for a clean run
-    _reset_state(n_rounds, algorithm)
-    _STOP.clear()   # ensure stop signal is not set
-    
-    # Run fl_thread (the same function the Streamlit UI calls)
-    # In tests, run synchronously (not in a background thread)
-    fl_thread(algorithm=algorithm, mu=mu, use_dp=use_dp)
-    
-    return _read_state()   # return final state for assertions
+So `HospitalClient()` takes **no arguments** and uses the module-level `X_train`, `y_train`, `X_val`, `y_val` and `model`. The constants are `EPOCHS = 3`, `BATCH_SIZE = 64`, `BASE_LR = 0.001`, `LR_DECAY = 0.99`, `GRAD_CLIP = 1.0`, `MU_FEDPROX = 0.5`, `USE_DP = False`, `SERVER_ADDR = "127.0.0.1:8080"`.
+
+The tests set `sys.argv = ["client.py", "--client_id", "0"]` and replace `start_numpy_client` with a no-op before importing; the **real** scaler and the **real** hospital-0 rows are then used. Individual tests replace `train_model`, `evaluate_model`, `apply_dp_to_update`, `get_weights` and `set_weights` inside the `client` module with `MagicMock`s.
+
+**What `fit()` does:** save a copy of the received global weights → load them into the model → compute `lr = max(1e-4, 0.001 × 0.99^(round−1))` → call `train_model(..., epochs=3, batch_size=64, grad_clip=1.0, oversample=False, global_params=parameters, mu=0.5)` → evaluate on the validation set → if DP is on, add noise to the update → return `(weights, n_train, {"loss", "mae", "r2"})`.
+
+### 4A — `get_parameters` (2 tests)
+Returns a list of numpy arrays whose length equals the model's number of weight arrays (the type and shape Flower needs).
+
+### 4B — `fit` (12 tests)
+| Test | Why it matters |
+|---|---|
+| `returns_three_element_tuple` | Flower expects `(weights, count, metrics)` |
+| `n_samples_equals_x_train_len` | The server weights each hospital by this number in FedAvg |
+| `calls_train_model_once`, `calls_evaluate_model_once` | One local training and one evaluation per round |
+| `lr_round_1` | Round 1 → `lr = BASE_LR` (0.001) |
+| `lr_round_50` | Round 50 → `max(1e-4, 0.001·0.99^49)` ≈ 0.00061 |
+| `lr_clamps_to_floor` | Round 1,000 → exactly the 1e-4 floor, so learning never stops |
+| `dp_disabled_no_dp_call` | `USE_DP = False` → `apply_dp_to_update` is never called |
+| `dp_enabled_calls_dp` | `USE_DP = True` → it is called exactly once |
+| `returns_training_metrics` | The third return value has exactly `loss`, `mae`, `r2`, all floats, so the server can log per-hospital stats |
+| `weights_list_is_returned` | A non-empty list of arrays |
+| `default_server_round_is_1` | If the config has no `server_round`, the client behaves as round 1 |
+
+The two learning-rate tests lock the decay formula: if someone changes `LR_DECAY` from 0.99 to a faster decay, the round-50 test fails at once.
+
+**The DP tests** guard the `if USE_DP:` branch. Without them a developer could move the privacy call outside the `if` (always on) or delete it (never on), and nothing else would notice.
+
+### 4C — `evaluate` (3 tests)
+| Test | What it checks |
+|---|---|
+| `returns_triple` | `(mse, n_val, {mae, r2})` as Flower expects |
+| `calls_set_weights_before_evaluate_model` | The received **shared** weights are loaded first, so the hospital scores the shared model, not its own old one |
+| `returned_mse_matches_metrics` | The returned loss equals the computed MSE |
+
+### 4D — Configuration constants (5 tests)
+`MU_FEDPROX == 0.5`, `USE_DP is False`, `EPOCHS == 3`, `BATCH_SIZE == 64`, `SERVER_ADDR == "127.0.0.1:8080"`. These lock the final settings (the reasons are in `TRAIN_FEDERATED.md`), so a "quick try" such as `EPOCHS = 5` is noticed.
+
+---
+
+## 10. Phase 5 — Server Strategy (19 tests)
+
+**File:** `tests/fl/unit/test_server_strategy.py` · **Goal:** test `SaveBestStrategy` from `server.py`.
+
+### What the real `server.py` does
+`SaveBestStrategy` extends **`fl.server.strategy.FedAvg`**.
+- **`aggregate_fit`** (after the hospitals train): call the parent FedAvg, load the averaged weights into the server's model and save them to **`federated_model_latest.pth`** every round (a crash-recovery backup only, never the production model), then print the round.
+- **`aggregate_evaluate`** (after the hospitals score the new model): average the hospitals' losses; **if this is the lowest so far**, save the model to **`federated_model.pth`** (the file the dashboard loads) and record the round.
+- After all rounds: write a **partial** `training_metadata.json` (`aggregation: "FedAvg"`, best round, best loss, architecture, source `server.py`). It **keeps** `final_mae`, `final_r2` and other fields from an earlier `train_federated.py` run, because the server has no test data to compute them itself.
+
+> **Corrected from earlier versions:** the best model is saved to `federated_model.pth` and the per-round backup to `federated_model_latest.pth`. An older document described the reverse (`federated_model_best.pth`), which no longer exists.
+
+### 5A — `aggregate_fit` (5 tests)
+| Test | Why it matters |
+|---|---|
+| `calls_super` | The real FedAvg averaging is used |
+| `calls_set_weights_when_params_not_none` | The server's model receives the averaged weights |
+| **`saves_latest_model_to_pth`** | Saves exactly once, to a path ending `federated_model_latest.pth`, so the production model is never overwritten by a mediocre round |
+| `prints_round_number` | The round number appears in the log |
+| `null_params_skips_set_weights` | If aggregation returns nothing, no weights are loaded |
+
+### 5B — `aggregate_evaluate` (7 tests)
+| Test | Why it matters |
+|---|---|
+| `computes_correct_avg_loss` | Losses 1, 2, 3 average to 2.0 |
+| `first_round_updates_best_loss` | The first round always beats the starting infinity |
+| **`higher_loss_does_not_update_best`** | A worse round (5.0 vs best 1.0) leaves the best loss unchanged |
+| `new_best_saves_best_model` | A new best writes `federated_model.pth` |
+| **`not_best_does_not_save_best_model`** | A worse round does **not** call `torch.save` at all, so a good model is never overwritten by a worse one |
+| `updates_best_round` | The best round number is recorded |
+| `calls_super` | The parent evaluation is still run |
+
+### 5C — Strategy settings (3 tests)
+`fraction_fit == 1.0` (all hospitals every round), `min_fit_clients == 3`, `min_evaluate_clients == 3`.
+
+### 5D — Constant (1 test)
+`NUM_ROUNDS == 100` (matches `train_federated.py`).
+
+### 5E — Metadata (3 tests)
+| Test | Why it matters |
+|---|---|
+| `best_round_field_is_int` | A plain int is JSON-safe |
+| `path_is_in_models_dir` | The file goes to `models/training_metadata.json` |
+| **`merge_preserves_final_mae_and_r2`** | The merge keeps `final_mae` and `final_r2` from an existing file and drops unrelated keys. Without it, each real-FL run would erase the accuracy figures and the SOFA validation drawer would show nothing |
+
+> The merge test replicates the merge loop of `server.py` on a temporary file, using the **historical** example numbers 1.8968 and 0.5995. They are only test data, not claims about the current model.
+
+---
+
+## 11. Phase 6 — Train Federated Helpers (32 tests)
+
+**File:** `tests/fl/unit/test_train_federated_fns.py` · **Goal:** test `train_federated.py`: the non-IID split, its own `HospitalClient`, its own `SaveBestStrategy` and the configuration constants.
+
+> **The count is 32** = 8 + 7 + 5 + 12. The file's docstring says "30 tests" (and lists 6C as 7 and 6D as 10); the real groups are 6A **8**, 6B **7**, 6C **5**, 6D **12**.
+
+`train_federated.py` runs the *entire* simulation at import time. The guards in Section 4 (fake `start_simulation`, skipped `np.save`, no-op `torch.save`, redirected metadata write) keep that harmless. An autouse fixture resets `_best_loss`, `_best_round`, `_best_weights` and `_last_weights` before each test.
+
+### 6A — `make_noniid_split` (8 tests)
+Builds the **optional** specialty-biased hospital split (General / Mixed / Cardiac-Trauma). The default is IID; this is only for demonstrating federated-learning challenges.
+
+| Test | Why it matters |
+|---|---|
+| `returns_exactly_3_tuples` | Three hospitals |
+| `each_element_is_xy_pair` | `(X, y)` pairs |
+| `total_samples_preserved` | No patient lost or duplicated |
+| `hospital0_low_sofa_majority` | Hospital 0 is mostly Low SOFA, so the bias is real |
+| `hospital2_high_sofa_majority` | Hospital 2 is mostly High SOFA |
+| `is_deterministic` | The same seed gives the same split |
+| `different_seeds_produce_different_results` | The seed is actually used |
+| `handles_empty_high_sofa_class` | No High-SOFA patients at all must not crash it |
+
+### 6B — `HospitalClient` (simulation variant) (7 tests)
+Constructed as `HospitalClient(X, y, hospital_id, name)`.
+
+| Test | Why it matters |
+|---|---|
+| `get_parameters_returns_model_weights` | List of arrays, one per weight tensor |
+| `fit_calls_set_weights_before_train` | The received weights are loaded **first** (checked by recording call order) |
+| `fit_passes_server_round_to_lr_formula` | Round 10 → `lr = max(1e-4, BASE_LR·LR_DECAY⁹)` |
+| `fit_dp_enabled_calls_apply_dp` | `USE_DP = True` → DP applied once |
+| `fit_returns_correct_layer_count` | Returns the right number of arrays; the extra metrics dict is empty here |
+| `evaluate_calls_set_weights_before_eval` | Order is `set_weights`, then `evaluate_model` |
+| `evaluate_returns_correct_structure` | `(mse, n_val, {mae, r2})` with `n_val` a positive int |
+
+### 6C — `SaveBestStrategy` (simulation variant) (5 tests)
+Built on `_BaseStrategy`, which is **FedAvg** by default and FedYogi only if `USE_FEDYOGI = True`. The tests patch `_BaseStrategy` so they hold for either parent.
+
+| Test | Why it matters |
+|---|---|
+| **`configure_fit_adds_server_round`** | Every hospital's config contains `server_round` (checked with round 7). Without it `fit()` could not compute its learning rate |
+| `aggregate_fit_stores_params_in_last_weights` | The averaged weights are kept in `_last_weights` |
+| `aggregate_evaluate_updates_best_loss` | A new lowest loss is recorded |
+| `aggregate_evaluate_copies_last_to_best_on_new_best` | On a new best, the stored weights are copied into `_best_weights`, which is what finally gets saved as `federated_model.pth` |
+| `aggregate_evaluate_calls_super` | The parent strategy (FedAvg by default) is still called exactly once |
+
+### 6D — Configuration constants (12 tests)
 ```
-
-| # | Test | What it verifies |
-|---|---|---|
-| 1 | 1-round sim → `status="done"` | The simulation completes normally without hanging or crashing |
-| 2 | Global loss after round 1 is finite | Numerical stability with real training data and the real training loop |
-| 3 | `best_round == 1` after 1-round sim | The only round is trivially the best round |
-| 4 | Global MAE recorded after round 1 | MAE is computed and stored in state |
-| 5 | Global R² recorded (can be negative on round 1) | R² is computed and stored — can be negative on the first round (model hasn't learned enough yet) |
-| 6 | All 3 hospitals have `mae`, `r2`, `loss` in client metrics | Per-hospital metrics are tracked for all 3 hospitals |
-| 7 | Weight stats recorded for all 3 hospitals | Mean, std, and delta_mean of weights are recorded per hospital |
-| 8 | `layer1_weights` has shape `(256, input_dim)` | The first layer's weights (used for the heatmap) have the expected dimensions |
-| 9 | `pre_agg_flat` and `post_agg_flat` are 1D arrays of same length | Histogram data arrays are compatible for before/after comparison |
-| 10 | 3-round sim → `global_losses` has length 3 | One loss value per completed round |
-| 11 | 3-round sim: global loss trend is non-increasing | Convergence is occurring — the simulation learns over multiple rounds |
-| 12 | 5-round FedYogi sim converges and differs from FedAvg | The simulator's optional FedYogi mode lowers the loss from round 1 to round 5, and gives a different final loss than FedAvg (so the two modes are really different algorithms) |
-| 13 | FedProx (μ=0.5): each client's `delta_mean` < FedAvg delta_mean | FedProx reduces client drift — verified at the system level, not just the unit level |
-| 14 | `_STOP.set()` before round 1 → status="stopped", no rounds run | The stop signal is checked at the start of each round — stopping before round 1 prevents any training |
-| 15–17 | `round_log` has 1 entry with correct structure | The round log (used by the training chart) has one entry per round with the correct field names |
-
-**The convergence test (Test 11) in detail:**
-
-```python
-@pytest.mark.slow
-def test_global_loss_non_increasing_over_3_rounds(synthetic_data):
-    state = run_simulation(n_rounds=3)
-    losses = state["global_losses"]   # [loss_round1, loss_round2, loss_round3]
-    
-    assert len(losses) == 3
-    
-    # Overall trend should be downward (allow one non-improvement round)
-    # Not every round must improve — local noise (and, in FedYogi mode, its warm-start) can cause a brief spike
-    n_improvements = sum(1 for i in range(1, len(losses)) if losses[i] < losses[i-1])
-    assert n_improvements >= len(losses) // 2   # majority of rounds must improve
+NUM_ROUNDS == 100          EPOCHS_PER_ROUND == 3       BATCH_SIZE == 64
+MU_FEDPROX == 0.5          LR_DECAY == 0.99            USE_DP is False
+OVERSAMPLE is False        USE_FEDYOGI is False        strategy is FedAvg, not FedYogi
+SERVER_ETA == 0.001        SERVER_BETA1 == 0.9         SERVER_BETA2 == 0.99
 ```
+- **`USE_FEDYOGI is False`** and **`strategy_is_fedavg_by_default`**: the final model aggregates with plain FedAvg (FedProx stays on at the clients). FedYogi with η = 0.01 made the server loss explode on `dataset_v2`.
+- **`SERVER_ETA == 0.001`**: used only if FedYogi is switched back on (it was 0.01).
+- **`SERVER_BETA1`, `SERVER_BETA2`**: FedYogi settings (also only used if it is on).
+- **`MU_FEDPROX == 0.5`**: the proximal weight; 0.01 was far too weak and 1.0 too strong.
 
-The test allows for one non-improving round because training is stochastic, and (as documented in `TRAIN_FEDERATED.md` for the earlier FedYogi setup) an adaptive server optimiser can cause a brief exploration-explosion phase. Requiring strict monotone decrease would cause the test to fail on the first round of a 2-round sim if that round happened to land in the exploration phase.
+These tests are "configuration as documentation": changing a value fails the test, which forces the person to read why it was chosen.
 
-**The FedYogi simulation test (Test 12) in detail:**
+---
 
-```python
-def test_fedyogi_5round_simulation_converges():
-    # FedYogi — 5 rounds, then FedAvg — 5 rounds, on the same synthetic clients
-    losses_yogi = state_yogi["global_losses"]
-    losses_avg  = state_avg["global_losses"]
+## 12. Phase 7 — Database ↔ Model Integration (10 tests)
 
-    assert len(losses_yogi) == 5
-    assert losses_yogi[-1] < losses_yogi[0]      # FedYogi converges
-    assert losses_yogi[-1] != losses_avg[-1]     # the two algorithms really differ
-```
+**File:** `tests/fl/integration/test_db_model_integration.py` · **Goal:** connect the database layer to the model layer.
 
-FedYogi is an **optional** algorithm in the Streamlit simulator; the real training run uses FedAvg + FedProx (`USE_FEDYOGI = False`). This test checks that the optional mode still trains and is not secretly the same as FedAvg. It does **not** claim FedYogi is better: on 5 rounds of synthetic data a fair "which is better" comparison is not possible, and on the real dataset_v2 data FedAvg did better (FedYogi with η=0.01 made the server loss explode). *Historical note:* an earlier version of this test asserted "FedYogi beats FedAvg", based on an old training run (R² 0.2229 vs 0.2148).
+**Why integration is needed beyond the unit tests.** Phase 1 shows `get_fl_client_data()` returns the right DataFrame; Phase 2 shows `train_model()` works on arrays. Neither proves the DataFrame from the database can be fed straight into training. A real class of bug this catches: columns arriving in a different order than the scaler was fitted with, which would make R² collapse while every unit test still passed.
+
+All tests use `tmp_db` and `fl_training_rows` (so the real database is untouched). `_load(db_path, client_id)` is a small helper that reads a hospital's X and y.
+
+| Test | What it verifies |
+|---|---|
+| `db_to_dataset_length` | A database DataFrame wraps into an `ICUDataset` of the right length |
+| `db_to_dataset_x_values_match` | Feature values and order survive DB → DataFrame → dataset |
+| `db_to_train_model_completes` | Load → train works end to end |
+| `db_to_evaluate_model_returns_finite_metrics` | MSE, MAE and R² are finite |
+| `different_clients_return_different_data` | Hospital isolation holds through the whole stack |
+| `trained_model_weights_differ_from_untrained` | Training really changes the weights |
+| `weights_round_trip_on_db_trained_model` | `get_weights` → `set_weights` is exact even after training |
+| `compute_sofa_risk_metrics_with_db_data` | The clinical report accepts database-sourced SOFA values |
+| `nan_features_filled_with_zero` | The `fillna(0)` in `get_fl_client_data` is applied before training |
+| `train_test_split_correct_sizes` | An 80/20 split of a database DataFrame gives the expected sizes |
+
+---
+
+## 13. Phase 8 — FL Round Integration (14 tests, all slow)
+
+**File:** `tests/fl/integration/test_fl_round_integration.py` · **Goal:** run a complete federated round (distribute → train → aggregate) **without Flower**, using the simulator's own functions (`_fedavg`, `_fedyogi`, `fl_thread`) and synthetic hospitals. Every test is `@pytest.mark.slow` because each trains real networks.
+
+Setup: `INPUT_DIM = 10`; `_make_clients()` builds 3 hospitals (100 train + 25 validation rows, random SOFA); `_make_clients_structured()` builds hospitals whose answer depends on one feature, so convergence tests have a real signal to learn. An autouse fixture resets the simulator state (`_reset_state(1, "FedAvg")`, `_STOP.clear()`) before every test. Streamlit is mocked only if an earlier test file has not already done it.
+
+Groups: 8A manual training and aggregation **5** · 8B `fl_thread` state tracking **7** · 8C FedProx vs FedAvg **1** · 8D data shapes **1**.
+
+### 8A — Manual training and aggregation (5 tests)
+| Test | What it verifies |
+|---|---|
+| `three_clients_produce_three_weight_lists` | Each of 3 hospitals trains and returns its own weights |
+| `fedavg_aggregated_shapes_match_global` | Aggregation keeps every layer shape |
+| `post_fedavg_model_forward_pass_is_valid` | The averaged model still produces finite predictions |
+| `fedyogi_variance_floored_at_tau_squared` | The optional FedYogi keeps `v ≥ τ²` and gives finite weights in practice |
+| `round2_global_loss_lower_than_round1` | On structured data, a second round of FedAvg gives a lower loss, so convergence works |
+
+### 8B — `fl_thread` state tracking (7 tests)
+| Test | What it verifies |
+|---|---|
+| `fl_thread_status_done_after_completion` | `status` and `current_phase` both end at `"done"` |
+| `state_current_round_is_1_after_one_round` | The round counter advances |
+| `state_global_losses_length_equals_rounds` | One loss per completed round |
+| `state_client_losses_one_entry_per_client` | Each hospital's loss is recorded |
+| `stop_event_before_round_yields_stopped` | Setting the stop signal first gives status `"stopped"` |
+| `best_round_is_1_after_single_round` | The only round is the best |
+| `round_log_has_one_entry_with_correct_keys` | Entry has `Round`, `H0 Loss`, `H1 Loss`, `H2 Loss`, `Global` |
+
+### 8C — FedProx vs FedAvg (1 test)
+`fedprox_produces_smaller_weight_delta_than_fedavg`: train the three hospitals for 10 epochs with and without the proximal term (μ = 0.5) and compare the average distance each hospital's weights moved from the shared model. **FedProx must move less.** This verifies the reason FedProx is used: it limits client drift.
+
+### 8D — Data shapes (1 test)
+`pre_post_agg_flat_and_layer1_weights_shapes`: after one round, the before- and after-aggregation weight vectors are 1-D and equal in length (for the histogram), and the first-layer matrix has shape `(256, INPUT_DIM)` (for the heatmap).
+
+---
+
+## 14. Phase 9 — Migration Integration (19 tests)
+
+**File:** `tests/fl/integration/test_migrate_to_db.py` · **Goal:** test `migrate_to_db.migrate()`, the one-time import of the CSV files into the SQLite database.
+
+> **The count is 19.** The file's docstring says "17 tests" and lists groups that add up to 17; the file also has the two `_check_cwd` tests, bringing it to 19.
+
+### What `migrate()` does
+It first calls `_check_cwd()` (aborts unless run from `icu_monitor/`), then `init_db()`, then imports:
+
+| CSV source (relative paths) | Database table |
+|---|---|
+| `models/patient_vitals/patient_vitals_01..03.csv` | `patient_vitals` (patient 1, 2, 3) |
+| `models/prediction_history/prediction_history_01..03.csv` | `prediction_history` |
+| `data/sample_patients/sample_patient01..03_data.csv` | `sample_patients` |
+| `data/fl_training/client_0..2.csv` | `fl_training` (`client_id` 0, 1, 2) |
+
+A missing file is reported and skipped. A hospital that already has rows in `fl_training` is skipped, which is what makes the import safe to repeat. After importing it (re)creates `idx_ft_client`.
+
+> **Current project state:** the training data lives in the database already (41,798 rows), and training no longer writes `client_*.csv` files. The migration is therefore needed mainly to (re)create the **demo tables** from `data/sample_patients/`. The `fl_training` import paths are kept for people who receive the three CSVs.
+
+### How the tests stay safe
+`monkeypatch.chdir(tmp_path)` makes the relative CSV paths resolve inside a temporary folder; both `db.DB_PATH` and `migrate_to_db.DB_PATH` point to a temporary database; `_check_cwd` is switched off inside the temporary folder (it has its own tests). Small CSV builders (`_vitals_df`, `_hist_df`, `_sp_df`, `_fl_df`) and `_create_all_csvs()` create a full stub tree. The fixtures are `patched_env`, `migrated_db` (one `migrate()` call) and `conn`.
+
+Groups: 9A happy path **5** · 9B idempotency **1** · 9C column renames **3** · 9D `client_id` **2** · 9E edge cases **2** · 9F structure and working-directory guard **6** (4 structure checks plus the 2 `_check_cwd` tests). Total 19.
+
+| Test | Why it matters |
+|---|---|
+| `migrate_completes_without_error` | Basic sanity |
+| `patient_vitals_has_rows`, `prediction_history_has_rows`, `sample_patients_has_rows`, `fl_training_has_rows_for_all_three_clients` | Each table is actually filled, not just created |
+| **`migrate_twice_leaves_row_counts_unchanged`** | **Idempotency.** Running the script twice must not double any table (checked on all four tables). Achieved by skipping a hospital's `fl_training` import when it already has rows |
+| `spo2_column_renamed_from_special_char` | The CSV header `SpO₂` becomes `SpO2` |
+| `temp_column_renamed_from_special_char` | `Temp (°C)` becomes `Temp` |
+| `gcs_eye_column_renamed_from_space` | `GCS Eye` becomes `GCS_Eye` |
+| `fl_training_client_id_column_has_values_0_1_2` | All three hospitals are present |
+| `fl_training_client0_rows_assigned_client_id_0` | Each CSV gets the right `client_id` |
+| `missing_csv_skipped_without_crash` | A missing file is skipped, not fatal |
+| `empty_csv_skipped_without_crash` | An empty file is skipped, not fatal |
+| `patient_vitals_patient_column_has_values_1_2_3` | Patient ids are correct |
+| `fl_training_index_idx_ft_client_exists` | The performance index is rebuilt |
+| `sample_patients_row_idx_starts_at_zero` | The replay position starts at 0 |
+| `db_file_size_reported_without_crash` | The size report in the summary cannot crash |
+| **`check_cwd_exits_outside_icu_monitor`** | Running from another folder aborts with exit code 1, instead of "succeeding" with empty tables (every "not found" is otherwise swallowed) |
+| `check_cwd_passes_inside_icu_monitor` | From the project folder the guard allows the run |
+
+**Why the column renames matter:** the backend's SQL uses the clean names (`SELECT SpO2 …`). If the import left `SpO₂` in place, those queries would fail with "no such column".
+
+---
+
+## 15. Phase 10 — System Tests (17 tests, all slow)
+
+**File:** `tests/fl/system/test_fl_system.py` · **Goal:** run the **whole simulation loop** (`fl_thread`) with synthetic hospitals, from "idle" to "done".
+
+`fl_thread` is called directly (not in a background thread) with `speed = 0.0`, so runs are synchronous and repeatable. Signature: `fl_thread(num_rounds, speed, algorithm, clients, input_dim)`. A module-scoped fixture `one_round` runs **one** FedAvg round once and shares the result with the tests that only read it. An autouse fixture resets the state around every test. Three data builders exist: random, structured (one learnable signal), and non-IID (each hospital has a different feature and SOFA range; this builder exists in the file but no test currently uses it).
+
+Groups: 10A single round **5** · 10B client and weight metrics **4** · 10C multi-round **2** · 10D algorithm comparison **2** · 10E stop and log **4**.
+
+### 10A — Single round (5 tests)
+| Test | What it verifies |
+|---|---|
+| `one_round_status_done` | The simulation finishes normally |
+| `one_round_global_loss_is_finite` | No NaN with real training |
+| `one_round_best_round_is_1` | The only round is the best |
+| `one_round_global_mae_recorded` | A finite MAE is stored |
+| `one_round_global_r2_recorded` | A finite R² is stored (may be negative in round 1) |
+
+### 10B — Client and weight metrics (4 tests)
+| Test | What it verifies |
+|---|---|
+| `all_three_client_metrics_present` | `mae`, `r2`, `loss` for each of the 3 hospitals |
+| `weight_stats_all_three_clients_recorded` | `n_params`, `mean`, `std`, `delta_mean` per hospital, per round |
+| `layer1_weights_correct_shape` | First-layer matrix is `(256, INPUT_DIM)` (heatmap data) |
+| `pre_post_agg_flat_1d_same_length` | Histogram vectors are compatible |
+
+### 10C — Multi-round (2 tests)
+| Test | What it verifies |
+|---|---|
+| `three_round_global_losses_length` | Exactly 3 loss values after 3 rounds |
+| `three_round_loss_generally_converging` | On structured data, the round-3 loss is **lower than** round 1 |
+
+### 10D — Algorithm comparison (2 tests)
+- **`fedyogi_5round_simulation_converges`:** runs 5 rounds of FedYogi and 5 of FedAvg on the same structured data and seed. Checks both run 5 rounds, that **FedYogi's final loss is lower than its first**, and that **the two final losses differ**, so they are really different algorithms. It does **not** claim FedYogi is better: five synthetic rounds cannot settle that, and on the real `dataset_v2` data FedAvg did better (FedYogi with η = 0.01 made the server loss explode). *Historical note:* an older version of this test asserted "FedYogi beats FedAvg" using old training numbers.
+- **`fedprox_clients_smaller_delta_than_fedavg`:** same seed, so same starting weights. With FedProx (μ = 0.5) **each of the three hospitals'** `delta_mean` is smaller than under plain FedAvg. This confirms the drift-limiting property at system level.
+
+### 10E — Stop and log (4 tests)
+| Test | What it verifies |
+|---|---|
+| `stop_before_round_yields_stopped_status` | Setting the stop signal first gives status `"stopped"` and **no** completed rounds |
+| `one_round_round_log_has_one_entry` | One log entry per round |
+| `one_round_round_log_round_number` | The entry says `Round == 1` |
+| `one_round_round_log_has_hospital_and_global_keys` | `H0 Loss`, `H1 Loss`, `H2 Loss`, `Global` |
 
 ---
 
 ## 16. Run Commands
 
+**Always run from the `icu_monitor/` folder.** Running from a subfolder fails at collection: the client, server and training tests import real project files by relative path.
+
 ```bash
-# ── FAST TESTS (development cycle) ──────────────────────────────────
-
-# All FL unit tests (no DB, no model load needed)
 cd icu_monitor
-pytest tests/fl/unit/ -v
 
-# All FL tests excluding slow system tests
-pytest tests/fl/ -v -m "not slow"
+# ── FL tests ────────────────────────────────────────────────────────────
+pytest tests/fl                       # all 295 FL tests         (≈ 9 s)
+pytest tests/fl -m "not slow"         # 264 fast tests           (≈ 7 s)
+pytest tests/fl -m slow               # 31 slow tests            (≈ 6 s)
 
-# Specific test file
+pytest tests/fl/unit                  # 235 unit tests
+pytest tests/fl/integration           # 43 integration tests
+pytest tests/fl/system                # 17 system tests
+
+# one file, or one test
 pytest tests/fl/unit/test_model_utils.py -v
+pytest tests/fl/unit/test_model_utils.py::test_train_model_default_is_plain_mse -v
 
-# Specific test by name
-pytest tests/fl/unit/test_model_utils.py::test_weighted_mse_loss_zero_for_perfect -v
+# ── Everything (ClinIQ backend + FL) ────────────────────────────────────
+pytest tests                          # 513 passed
+pytest tests -m "not slow"            # 472 passed, 41 deselected
+#   (the 41 slow tests = 31 FL + 10 that call the real Groq LLM)
 
-# ── INTEGRATION TESTS (slightly slower) ──────────────────────────────
-
-# DB ↔ Model pipeline
-pytest tests/fl/integration/test_db_model_integration.py -v
-
-# Full FL round (no Flower gRPC)
-pytest tests/fl/integration/test_fl_round_integration.py -v -m "not slow"
-
-# Migration tests
-pytest tests/fl/integration/test_migrate_to_db.py -v
-
-# ── SYSTEM TESTS (slow — run before demos) ────────────────────────────
-
-# All system tests (real FL simulation)
-pytest tests/fl/system/ -v -m slow
-
-# Only the 1-round convergence test (fastest system test)
-pytest tests/fl/system/test_fl_system.py::test_1round_sim_status_done -v
-
-# ── COVERAGE ─────────────────────────────────────────────────────────
-
-# Coverage for all FL modules (excluding slow tests)
-pytest tests/fl/ -m "not slow" \
-    --cov=db \
-    --cov=model_utils \
-    --cov=fl_dashboard \
-    --cov=client \
-    --cov=server \
-    --cov=train_federated \
-    --cov=migrate_to_db \
-    --cov-report=term-missing \
-    --cov-report=html:coverage_fl/
-
-# Open HTML report
-open coverage_fl/index.html
-
-# ── COMBINED (ClinIQ + FL) ─────────────────────────────────────────
-
-# All tests (backend + FL), skip slow LLM and FL system tests
-pytest tests/ -v -m "not slow"
-
-# Full suite including all slow tests (for final submission/demo)
-pytest tests/ -v
-# Current result: 513 passed (ClinIQ backend + FL)
-
-# ── FRONTEND (ClinIQ dashboard, Vitest) ────────────────────────────
-# The frontend test files live in icu_monitor/tests/, outside frontend/,
-# so they need a symlink to find packages (gitignored, create once):
-cd icu_monitor
+# ── Frontend (Vitest) ───────────────────────────────────────────────────
+# Frontend test files live in icu_monitor/tests/, outside frontend/, so packages
+# need a symlink (ignored by git; create it once):
 ln -s frontend/node_modules node_modules
-cd frontend && npx vitest run    # current result: 232 passed (27 files)
+cd frontend && npx vitest run         # 232 passed (27 files)
 ```
 
-**Recommended development workflow:**
-
+**Recommended workflow**
 ```
-While editing model_utils.py:
-  pytest tests/fl/unit/test_model_utils.py -v     # fast unit feedback (<5s)
-
-After adding a new DB function:
-  pytest tests/fl/unit/test_db_fl.py -v           # DB unit tests (<3s)
-  pytest tests/fl/integration/test_db_model_integration.py -v  # integration (<15s)
-
-Before a demo or presentation:
-  pytest tests/fl/ -v                              # everything including slow tests
-  pytest tests/cliniq/ -v -m "not slow"           # ClinIQ tests
+While editing model_utils.py:      pytest tests/fl/unit/test_model_utils.py
+After changing a DB function:      pytest tests/fl/unit/test_db_fl.py tests/fl/integration/test_db_model_integration.py
+Before a demo or submission:       pytest tests            (and the Vitest run)
 ```
+
+**Safe to run on your machine:** the FL tests do not write to the real database or overwrite the real trained model (Section 4, "Import-time guards"). They *do* read the real `models/scaler.pkl`, and the client tests read the real hospital-0 rows from `models/icu_monitor.db`, so those files must exist.
 
 ---
 
-## 17. Coverage Targets
+## 17. Coverage — Measured, Not Guessed
 
-| Module | Target | Key areas that must be covered |
-|---|---|---|
-| `db.py` (FL helpers) | ≥ 90% | `get_fl_client_data`, `fl_training_exists`, both NULL-handling branches, trigger creation |
-| `model_utils.py` | ≥ 85% | All public functions, both DP branches, both DataLoader branches, all metric computations |
-| `fl_dashboard.py` (pure fns) | ≥ 70% | `_fedavg`, `_fedyogi`, all state management functions, all chart builders' null guards |
-| `client.py` | ≥ 75% | `fit`, `evaluate`, `get_parameters`, LR decay formula, both DP branches |
-| `server.py` | ≥ 75% | `aggregate_fit`, `aggregate_evaluate`, both best-model branches, metadata save/merge |
-| `train_federated.py` | ≥ 70% | `make_noniid_split`, config constants, `HospitalClient`, `SaveBestStrategy` variants |
-| `migrate_to_db.py` | ≥ 80% | `migrate()`, idempotency check, column rename logic, missing-file guard |
+Earlier versions of this document listed *target* percentages. The numbers below are **measured** on 2026-11-24 with the `coverage` package (the `pytest-cov` plugin is not installed, so coverage is run as `python -m coverage run -m pytest …`). They are **line coverage** for each module.
 
-**Why these targets are set at these levels:**
+| Module | Lines | Missed | Covered by `tests/fl` only | Covered by the whole non-slow suite |
+|---|---|---|---|---|
+| `model_utils.py` | 159 | 2 | **99%** | 99% |
+| `migrate_to_db.py` | 158 | 7 | **96%** | 96% |
+| `server.py` | 66 | 3 | **95%** | 95% |
+| `client.py` | 68 | 4 | **94%** | 94% |
+| `fl_dashboard.py` | 458 | 102 | **78%** | 62% |
+| `db.py` | 97 | 29 | **70%** | 100% |
+| `train_federated.py` | 400 | 140 | **65%** | 65% |
+| **All seven** | **1,406** | **287** | **80%** | — |
 
-- **`db.py` at ≥ 90%:** Database bugs are the most dangerous — silent data corruption is invisible until the system makes a wrong prediction. The 90% target requires testing almost every code path including error branches.
-- **`model_utils.py` at ≥ 85%:** The ML core is the scientific heart of the system. Lower coverage would leave critical paths (like the FedProx proximal term or the AUROC single-class guard) untested.
-- **`fl_dashboard.py` at ≥ 70%:** Streamlit UI code is difficult to test without a live browser — the 70% target reflects what is achievable by testing pure functions only. The remaining 30% (Streamlit render calls) is covered by manual testing during demos.
-- **`client.py` and `server.py` at ≥ 75%:** Both require mocking Flower internals, which reduces testable coverage of the communication paths. 75% covers all the business logic while accepting that the gRPC binding code cannot be unit-tested.
+(The second-to-last column counts every FL test including the slow ones; the last column is the non-slow suite, which is why `fl_dashboard.py` is lower there, since its `fl_thread` tests are slow.)
+
+**Reading the numbers**
+- **`db.py` is 70% with the FL tests alone** because the ClinIQ database functions (vitals, history, sample patients) are tested in `tests/cliniq/`. Together the two suites cover **100%** of `db.py`.
+- **`train_federated.py` is 65%.** Its un-covered lines are the heavy module-level steps: the real BigQuery download and TF-IDF (Phase 0), the real 100-round simulation, and the final evaluation. The import-time guards (Section 4) deliberately replace those with stand-ins, since running them would need BigQuery and about 40 minutes. The testable parts (`make_noniid_split`, `HospitalClient`, `SaveBestStrategy`, the constants) are covered.
+- **`fl_dashboard.py` is 78%.** The rest is Streamlit page rendering, which cannot run without a browser and is checked by hand during demos.
+- **`client.py` and `server.py`** are above 94%; the few missed lines are the actual network connection and the "Training complete" print block.
 
 ---
 
 ## 18. Implementation Status
 
-| Phase | Status | File |
-|---|---|---|
-| 1 — DB FL helpers | ✅ Implemented | `tests/fl/unit/test_db_fl.py` |
-| 2 — model_utils unit | ✅ Implemented | `tests/fl/unit/test_model_utils.py` |
-| 3 — FL dashboard fns | ✅ Implemented | `tests/fl/unit/test_fl_dashboard_fns.py` |
-| 4 — Client logic | ✅ Implemented | `tests/fl/unit/test_client_logic.py` |
-| 5 — Server strategy | ✅ Implemented | `tests/fl/unit/test_server_strategy.py` |
-| 6 — Train federated fns | ✅ Implemented | `tests/fl/unit/test_train_federated_fns.py` |
-| 7 — DB ↔ Model integration | ✅ Implemented | `tests/fl/integration/test_db_model_integration.py` |
-| 8 — FL round integration | ✅ Implemented | `tests/fl/integration/test_fl_round_integration.py` |
-| 9 — Migration integration | ✅ Implemented | `tests/fl/integration/test_migrate_to_db.py` |
-| 10 — System tests | ✅ Implemented | `tests/fl/system/test_fl_system.py` |
+| Phase | Tests | Status | File |
+|---|---|---|---|
+| 1 — DB FL helpers | 21 | ✅ Passing | `tests/fl/unit/test_db_fl.py` |
+| 2 — `model_utils` | 91 | ✅ Passing | `tests/fl/unit/test_model_utils.py` |
+| 3 — FL dashboard functions | 50 | ✅ Passing | `tests/fl/unit/test_fl_dashboard_fns.py` |
+| 4 — Client logic | 22 | ✅ Passing | `tests/fl/unit/test_client_logic.py` |
+| 5 — Server strategy | 19 | ✅ Passing | `tests/fl/unit/test_server_strategy.py` |
+| 6 — Train-federated helpers | 32 | ✅ Passing | `tests/fl/unit/test_train_federated_fns.py` |
+| 7 — DB ↔ model integration | 10 | ✅ Passing | `tests/fl/integration/test_db_model_integration.py` |
+| 8 — FL round integration | 14 | ✅ Passing (slow) | `tests/fl/integration/test_fl_round_integration.py` |
+| 9 — Migration integration | 19 | ✅ Passing | `tests/fl/integration/test_migrate_to_db.py` |
+| 10 — System tests | 17 | ✅ Passing (slow) | `tests/fl/system/test_fl_system.py` |
+| **Total FL** | **295** | **✅ all passing** | |
+
+Totals: **295 FL + 218 ClinIQ backend = 513 Python tests**, plus **232 Vitest** frontend tests = **745 tests**. (The three Playwright specs in `tests/cliniq/frontend/e2e/` need a running app and are not in these counts.)
 
 ---
 
-*Documentation for ICU CDSS Capstone Project*
-*FL test suite: 21 DB tests + 91 model_utils tests + 50 dashboard tests + 22 client tests + 19 server tests + 32 train_federated tests + 10 DB↔model integration tests + 14 FL round integration tests + 19 migration tests + 17 system tests*
-*Whole Python suite (`pytest tests`, ClinIQ backend + FL): 513 passed · Frontend Vitest: 232 passed (27 files)*
-*Tools: pytest + pytest-mock + monkeypatch + numpy.testing (all phases)*
+## 19. What the Tests Do Not Cover, and Known Quirks
+
+Stating limits is part of testing honestly.
+
+**Not covered by automated tests**
+- **Real network federated learning.** No test starts a real Flower server and clients over gRPC. The real demo (`server.py` + three `client.py` processes) is tried by hand. The tests cover the logic of each piece, not the connection between them.
+- **The real 100-round training run and Phase 0.** The BigQuery download, the TF-IDF fitting and the full simulation are replaced by stand-ins (Section 4). They are exercised by actually running `python train_federated.py`.
+- **Streamlit page rendering.** Only the pure functions are tested.
+- **Model quality.** These tests check that the code is correct and stable, **not** that the model is accurate. Accuracy (MAE 1.80, R² 0.48, AUROC 0.918) is measured once at the end of training and stored in `models/training_metadata.json`; see `VALIDATION.md`.
+
+**Known quirks (documented, not hidden)**
+- **Stale numbers in three test docstrings.** `test_model_utils.py` says "87 tests" (91), `test_client_logic.py` says "19" (22), `test_train_federated_fns.py` says "30" (32) and `test_migrate_to_db.py` says "17" (19). The tests themselves are correct; only the headings are out of date. This document uses the real counts.
+- **Historical placeholder numbers inside tests.** A few tests use MAE 1.8968 / R² 0.5995 (the `load_training_metadata` fallback and the server metadata-merge example). They belong to an earlier model and are test data only.
+- **`fl_dashboard.py` still shows "FedYogi + FedProx" as its default algorithm label and old fallback metadata** if `training_metadata.json` is missing. The tests lock those defaults, so changing them means updating the tests too.
+- **Order of hospitals finishing is random in real Flower simulation**, so two training runs of the same settings differ slightly. The tests avoid exact-value checks for this reason.
+- **Tests must be run from `icu_monitor/`.** Run from `tests/fl/` and the client, server and training test files fail to collect.
+
+---
+
+*Documentation for the ClinIQ ICU CDSS capstone — last updated 2026-11-24.*
+*FL test suite: 21 DB + 91 model_utils + 50 dashboard + 22 client + 19 server + 32 train_federated + 10 DB↔model + 14 FL round + 19 migration + 17 system = **295 tests, all passing**.*
+*Whole Python suite (`pytest tests`): 513 passed · Frontend Vitest: 232 passed (27 files) · Measured FL line coverage: 80%.*
+*Tools actually used: pytest, `unittest.mock` (`MagicMock`, `patch`, `mock_open`), `monkeypatch`, `numpy.testing`. Not used: `pytest-mock`, `pytest-cov`.*

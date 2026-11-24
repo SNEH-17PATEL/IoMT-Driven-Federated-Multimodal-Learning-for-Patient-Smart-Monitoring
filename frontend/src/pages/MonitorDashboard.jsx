@@ -439,7 +439,15 @@ export default function MonitorDashboard() {
       )}
 
       {/* ── CV Monitor Modal ── */}
-      <CVMonitorModal open={cvOpen} onClose={() => setCvOpen(false)} onCVResults={setCvLiveData} />
+      <CVMonitorModal
+        open={cvOpen}
+        onClose={() => setCvOpen(false)}
+        onCVResults={setCvLiveData}
+        predictData={predictData}
+        cvLiveData={cvLiveData}
+        isRefreshing={isRefreshing}
+        countdown={countdown}
+      />
 
       {/* ── History drawer ── */}
       <HistoryDrawer

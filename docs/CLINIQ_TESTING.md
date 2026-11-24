@@ -1,1543 +1,630 @@
-# ClinIQ Dashboard — Complete Testing Implementation Guide
+# ClinIQ Dashboard — Complete Testing Guide
 **What every test does, why it exists, and how the whole suite fits together**
 
-> **Scope:** Everything inside `icu_monitor/` related to the ClinIQ React dashboard and its FastAPI backend
-> **Not in scope (yet):** FL dashboard, Flower server/client, Streamlit app
-> **All test files live in:** `icu_monitor/tests/cliniq/`
+**Last updated:** 2026-11-24
+**Result of the last full run (2026-11-24):** backend **218 passed** · frontend (Vitest) **232 passed** in 27 files · end-to-end (Playwright) **21 passed** → **471 tests, all passing**.
+**Measured coverage:** backend 87% of lines · frontend 79% of lines (Section 13).
+
+> **Scope:** the ClinIQ React dashboard and its FastAPI backend: everything under `icu_monitor/tests/cliniq/`.
+> **Not covered here:** federated learning (Flower, `train_federated.py`, the Streamlit simulator). Those are in `FL_SERVER_CLIENT_DB_TESTING.md`.
+> **How this document was checked:** every count, test name and number below comes from the real test files and a real run on 2026-11-24, not from memory. Where the suite has a gap or a quirk, it is stated plainly (Section 14).
+
+---
+
+## How to Read This Document
+
+- **Sections 1–2** explain why tests matter and how the four layers (unit, integration, system, end-to-end) fit together.
+- **Sections 3–5** give the directory layout, the tools, and the configuration.
+- **Sections 6–11** describe the six phases of tests, one section each, with the reason each group of tests exists.
+- **Section 12** lists the run commands, including two things that trip people up.
+- **Section 13** gives measured coverage. **Section 14** lists known gaps and quirks. **Section 15** is the status table.
+
+If you only want to run the tests, go straight to [Section 12](#12-running-the-tests).
 
 ---
 
 ## Table of Contents
 
-1. [Why Testing Matters — The First Principles](#1-why-testing-matters--the-first-principles)
+1. [Why Testing Matters](#1-why-testing-matters)
 2. [The Testing Pyramid — Four Layers, Four Purposes](#2-the-testing-pyramid--four-layers-four-purposes)
 3. [Directory Layout](#3-directory-layout)
-4. [Tool Stack — What Each Tool Does and Why We Chose It](#4-tool-stack--what-each-tool-does-and-why-we-chose-it)
+4. [Tool Stack](#4-tool-stack)
 5. [Setup and Configuration Files](#5-setup-and-configuration-files)
-6. [Phase 1 — Backend Unit Tests](#6-phase-1--backend-unit-tests)
-7. [Phase 2 — Backend API Tests (Integration)](#7-phase-2--backend-api-tests-integration)
-8. [Phase 3 — Backend System Tests](#8-phase-3--backend-system-tests)
-9. [Phase 4 — Frontend Unit Tests](#9-phase-4--frontend-unit-tests)
-10. [Phase 5 — Frontend Integration Tests](#10-phase-5--frontend-integration-tests)
-11. [Phase 6 — End-to-End Tests (Playwright)](#11-phase-6--end-to-end-tests-playwright)
+6. [Phase 1 — Backend Unit Tests (85 tests)](#6-phase-1--backend-unit-tests-85-tests)
+7. [Phase 2 — Backend API Tests (124 tests)](#7-phase-2--backend-api-tests-124-tests)
+8. [Phase 3 — Backend System Tests (9 tests)](#8-phase-3--backend-system-tests-9-tests)
+9. [Phase 4 — Frontend Unit Tests (209 tests)](#9-phase-4--frontend-unit-tests-209-tests)
+10. [Phase 5 — Frontend Integration Tests (23 tests)](#10-phase-5--frontend-integration-tests-23-tests)
+11. [Phase 6 — End-to-End Tests (21 tests)](#11-phase-6--end-to-end-tests-21-tests)
 12. [Running the Tests](#12-running-the-tests)
-13. [Coverage Targets and What They Mean](#13-coverage-targets-and-what-they-mean)
-14. [Implementation Status](#14-implementation-status)
+13. [Coverage — Measured, Not Guessed](#13-coverage--measured-not-guessed)
+14. [Known Gaps and Quirks](#14-known-gaps-and-quirks)
+15. [Implementation Status](#15-implementation-status)
 
 ---
 
-## 1. Why Testing Matters — The First Principles
+## 1. Why Testing Matters
 
-Before looking at any specific test, it helps to understand the fundamental problem testing solves.
+**The core problem: confidence without tests is false confidence.**
 
-**The core problem: confidence without testing is false confidence.**
-
-Imagine you write a function that calculates SOFA risk classification:
+Imagine a function that classifies SOFA risk:
 ```python
 def classify_risk(sofa_score):
-    if sofa_score < 5:
-        return "Low Risk"
-    if sofa_score < 10:
-        return "Moderate Risk"
+    if sofa_score < 5:  return "Low Risk"
+    if sofa_score < 10: return "Moderate Risk"
     return "High Risk"
 ```
-
-You run the dashboard manually, enter a few values, it looks fine. Three weeks later, a teammate refactors the function to fix a formatting issue and accidentally changes `< 10` to `<= 10`:
-```python
-    if sofa_score <= 10:   # off-by-one error introduced
-        return "Moderate Risk"
-```
-
-Now a patient with SOFA = 10 gets "Moderate Risk" instead of "High Risk." There is no error message, no crash — the dashboard looks identical. The bug silently gives wrong clinical guidance.
-
-**A test catches this immediately:**
+You try the dashboard by hand and it looks fine. Weeks later someone changes `< 10` to `<= 10` while tidying code. A patient with SOFA exactly 10 is now "Moderate Risk" instead of "High Risk". Nothing crashes and the dashboard looks identical, but the clinical guidance is silently wrong. A single test catches it at once:
 ```python
 def test_sofa_10_is_high_risk():
-    assert classify_risk(10) == "High Risk"    # ← fails the moment the bug is introduced
+    assert classify_risk(10) == "High Risk"      # fails the moment the bug appears
 ```
+Tests turn silent regressions into loud, immediate failures. That matters most in a medical decision-support system, where wrong output has consequences.
 
-The test suite turns silent regressions into loud, immediate failures. This is especially important in a medical decision-support system where wrong output has clinical consequences.
-
-**Three specific problems testing solves in this project:**
-
-1. **Regression prevention:** Every feature that works today should still work after tomorrow's changes. Tests lock in correct behaviour.
-
-2. **Interface contracts:** When the backend and frontend were developed independently, tests define exactly what each side expects. The `/api/predict` test specifies that the response must include `sofa_score`, `risk_level`, `vitals`, and `shap` — if the backend developer renames a field, the API test fails before the frontend developer even tries to integrate.
-
-3. **Edge case documentation:** Tests like "patient_id=-1 → 400" and "SOFA=24 renders without crash" document the system's behaviour at boundaries. Without tests, these edge cases are forgotten and only discovered when a real user triggers them.
+**Three specific jobs the tests do in this project**
+1. **Regression prevention.** What works today keeps working after tomorrow's changes.
+2. **Interface contracts.** The backend and frontend were built separately. The API tests state exactly which fields each endpoint returns (for example `/api/predict` must return `sofa_score`, `risk_level`, `vitals`, `shap_top5`). If a field is renamed, a test fails before anyone tries to integrate.
+3. **Edge-case documentation.** "patient_id = −1 → 400", "SOFA = 24 renders without crashing", "a report is never built from browser-supplied data". Without tests these boundaries are forgotten until a user hits them.
 
 ---
 
 ## 2. The Testing Pyramid — Four Layers, Four Purposes
 
-The tests in this project are organised into four layers, each serving a different purpose:
-
 ```
                     ┌──────────────┐
-                    │  E2E Tests   │  ← Tests the real app in a real browser
-                    │  (Phase 6)   │    Slowest, most realistic, fewest tests
+                    │  E2E Tests   │  ← a real browser, the real app
+                    │  (Phase 6)   │    slowest, most realistic, fewest
                     └──────┬───────┘
                    ┌───────┴────────┐
-                   │  Integration   │  ← Tests components working together
-                   │  (Phase 2,5)   │    Medium speed, medium scope
+                   │  Integration   │  ← parts working together
+                   │  (Phases 2, 5) │
                    └───────┬────────┘
                ┌───────────┴────────────┐
-               │     Unit Tests         │  ← Tests individual functions in isolation
-               │    (Phase 1, 4)        │    Fastest, most numerous, most specific
+               │      Unit Tests        │  ← one function or component at a time
+               │     (Phases 1, 4)      │    fastest, most numerous
                └────────────────────────┘
+        (System tests, Phase 3, sit between integration and E2E)
 ```
 
-**Layer 1 — Unit Tests (Phases 1 and 4):**
-- Test one function or one component at a time
-- Everything external (databases, APIs, network, animation libraries) is replaced with fake versions (called "mocks")
-- When a unit test fails, you know EXACTLY which function broke — there is nowhere else to look
-- Run in milliseconds — you can run them hundreds of times per day
+| Layer | What it checks | Where | Count |
+|---|---|---|---|
+| **Unit** | One function or one component in isolation; everything external is replaced by a stand-in ("mock") | Phases 1 and 4 | 85 + 209 = 294 |
+| **Integration** | Several parts together. Backend: the API router, database and ML code, called over HTTP. Frontend: a whole page with its API calls mocked | Phases 2 and 5 | 124 + 23 = 147 |
+| **System** | A multi-step clinical session through the real backend ("select a patient → predict → vitals → history") | Phase 3 | 9 |
+| **End-to-end** | A real browser, a real frontend and a real backend, no mocks | Phase 6 | 21 |
 
-**Layer 2 — Integration Tests (Phases 2 and 5):**
-- Test multiple components working together
-- Backend integration: the FastAPI router + the database + the business logic all running together, called via HTTP
-- Frontend integration: a full page component + its API calls (API calls are mocked, but the component is real)
-- When these fail, the bug is in how components communicate — the interface between two parts
-
-**Layer 3 — System Tests (Phase 3):**
-- Test complete multi-step workflows, like a real clinical session
-- "Patient selects → predict → vitals populate → history updates → data is consistent"
-- When these fail, the workflow logic is broken even if individual components work
-
-**Layer 4 — E2E Tests (Phase 6):**
-- A real browser, a real backend, a real frontend — no mocks at all
-- Tests what the clinician actually experiences
-- Slowest (seconds per test) but most realistic
-- Used for the most important user journeys only
-
-**Why we need all four layers:**
-
-Each layer catches different bugs:
+**Why all layers are needed:** each catches a different bug.
 ```
-A typo in classify_risk()           → Caught by Unit Tests
-API field renamed "sofa" → "score"  → Caught by Integration Tests
-Row cycling breaks after 50 reads   → Caught by System Tests
-Report tab doesn't render in Chrome → Caught by E2E Tests
+A typo in a helper                      → unit test
+An API field renamed                    → integration test
+Row cycling breaks after many readings  → system test
+The report tab does not render in Chrome → end-to-end test
 ```
-
-No single layer catches everything. Running all four gives comprehensive confidence.
 
 ---
 
 ## 3. Directory Layout
 
 ```
-icu_monitor/
-├── tests/
-│   ├── cliniq/
-│   │   ├── backend/
-│   │   │   ├── conftest.py                  ← Shared fixtures for all backend tests
-│   │   │   ├── unit/
-│   │   │   │   ├── test_db_unit.py          ← Database helper tests (in-memory SQLite)
-│   │   │   │   ├── test_ml_service_unit.py  ← ML pure-function tests (no model load)
-│   │   │   │   └── test_llm_service_unit.py ← LLM cache key and judge_used tests
-│   │   │   ├── api/
-│   │   │   │   ├── test_api_health.py       ← GET /health
-│   │   │   │   ├── test_api_patients.py     ← GET /api/patients and /api/patients/{id}
-│   │   │   │   ├── test_api_predict.py      ← POST /api/predict
-│   │   │   │   ├── test_api_vitals.py       ← GET /api/vitals/{patient_id}
-│   │   │   │   ├── test_api_history.py      ← GET /api/history/{patient_id}
-│   │   │   │   └── test_api_report.py       ← POST /api/report
-│   │   │   └── system/
-│   │   │       └── test_system_flows.py     ← End-to-end backend workflows
-│   │   └── frontend/
-│   │       ├── setup.js                     ← Global test setup and mocks
-│   │       ├── unit/
-│   │       │   ├── components/
-│   │       │   │   ├── layout/              ← AlertBanner, HeaderBar, ThemeToggle
-│   │       │   │   ├── overview/            ← SOFAGauge, VitalCard, VitalsGrid
-│   │       │   │   ├── report/              ← ReportContainer, ReliabilityBadge,
-│   │       │   │   │                           ReportSection, ReportToggle, SHAPPanel
-│   │       │   │   ├── trends/              ← TrendChart, TrendsSection
-│   │       │   │   ├── validation/          ← LLMValidationFAB, LLMValidationDrawer,
-│   │       │   │   │                           SOFAValidationFAB, SOFAValidationDrawer
-│   │       │   │   ├── cv/                  ← CVMonitorFAB, CVMonitorModal
-│   │       │   │   └── history/             ← HistoryFAB, HistoryDrawer
-│   │       │   ├── hooks/
-│   │       │   │   └── useMonitor.test.js   ← Core data-fetching hook
-│   │       │   ├── contexts/
-│   │       │   │   └── ThemeContext.test.jsx ← Dark/light mode context
-│   │       │   └── api/
-│   │       │       └── client.test.js       ← API call functions
-│   │       ├── integration/
-│   │       │   ├── SelectPatient.test.jsx   ← Patient selection page
-│   │       │   └── MonitorDashboard.test.jsx ← Main monitoring dashboard
-│   │       └── e2e/
-│   │           ├── patient_selection.spec.js  ← Patient selection user flow
-│   │           ├── monitoring_flow.spec.js    ← Dashboard monitoring flow
-│   │           └── report_generation.spec.js ← AI report generation flow
-└── fl/
-    └── .gitkeep    ← Empty placeholder for future federated learning tests
+icu_monitor/tests/cliniq/
+├── __init__.py
+├── backend/                                   ← 218 tests (pytest)
+│   ├── conftest.py                            ← 4 shared fixtures
+│   ├── unit/                                  ← 85 tests
+│   │   ├── test_db_unit.py                    ← 17  database helpers (temporary database)
+│   │   ├── test_ml_service_unit.py            ← 43  ML helper functions (no model loaded)
+│   │   └── test_llm_service_unit.py           ← 25  report cache, concurrency, judge_used
+│   ├── api/                                   ← 124 tests
+│   │   ├── test_api_health.py                 ←  4  GET /health
+│   │   ├── test_api_patients.py               ← 26  GET /api/patients and /{id}
+│   │   ├── test_api_predict.py                ← 39  POST /api/predict
+│   │   ├── test_api_vitals.py                 ← 20  GET /api/vitals/{id}
+│   │   ├── test_api_history.py                ← 17  GET /api/history/{id}
+│   │   └── test_api_report.py                 ← 18  POST /api/report  (10 are slow: real Groq calls)
+│   └── system/
+│       └── test_system_flows.py               ←  9  multi-step backend workflows
+│
+└── frontend/                                  ← 232 + 21 tests
+    ├── unit/                                  ← 209 tests (Vitest)
+    │   ├── components/
+    │   │   ├── layout/        AlertBanner (9), HeaderBar (12), ThemeToggle (7)
+    │   │   ├── overview/      SOFAGauge (8), VitalCard (14), VitalsGrid (6)
+    │   │   ├── report/        ReliabilityBadge (8), ReportContainer (22),
+    │   │   │                  ReportSection (5), ReportToggle (7), SHAPPanel (9)
+    │   │   ├── trends/        TrendChart (5), TrendsSection (6)
+    │   │   ├── validation/    LLMValidationDrawer (8), LLMValidationFAB (4),
+    │   │   │                  SOFAValidationDrawer (13), SOFAValidationFAB (3)
+    │   │   ├── cv/            CVMonitorFAB (4), CVMonitorModal (6), cvScoring (16)
+    │   │   └── history/       HistoryDrawer (8), HistoryFAB (5)
+    │   ├── hooks/             useMonitor (11)
+    │   ├── contexts/          ThemeContext (5)
+    │   └── api/               client (8)
+    ├── integration/           ← 23 tests (Vitest)
+    │   ├── SelectPatient.test.jsx   (7)
+    │   └── MonitorDashboard.test.jsx (16)
+    └── e2e/                   ← 21 tests (Playwright)
+        ├── patient_selection.spec.js   (7)
+        ├── monitoring_flow.spec.js     (8)
+        └── report_generation.spec.js   (6)
 ```
+Plus the shared frontend setup file `frontend/vitest-setup.js` (it lives inside `frontend/`, not in `tests/`; Section 5 explains why).
 
-**Why is `conftest.py` special?**
-
-`conftest.py` is a pytest convention — it is automatically discovered by pytest and its contents are made available to all test files in the same directory and all subdirectories. Rather than copying the same setup code into every test file, `conftest.py` defines shared "fixtures" (reusable test objects) once. The `TestClient` and `predict_p1` fixtures defined there are available in every test file under `backend/` without any import statement.
+**Why `conftest.py` is special.** It is a pytest convention: pytest finds it automatically and makes its fixtures (reusable test objects) available to every test file in the same folder and below, with no `import`. The backend `conftest.py` provides `client`, `predict_p1`, `predict_p2` and `predict_p3`.
 
 ---
 
-## 4. Tool Stack — What Each Tool Does and Why We Chose It
+## 4. Tool Stack
 
-### pytest (Backend Testing)
-
-pytest is Python's most widely used testing framework. It discovers test files automatically (any file named `test_*.py`), runs functions named `test_*`, and reports failures with a clear, readable diff.
-
-**What makes pytest powerful:**
-
+### pytest (backend)
+Python's standard testing framework. It finds files named `test_*.py`, runs functions named `test_*`, and reports failures with a clear diff.
 ```python
-# Without pytest: you write this boilerplate yourself
-try:
-    result = classify_risk(10)
-    assert result == "High Risk"
-    print("PASS")
-except AssertionError:
-    print("FAIL: got", result)
-
-# With pytest: just write the assertion
 def test_sofa_10_is_high_risk():
     assert classify_risk(10) == "High Risk"
-# pytest handles discovery, running, reporting, and exit codes automatically
+# pytest handles discovery, running, reporting and the exit code
 ```
-
-**Fixtures — the most important pytest concept:**
-
-A fixture is a reusable piece of test setup. Instead of creating a database connection, a test client, and sample data in every test function, you define them once as fixtures and request them by name:
-
+**Fixtures** are reusable setup. Instead of building a test client in every test, define it once and ask for it by name:
 ```python
-# In conftest.py — defined once
-@pytest.fixture
+@pytest.fixture(scope="session")
 def client():
-    # Create a test HTTP client connected to our FastAPI app
-    with TestClient(app) as tc:
-        yield tc  # "yield" means: this object is available during the test
+    with TestClient(app) as c:        # a test HTTP client wired to the FastAPI app
+        yield c
 
-# In test_api_health.py — used by name in the function signature
-def test_health_returns_200(client):          # pytest injects the client fixture
-    response = client.get("/health")
-    assert response.status_code == 200
+def test_health_returns_200(client):  # pytest injects the fixture by name
+    assert client.get("/health").status_code == 200
 ```
+Markers (in `pytest.ini`) label tests so groups can be selected: `slow`, `unit`, `api`, `system`.
 
-The `predict_p1` fixture specifically does a POST to `/api/predict` for Patient 1 before the test starts, so tests that need a prediction result already have one ready without repeating the predict call.
+**Also used in the backend tests:** `monkeypatch` (temporarily replaces a variable or function and restores it afterwards), `tmp_path` (a temporary folder), `threading` (the concurrency test), and `inspect.getsource` (three "source-level" tests; Section 14).
 
-### pytest-asyncio and httpx
+> **Corrected from earlier versions of this document.** It said the backend tests use `pytest-asyncio` and `httpx.AsyncClient` to call async endpoints, and that the frontend integration tests use **MSW (Mock Service Worker)**. Neither is true: **no test uses `async def`, `AsyncClient`, or MSW**. The backend tests call the API with FastAPI's synchronous `TestClient`, and the frontend tests mock the API module with `vi.mock`. (`pytest-asyncio` and `httpx` happen to be installed, because `TestClient` needs `httpx`.)
 
-FastAPI routes can be `async` functions. The standard Python `requests` library cannot call async endpoints. `httpx.AsyncClient` can — and `pytest-asyncio` allows writing `async def test_*` functions. Together they enable testing async FastAPI endpoints.
+### FastAPI `TestClient`
+Runs the **real** FastAPI app inside the test process and sends it HTTP requests without opening a network port. The real routers, real SQLite database and real ML code all run, so API tests are genuine integration tests. It is session-scoped, so the model files load once for the whole run.
 
-### Vitest (Frontend Unit and Integration Testing)
+### Vitest (frontend unit and integration)
+The frontend equivalent of pytest. It is built for Vite (the frontend's build tool), so it shares the same import aliases and settings (`@` means `frontend/src`). Version 3.2.7.
 
-Vitest is the frontend equivalent of pytest — a test runner for JavaScript and React. It integrates directly with Vite (the build tool used by the frontend), so it understands the same import aliases, module system, and configuration.
-
+### React Testing Library (`@testing-library/react`)
+Provides `render()` and `screen`. **Philosophy: test what the user sees, not internal implementation.**
 ```js
-// A Vitest frontend test looks just like a pytest backend test
-import { render, screen } from '@testing-library/react'
-import VitalCard from '@/components/VitalCard'
-
-test('shows vital value and unit', () => {
-    render(<VitalCard label="HR" value={122} unit="bpm" status="high" />)
-    expect(screen.getByText('122')).toBeInTheDocument()
-    expect(screen.getByText('bpm')).toBeInTheDocument()
-})
+// Brittle (breaks on refactor):       expect(component.state.isHigh).toBe(true)
+// Robust (tests what the user sees):  expect(screen.getByText('CRITICAL ALERT')).toBeInTheDocument()
 ```
+Tests written this way survive refactors, because they only care that the right thing is on screen.
 
-**Why Vitest instead of Jest?**
+### jsdom (the virtual browser)
+Frontend unit tests run in Node.js, not a real browser. jsdom simulates the browser's DOM (`document`, `window`, elements), so Vitest runs with `environment: 'jsdom'`. **What it cannot do:** real CSS layout, WebGL, GPU, browser quirks. Those need the end-to-end tests.
 
-Jest is the traditional React testing framework but has a known friction point with Vite-based projects — the module systems and configurations differ, requiring significant translation. Vitest was designed specifically for Vite and uses identical configuration, making setup and maintenance much simpler.
+### `vi.mock` (replacing a module with a fake)
+Libraries that need a real browser are replaced with simple stand-ins so the component logic can still be tested. Globally (in `vitest-setup.js`): `framer-motion`, `animejs`, `aos`, `recharts` and `@mediapipe/tasks-vision`. Per test file: the API client and the `useMonitor` hook, where a test needs to control what comes back.
 
-### React Testing Library (@testing-library/react)
-
-React Testing Library provides the `render()` function and the `screen` query object. These simulate rendering a React component in a test environment and let you query what was rendered.
-
-**The philosophy of React Testing Library:**
-
-Test what the user sees, not internal implementation details.
-
-```js
-// Bad test (implementation-focused — breaks when you refactor):
-expect(component.state.isHigh).toBe(true)  // tests internal state
-
-// Good test (user-focused — tests what the user actually sees):
-expect(screen.getByText('CRITICAL ALERT')).toBeInTheDocument()
-expect(screen.getByRole('alert')).toBeVisible()
-```
-
-If the component shows the right text to the user, the test passes — regardless of whether the implementation uses `useState`, `useReducer`, or a third-party state manager. Tests written this way survive refactors.
-
-### jsdom (The Virtual Browser)
-
-Frontend tests run in Node.js, not a real browser. jsdom is a JavaScript implementation of the browser's DOM (Document Object Model) — it simulates `document`, `window`, `HTMLElement`, and all the APIs that React uses to render. Vitest is configured with `environment: 'jsdom'`, which means every test file runs as if it is inside a browser, even though it is running in Node.js on the command line.
-
-**What jsdom cannot do:** Render visual layouts with actual CSS, run WebGL (used by some chart libraries), or fully replicate browser-specific quirks. For those, you need E2E tests.
-
-### vi.mock — The Mocking System
-
-`vi.mock` replaces a module with a fake version for the duration of the test. This is essential because real libraries cannot run in jsdom:
-
-```js
-// framer-motion requires browser APIs that jsdom doesn't have
-// Without mocking: test crashes with "ResizeObserver is not defined"
-
-vi.mock('framer-motion', () => ({
-    motion: {
-        div: ({ children, ...props }) => <div {...props}>{children}</div>,
-        // Replace animated div with a plain div — same structure, no animations
-    },
-    AnimatePresence: ({ children }) => children,
-}))
-
-// Now framer-motion components render as plain HTML — tests work
-```
-
-Other mocked libraries:
-- **animejs**: Uses `requestAnimationFrame` — not in jsdom
-- **recharts**: SVG rendering requires browser layout engine — not in jsdom
-- **@mediapipe/tasks-vision**: Uses WebAssembly and GPU APIs — not in jsdom
-
-The mocks let us test the React component logic (does it render the right text, does it call the right function on click?) without needing a real browser.
-
-### MSW (Mock Service Worker) — Frontend Integration Test API Mocking
-
-MSW is used in integration tests to intercept HTTP requests and return fake responses without hitting the real backend. This means integration tests can run without the backend server running.
-
-```js
-// Without MSW: test calls real backend → slow, unreliable, needs server running
-// With MSW: test intercepts the call and returns controlled fake data
-
-const server = setupServer(
-    rest.get('/api/patients', (req, res, ctx) =>
-        res(ctx.json([
-            { id: 1, name: "Patient 1", risk_level: "Low Risk" },
-            { id: 2, name: "Patient 2", risk_level: "Moderate Risk" },
-            { id: 3, name: "Patient 3", risk_level: "High Risk" },
-        ]))
-    )
-)
-// Now SelectPatient.test.jsx can test that it renders 3 cards,
-// without needing the backend to be running
-```
-
-### Playwright (E2E Testing)
-
-Playwright is a browser automation tool. It controls a real Chrome, Firefox, or Safari browser — clicking buttons, typing text, waiting for elements to appear — exactly as a user would.
-
-```js
-// Playwright test: a real browser clicks through the real app
-test('clicking Patient 1 navigates to dashboard', async ({ page }) => {
-    await page.goto('http://localhost:5173')          // real browser opens real URL
-    await page.click('text=Patient 1')               // real click on real element
-    await expect(page).toHaveURL('/monitor/1')       // real URL change verified
-    await expect(page.locator('h1')).toContainText('Patient 1')  // real DOM checked
-})
-```
-
-E2E tests require both the backend (`localhost:8000`) and frontend (`localhost:5173`) to be running. They are the slowest but most complete tests.
+### Playwright (end-to-end)
+Controls a real Chromium browser: it clicks, waits and reads the page like a user. It needs a real backend and frontend running. The project uses **one worker, Chromium only**, a 120-second test timeout and a trace kept on failure.
 
 ---
 
 ## 5. Setup and Configuration Files
 
-### `pytest.ini` (at `icu_monitor/` root)
-
+### `pytest.ini` (in `icu_monitor/`)
 ```ini
 [pytest]
 testpaths = tests
 python_files = test_*.py
 python_classes = Test*
 python_functions = test_*
+addopts = -v --tb=short
 markers =
-    slow: marks tests that call the real LLM (deselect with -m "not slow")
+    slow: marks tests that call the real LLM API (deselect with -m "not slow")
     unit: pure-function tests with no I/O
-    api: FastAPI endpoint tests (need TestClient)
+    api: FastAPI endpoint tests via TestClient
     system: full end-to-end backend flows
 ```
-
-**What each line does:**
-
-- `testpaths = tests` — pytest only looks inside the `tests/` directory. Without this, pytest might try to collect test files from `src/`, `models/`, or other directories unnecessarily.
-- `python_files = test_*.py` — only files starting with `test_` are treated as test files
-- `markers` — custom labels you can use to select or deselect specific test groups:
-  ```bash
-  pytest -m "not slow"    # skip tests that call the real Groq API (saves time and API credits)
-  pytest -m unit          # run only fast, pure function tests
-  pytest -m api           # run only the HTTP endpoint tests
-  ```
+- `testpaths = tests`: pytest only looks inside `tests/`.
+- `addopts = -v --tb=short`: verbose names and short failure traces by default.
+- `-m "not slow"` skips the 10 tests that call the real Groq API (saves time and API credits).
 
 ### `frontend/vitest.config.js`
+- `plugins: [react()]` handles JSX.
+- `globals: true` makes `describe`, `it`, `expect`, `vi` available without imports.
+- `environment: 'jsdom'` simulates the browser DOM.
+- `setupFiles: ['./vitest-setup.js']` runs the setup file before every test file.
+- `include`: `tests/cliniq/frontend/**/*.test.{js,jsx}`. Only `.test.` files run, so the Playwright `.spec.js` files in `e2e/` are not picked up by Vitest.
+- `server.fs.allow` lets Vite read test files that live **outside** `frontend/`.
+- `coverage`: provider `v8`, reporters `text` and `html`, measuring `src/**/*.{js,jsx}` except `src/main.jsx`.
+- `resolve.alias`: `'@'` → `frontend/src`.
 
-```js
-import { defineConfig } from 'vitest/config'
-import react from '@vitejs/plugin-react'
-import path from 'path'
+### `frontend/vitest-setup.js` (the global setup)
+> **Corrected:** earlier versions called this `tests/cliniq/frontend/setup.js`. The real file is **`frontend/vitest-setup.js`**. It has to live inside `frontend/` so Vite can find `node_modules` (for example `@testing-library/jest-dom`).
 
-export default defineConfig({
-    plugins: [react()],          // Enable JSX and React-specific transforms
-    test: {
-        globals: true,           // Makes test/expect/describe/vi available without imports
-        environment: 'jsdom',    // Simulate browser DOM in Node.js
-        setupFiles: [path.resolve(__dirname, '../tests/cliniq/frontend/setup.js')],
-        // Run setup.js before every test file (loads jest-dom matchers, mocks)
-        include: [path.resolve(__dirname, '../tests/cliniq/frontend/**/*.test.{js,jsx}')],
-        // Only run files matching *.test.js or *.test.jsx inside the cliniq/frontend/ directory
-        coverage: {
-            provider: 'v8',      // V8 is Node.js's built-in coverage engine — fast and accurate
-            reporter: ['text', 'html'],  // Show in terminal AND generate browsable HTML report
-            include: ['src/**/*.{js,jsx}'],  // Only measure coverage of production code
-        },
-    },
-    resolve: {
-        alias: { '@': path.resolve(__dirname, './src') },
-        // Allows: import VitalCard from '@/components/VitalCard'
-        // instead of: import VitalCard from '../../components/VitalCard'
-    },
-})
-```
+What it does before every test file:
+1. Loads the jest-dom matchers (`toBeInTheDocument`, `toBeVisible`, `toHaveTextContent`…).
+2. Makes React global (`globalThis.React`) for JSX in files outside the Vite root.
+3. Sets the CSS custom properties components read (`--t1`, `--s1`, `--ok-l`, `--danger-l`, `--warn-l`…) so styles resolve.
+4. **Mocks** `framer-motion` (every `motion.*` becomes a plain element; `AnimatePresence` returns its children), `animejs` (`animate` and `createTimeline` chain correctly), `aos`, `recharts` (charts become simple `<div data-testid="chart">`), and `@mediapipe/tasks-vision`.
+5. **Fakes browser APIs** jsdom lacks: `IntersectionObserver`, `ResizeObserver` and `window.matchMedia`.
 
-### `frontend/tests/cliniq/frontend/setup.js`
+### `frontend/playwright.config.js`
+- `testDir: ../tests/cliniq/frontend/e2e`, `testMatch: **/*.spec.js`.
+- `timeout: 120_000`, `fullyParallel: false`, `workers: 1`.
+- `baseURL: http://localhost:5173`, `trace: retain-on-failure`, Chromium only.
+- `webServer`: starts `npx vite --port 5173 --strictPort` automatically, or **reuses** one already running. **It does not start the backend**: that must already be running on port 8000.
 
-This file runs before every test file. It loads the jest-dom matchers (which add assertions like `toBeInTheDocument()`, `toBeVisible()`, `toHaveTextContent()`) and sets up global mocks that are needed by almost every component:
-
-```js
-import '@testing-library/jest-dom'  // Loads custom matchers
-
-// Mock framer-motion (animation library — not compatible with jsdom)
-vi.mock('framer-motion', () => ({ ... }))
-
-// Mock animejs (animation library — uses requestAnimationFrame)
-vi.mock('animejs', () => ({ ... }))
-
-// Mock AOS (scroll animation library)
-vi.mock('aos', () => ({ ... }))
-
-// Mock recharts (chart library — SVG layout needs real browser)
-vi.mock('recharts', () => ({ ... }))
-
-// Mock @mediapipe/tasks-vision (computer vision — needs WebAssembly + GPU)
-vi.mock('@mediapipe/tasks-vision', () => ({ ... }))
-```
-
-By placing these in `setup.js` rather than in each test file, we avoid repeating 50 lines of mock code in every component test.
-
-### `frontend/package.json` scripts
-
+### `frontend/package.json` test scripts
 ```json
-"test":          "vitest run",           // Run all tests once and exit
-"test:watch":    "vitest",               // Run tests and re-run on file changes (dev mode)
-"test:coverage": "vitest run --coverage", // Run tests + generate coverage report
-"test:e2e":      "playwright test"        // Run Playwright E2E tests
+"test":          "vitest run",              // run all frontend tests once
+"test:watch":    "vitest",                  // re-run on file changes
+"test:coverage": "vitest run --coverage",   // with a coverage report
+"test:e2e":      "playwright test"          // Playwright end-to-end tests
 ```
 
 ---
 
-## 6. Phase 1 — Backend Unit Tests
+## 6. Phase 1 — Backend Unit Tests (85 tests)
 
-**Goal:** Test every pure function and database helper in complete isolation — no real network calls, no ML model loading, no external services.
+**Goal:** test helper functions and database helpers in isolation: no network, no ML model load, no external service. `test_db_unit.py` has 17 tests, `test_ml_service_unit.py` 43, `test_llm_service_unit.py` 25.
 
-**What "pure function" means:** A function that takes inputs, does computation, and returns output — with no side effects (no file writes, no network calls, no randomness). Pure functions are the easiest to test because the same inputs always produce the same output.
+### 1A — `test_db_unit.py` (17 tests)
+It redirects `db.DB_PATH` to a fresh **temporary** database for each test (the `tmp_db` fixture), so the real `models/icu_monitor.db` is never touched.
 
-**Runner:** `pytest tests/cliniq/backend/unit/ -v`
-
----
-
-### 1A — `test_db_unit.py` — Database Helper Tests
-
-**The setup: a temporary in-memory SQLite database**
-
-```python
-@pytest.fixture
-def test_db(tmp_path):
-    db_path = tmp_path / "test.db"
-    conn = sqlite3.connect(db_path)
-    init_db(conn)    # Run the schema creation (same function the real app uses)
-    yield conn
-    conn.close()
-```
-
-Every test gets its own fresh, empty database. `tmp_path` is a pytest built-in fixture that provides a temporary directory that is automatically deleted after the test. This means:
-- Tests cannot interfere with each other through shared database state
-- Tests cannot accidentally modify the real production database
-- Tests always start from a clean, known state
-
-**The 14 tests and what each verifies:**
-
-| # | Test | What it verifies | Why it matters |
-|---|---|---|---|
-| 1 | `init_db()` creates `patient_vitals` table | Schema bootstrap | Without this table, vital sign storage fails |
-| 2 | `init_db()` creates `prediction_history` table | Schema bootstrap | Without this table, prediction logging fails |
-| 3 | `init_db()` creates `sample_patients` table | Schema bootstrap | Without this table, patient data cannot be seeded |
-| 4 | `init_db()` is idempotent (called twice, no error) | `IF NOT EXISTS` guard | The app calls `init_db()` on every startup — it must not crash if tables already exist |
-| 5 | `append_patient_vitals()` inserts a row correctly | CRUD correctness | Verifies the INSERT SQL is correct and data is stored |
-| 6 | `get_patient_vitals()` returns rows ascending by id | Ordering | If rows come back in random order, trend charts show scrambled history |
-| 7 | Sliding window — after 21 inserts, exactly 20 remain | DELETE logic | The 20-reading window must stay at 20; if this fails, the window grows unbounded |
-| 8 | Cross-patient isolation — patient 1 row not in patient 2 | WHERE patient_id | Critical safety: patient 1's data must never contaminate patient 2's view |
-| 9 | `append_prediction()` inserts a row correctly | CRUD correctness | The prediction log must actually save |
-| 10 | `get_prediction_history()` limit respected | SELECT LIMIT | The dashboard requests 5 most recent predictions — limit must be enforced |
-| 11 | Prediction sliding window — after 51 inserts, exactly 50 remain | DELETE logic | Same as vital sliding window but for prediction history |
-| 12 | `get_sample_patient_count()` returns 0 on empty table | COUNT query | Used to decide whether to seed sample patients at startup |
-| 13 | `get_sample_patient_row()` returns None for missing idx | Null safety | Used when cycling through patient data — must not crash on missing rows |
-| 14 | `get_conn()` sets WAL journal mode | SQLite PRAGMA | WAL (Write-Ahead Logging) allows concurrent reads and writes — without it, the dashboard would hang when reading and writing simultaneously |
-
-**Example — understanding the sliding window test:**
-
-```python
-def test_sliding_window_keeps_last_20(test_db):
-    # Insert 21 vital sign rows for patient 1
-    for i in range(21):
-        append_patient_vitals(test_db, patient_id=1, hr=60+i, rr=15, ...)
-    
-    # Fetch all rows for patient 1
-    rows = get_patient_vitals(test_db, patient_id=1)
-    
-    # Exactly 20 must remain — the oldest one was deleted
-    assert len(rows) == 20
-    
-    # The oldest row (hr=60) must be gone; the newest (hr=80) must be present
-    hr_values = [row['hr'] for row in rows]
-    assert 60 not in hr_values   # row 0 (oldest) was dropped
-    assert 80 in hr_values       # row 20 (newest) survived
-```
-
-**Why test cross-patient isolation (test #8) specifically?**
-
-In a real ICU, the system monitors multiple patients simultaneously. If a bug caused patient 1's vitals to appear in patient 2's trend chart, clinicians would make decisions based on the wrong patient's data — a potentially fatal error. The isolation test is a safety test:
-
-```python
-def test_cross_patient_isolation(test_db):
-    append_patient_vitals(test_db, patient_id=1, hr=90, ...)
-    append_patient_vitals(test_db, patient_id=2, hr=130, ...)
-    
-    p1_rows = get_patient_vitals(test_db, patient_id=1)
-    p2_rows = get_patient_vitals(test_db, patient_id=2)
-    
-    # Patient 1 should NOT see patient 2's HR=130
-    assert all(row['hr'] != 130 for row in p1_rows)
-    
-    # Patient 2 should NOT see patient 1's HR=90
-    assert all(row['hr'] != 90 for row in p2_rows)
-```
-
----
-
-### 1B — `test_ml_service_unit.py` — ML Pure Function Tests
-
-These tests check helper functions inside `ml_service.py` without loading the ML model itself. Loading the model requires `models/federated_model.pth`, `models/scaler.pkl`, and `models/tfidf_vectorizer.pkl` — expensive file operations that would slow down every test. The pure functions are extracted and tested in isolation.
-
-**The most important function tested: `_is_clinical(feature_name)`**
-
-This function determines whether a feature name is clinically meaningful — it is used when filtering SHAP explanations to show only understandable clinical factors (like "SpO₂" or "creatinine") rather than internal feature names (like "feature_82" or "weight").
-
-The function has a subtle bug risk: substring matching. The vital abbreviation "RR" (respiratory rate) is a 2-letter string. If we check `"rr" in feature_name`, then:
-- `"crrt"` (continuous renal replacement therapy) would incorrectly match "rr"
-- `"cirrhosis"` (liver disease) would incorrectly match "rr"
-
-Tests #5, #6, and #7 specifically catch this class of substring traps:
-
-| # | Test | Why it's a trap | Why it matters |
-|---|---|---|---|
-| 5 | `_is_clinical('epinephrine')` → False for 'hr' | 'hr' is inside 'epinephrine' | 'epinephrine' should not be treated as a heart-rate feature |
-| 6 | `_is_clinical('cirrhosis')` → False for 'rr' | 'rr' is inside 'cirrhosis' | Cirrhosis is a TF-IDF text feature, not a respiratory rate feature |
-| 7 | `_is_clinical('crrt')` → False for 'rr' | 'rr' is inside 'crrt' | CRRT is renal therapy — must not match respiratory abbreviation |
-| 8 | `_is_clinical('latest_hr')` → True (word boundary match) | 'hr' appears but is correct | Should match because 'hr' is a complete word segment |
-
-The correct implementation uses a word-boundary regex check:
-```python
-import re
-def _is_clinical(name):
-    lower = name.lower()
-    for abbr in _VITAL_ABBR:
-        # Check with non-letter boundaries — prevents substring traps
-        if re.search(r'(?<![a-z])' + re.escape(abbr) + r'(?![a-z])', lower):
-            return True
-    return name in CLINICAL_KEYWORDS
-```
-
-**Alert threshold tests:**
-
-```
-ALERT_THRESHOLD == 7.0
-ALERT_THRESHOLD == model_utils.ALERT_THRESHOLD
-```
-
-`ALERT_THRESHOLD` is now defined once in `model_utils.py` (the training code) and `backend/services/ml_service.py` imports it. The first test locks in the value 7.0 (it was 8.0 in an earlier version). The second test checks that the backend and the training code share the same value, so the red alert banner in the dashboard and the alert metrics written to `training_metadata.json` can never drift apart.
-
-**Training metadata tests (#10–12):**
-
-```
-0.0 < load_training_metadata()['final_mae'] < 5.0
-0.0 < load_training_metadata()['final_r2'] <= 1.0
-load_training_metadata()['test_samples'] is a positive int
-load_training_metadata()['train_samples'] ≈ 4 × test_samples   (80/20 split, ±5%)
-'best_round' in load_training_metadata()                      (an int)
-```
-
-These tests read the live `models/training_metadata.json`. That file changes on every retrain, so the tests check that the values are **sane** (inside a sensible range) instead of equal to one exact run. This means:
-1. If anyone overwrites `training_metadata.json` with broken values (MAE of 0, negative R², missing sample counts), the test fails immediately
-2. Retraining the model does not break the test suite
-3. The SOFA Validation Drawer reads its numbers from the same file, so whatever the tests accept is what the panel sees
-
-**What the current numbers mean clinically (current model, from `training_metadata.json`):**
-- `final_mae = 1.8247`: On average, the model's SOFA predictions are off by about 1.8 points. Since SOFA is scored 0–24, this is a small average error — acceptable for a decision-support tool.
-- `final_r2 = 0.4725`: The model explains about 47% of the variance in SOFA scores from non-invasive inputs only (SOFA itself is mostly computed from labs and vasopressor doses, which are deliberately not inputs).
-- `test_samples = 10450`: The performance metrics were computed on 10,450 ICU stays held out from training (train = 41,798, an 80/20 split).
-
-**Seed timestamp test (#13):**
-
-```python
-def test_seed_timestamps_not_hardcoded_2026_08_29(test_db):
-    timestamps = get_seed_timestamps(test_db)
-    for ts in timestamps:
-        assert '2026-08-29' not in ts
-```
-
-This test exists because during development, seed data was initially seeded with a hardcoded date (`2026-08-29`). When the capstone is presented in late October 2026, a history table showing "last reading: 2 months ago" would look wrong to the panel. The seed timestamps must be relative to the current date. This test ensures that hardcoded date never reappears during a refactor.
-
----
-
-### 1C — `test_llm_service_unit.py` — LLM Cache Key Tests
-
-The LLM service implements caching: if the same patient has the same vitals, SOFA, and notes as a previous request, the system returns the cached response rather than making another expensive API call to Groq. The cache key is a string that uniquely identifies a combination of inputs.
-
-**The C2 fix — why patient_id must be in the cache key:**
-
-A critical bug that was fixed: the original cache key did not include `patient_id`. This meant if Patient 1 (stable) and Patient 3 (critical) happened to have similar SOFA scores and some matching vitals, they would get the same cache key — and Patient 3 would receive Patient 1's clinical report. The test locks in the fix:
-
-```python
-def test_different_patients_get_different_cache_keys():
-    key1 = _cache_key(pred_patient1, 'hospital')
-    key3 = _cache_key(pred_patient3, 'hospital')
-    assert key1 != key3   # Must be different — the patient identity separates them
-```
-
-Similarly, tests for SBP and RR in the cache key (C2 fix verification) ensure that two patients with different vital signs never accidentally share a cached response:
-
-```python
-def test_different_sbp_gives_different_key():
-    pred_high_sbp = {**base_pred, 'vitals': {**base_vitals, 'SBP': 140}}
-    pred_low_sbp  = {**base_pred, 'vitals': {**base_vitals, 'SBP': 80}}
-    assert _cache_key(pred_high_sbp, 'hospital') != _cache_key(pred_low_sbp, 'hospital')
-```
-
-**The C6 fix — `judge_used` in the response:**
-
-The `generate_report()` function was enhanced to include a `judge_used` field indicating whether the LLM-as-judge consistency verification ran all 9 methods (vs 7). Tests #8 and #9 verify this:
-
-```python
-def test_generate_report_has_judge_used_key(mock_groq):
-    result = generate_report(patient_id=1, pred={...}, care_mode='hospital')
-    assert 'judge_used' in result
-
-def test_judge_used_is_bool(mock_groq):
-    result = generate_report(patient_id=1, pred={...}, care_mode='hospital')
-    assert isinstance(result['judge_used'], bool)
-```
-
-This matters for the LLM Validation Drawer in the frontend, which shows "✓ 9/9 methods ran" when `judge_used=True` or "⚠ 7/9 methods ran" when `judge_used=False`. The tests guarantee this field is always present and always a boolean, so the frontend can safely read it.
-
----
-
-## 7. Phase 2 — Backend API Tests (Integration)
-
-**Goal:** Test every HTTP endpoint through a real (but in-process) HTTP client.
-
-**What TestClient does:**
-
-FastAPI's `TestClient` wraps the ASGI app and lets you make HTTP requests without starting an actual server on a port. Requests go in-process: your test → TestClient → FastAPI router → service layer → database → response back.
-
-```python
-from fastapi.testclient import TestClient
-from backend.main import app
-
-client = TestClient(app)
-
-# This is a REAL HTTP request processed by the REAL FastAPI app
-response = client.get("/health")
-assert response.status_code == 200
-```
-
-This tests the full request-response lifecycle: routing, request parsing, validation, business logic, database interaction, response serialisation — all in one test. The difference from unit tests is that nothing is mocked.
-
----
-
-### 2A — `test_api_health.py`
-
-The health endpoint is the simplest possible test — but it is critically important for monitoring.
-
-```
-GET /health → 200 {"status": "ok", "service": "ClinIQ"}
-```
-
-In production deployments, a load balancer or container orchestrator (like Kubernetes) pings `/health` every 10 seconds to determine whether the backend is healthy. If this endpoint returns anything other than 200, the orchestrator restarts the container.
-
-The test checks the `service` field specifically ("ClinIQ" not "ICU Monitor" or "Backend") because the frontend uses this field to verify it is talking to the right service. A mismatch would indicate the wrong backend version is running.
-
----
-
-### 2B — `test_api_patients.py`
-
-The 11 patient tests verify the full patient listing and individual patient retrieval.
-
-**Why check all required fields (`{id, name, short, icon, description, color, risk_level, sofa_range}`) rather than just that the request succeeded?**
-
-An HTTP 200 response only means "the server responded." It does not mean the response contains the data the frontend needs. The frontend destructures these specific fields:
-
-```js
-// In SelectPatient.jsx
-const { id, name, short, icon, description, color, risk_level } = patient
-```
-
-If any field is missing or renamed, the frontend renders `undefined` — no crash, no error, just blank cards that silently confuse the clinician. The API test verifies every field is present.
-
-**Why test all 3 patients' risk levels specifically?**
-
-```
-Patient 1 → "Low Risk"      (stable reference patient)
-Patient 2 → "Moderate Risk" (intermediate patient)
-Patient 3 → "High Risk"     (critical patient)
-```
-
-The three demo patients were chosen to represent each risk tier. If anyone changes the seed data or the risk classification thresholds, these tests immediately flag that the demonstration no longer covers all three tiers.
-
-**Why test boundary patient IDs (-1, 0, 4)?**
-
-```
-GET /api/patients/0  → 404
-GET /api/patients/-1 → 404
-GET /api/patients/4  → 404
-```
-
-Only patients 1, 2, and 3 exist. The system should return 404 (Not Found) for any other ID. Without these tests, a developer might accidentally return 500 (server error) for invalid IDs — which would break the frontend's error handling and potentially expose internal error messages.
-
-**Why do hex color tests matter?**
-
-```python
-assert patient['color'].startswith('#')
-assert len(patient['color']) == 7   # e.g. "#4A90D9" — 6 hex digits + #
-```
-
-The patient colors (`color` field) are used for the risk-level color coding throughout the UI. If the backend returns `"blue"` (CSS name) instead of `"#4A90D9"` (hex), the frontend's inline style would receive an unsupported format and render a default color — making all patient cards look identical.
-
----
-
-### 2C — `test_api_predict.py`
-
-The predict endpoint is the most complex and most important in the entire system. It has the most tests (22) for this reason.
-
-**The full test list with explanations:**
-
-**Response structure tests:**
-```
-Required keys: {patient_id, row_idx, cur_idx, total_rows, sofa_score,
-                risk_level, risk_color, vitals, vitals_status, shap, conformal}
-```
-Every field is used by some part of the frontend. Missing a field means some dashboard component silently renders nothing.
-
-**Clinical value range tests:**
-```
-SOFA in [0.0, 24.0]    — SOFA is a medical scale, cannot be outside this
-risk_level in {"Low Risk", "Moderate Risk", "High Risk"}
-risk_color is #RRGGBB format
-```
-
-**Conformal prediction interval tests:**
-```
-conformal_lo ≤ sofa_score ≤ conformal_hi   — interval must bracket the prediction
-conformal_lo ≥ 0                            — SOFA cannot be negative
-conformal_hi ≤ 24                           — SOFA cannot exceed 24
-```
-
-The conformal prediction interval is a statistically rigorous uncertainty range around the SOFA prediction. For example, if predicted SOFA = 8.4, the conformal interval might be [6.1, 10.7] — meaning "with 90% confidence, the true SOFA is somewhere in this range." These tests verify the interval is both mathematically valid (brackets the prediction) and clinically valid (within the SOFA scale bounds).
-
-**SHAP structure tests:**
-```
-shap is a list of ≤ 5 items
-Each item: {feature, direction, rel_impact}
-direction ∈ {"up", "down"}
-rel_impact ∈ [0, 1]      ← relative impact, 1.0 = largest factor, 0.0 = no impact
-```
-
-The SHAP panel in the dashboard renders these as direction arrows with proportional impact bars. If `rel_impact` is outside [0, 1], the bar's width calculation produces a visual overflow. If `direction` is an unexpected value, the arrow icon lookup fails silently.
-
-**Row cycling tests:**
-```
-Large row_idx wraps correctly          — modulo cycling must stay in bounds
-Consecutive row_idx increments cur_idx — 90-second polling advances through data
-```
-
-The system cycles through the stored MIMIC-III patient rows (`total_rows` in the response), using each row's vitals as a simulated real-time reading. The modulo cycling test sends a very large row_idx and checks that it wraps to a valid row index (for example, with 1,000 rows, row_idx=1,050 → 1,050 mod 1,000 = 50). The tests read `total_rows` from the response instead of hard-coding a row count, so they keep working when the dataset changes. Without this test, a row_idx larger than the dataset would cause an array-out-of-bounds error.
-
-**Patient validation tests:**
-```
-patient_id=4  → 400   (only 3 patients exist)
-patient_id=0  → 400   (IDs start at 1)
-patient_id=-1 → 400   (negative IDs are nonsensical)
-Empty body    → 422   (Pydantic model validation rejects missing required fields)
-```
-
-The difference between 400 (Bad Request) and 422 (Unprocessable Entity) matters for the frontend's error handling:
-- 422 means Pydantic caught a malformed request before it reached any business logic — the client sent wrong data types or missing fields
-- 400 means the request was well-formed but the values were invalid — the patient ID doesn't exist
-
-The frontend shows different error messages for each case.
-
----
-
-### 2D — `test_api_vitals.py`
-
-**Why test `?limit=21 → 400` and `?limit=0 → 400`?**
-
-The vitals endpoint is `GET /api/vitals/1?limit=20`. The limit parameter controls how many rows the frontend charts plot. Valid range is 1–20.
-
-If `limit=0` is accepted: the query would return 0 rows, the chart would show no data, and the clinician might think the patient has no vital history.
-
-If `limit=21` is accepted: the endpoint would try to return more rows than exist in the sliding window, which is capped at 20. The response would be inconsistent with the sliding window guarantees documented in the system.
-
-**Why test HR ∈ [20, 300] and SpO₂ ∈ [50, 100]?**
-
-These are "clinical sanity" checks — they verify the endpoint returns physiologically plausible values, not arbitrary numbers. If the database has a corrupt row (e.g., HR=999 from a hardware glitch), the clinical sanity test catches it. The ranges are wider than the clinical normal ranges (to allow for abnormal-but-real values) but narrower than the universe of all floats (to catch clearly corrupt data).
-
----
-
-### 2E — `test_api_history.py`
-
-Similar structure to the vitals tests. Key differences:
-
-**Default limit ≤ 5 (not 20):**
-
-The history drawer shows the 5 most recent predictions by default — enough for a clinician to see recent trends without overwhelming the UI.
-
-**`?limit=51 → 400`:**
-
-The sliding window for prediction history is 50 rows maximum. Requesting limit=51 would ask for more rows than the system stores. This test verifies the cap is enforced at the API level.
-
-**Required columns: `{Timestamp, SOFA, Risk}`:**
-
-These are the three columns displayed in the HistoryDrawer table. The test verifies the exact column names, because the frontend accesses them by name:
-```js
-{history.map(row => <tr>
-    <td>{row.Timestamp}</td>
-    <td>{row.SOFA}</td>
-    <td>{row.Risk}</td>
-</tr>)}
-```
-
-A rename from `SOFA` to `sofa_score` in the backend would break the table silently — the test catches it.
-
----
-
-### 2F — `test_api_report.py`
-
-The report endpoint is the most complex API test because it calls the Groq LLM, validates a multi-step response, and has several specific security checks.
-
-**The 4 required section keys:**
-
-```
-{CURRENT CONDITION, PROBABLE CAUSE, RISK FORECAST, IMMEDIATE ACTIONS}
-```
-
-The frontend renders exactly these four sections in separate cards. A missing key → empty card. A renamed key → empty card. The test verifies all four are present and non-trivial:
-
-```python
-assert len(report['sections']['CURRENT CONDITION']) > 20
-# Prevents a "correct structure, empty content" failure
-# (e.g., the LLM returns a section with just whitespace)
-```
-
-**The C5 fix tests — cross-patient ID mismatch:**
-
-```
-predict_result.patient_id mismatch → 400
-predict_result.vitals not dict     → 400
-predict_result.sofa_score missing  → 400
-```
-
-The C5 fix addresses a scenario where the report endpoint receives a `predict_result` that was generated for a different patient than the current `patient_id`. This could happen if:
-- The frontend has a stale cached prediction for a previous patient
-- A race condition in rapid patient switching
-
-Without the C5 fix, the backend would generate a report for Patient 3 using Patient 1's SOFA and vitals — a dangerous mixing of patient data. The test verifies the backend rejects mismatched IDs with a 400 error before generating any LLM content.
-
-**The `judge_used` test:**
-
-```python
-assert 'judge_used' in response.json()
-assert isinstance(response.json()['judge_used'], bool)
-```
-
-This is the C6 fix verification. The `judge_used` field tells the LLM Validation Drawer whether the full 9-method consistency check ran (True) or the fallback 7-method check ran (False). If this field is missing, the frontend Drawer shows "—" instead of a method count.
-
----
-
-## 8. Phase 3 — Backend System Tests
-
-**Goal:** Simulate complete multi-step monitoring sessions to verify that sequences of API calls work correctly together.
-
-**Why system tests catch bugs that unit and API tests miss:**
-
-Individual endpoint tests verify that each endpoint works in isolation. But real bugs often emerge from the interaction between endpoints:
-
-```
-Example — the "vitals from predict" consistency bug:
-
-API test for /api/predict: PASS (returns latest vitals correctly)
-API test for /api/vitals/1: PASS (returns vitals from DB correctly)
-
-But a system test might reveal:
-  After a predict call, the vitals endpoint returns DIFFERENT HR value
-  because predict writes to the DB with different rounding than vitals reads
-```
-
-**The 7 system tests:**
-
-| Test | What it simulates | Why it matters |
+| Group | Tests | What is checked and why |
 |---|---|---|
-| Full predict → vitals → history flow | The complete dashboard initialisation sequence | Verifies the app works correctly from first load |
-| All 3 patients predict independently | Clinician switches between patient views | Verifies no cross-contamination between concurrent sessions |
-| Row cycling stays in bounds | The 90-second automatic data refresh loop over the full patient-row dataset | Cycling must never crash regardless of row count or wrap-around point |
-| Vitals table grows after predict | Each predict call should add one row to the vitals history | Verifies the sliding window write is actually happening |
-| Cross-patient history isolation | Patient 2's predictions must not appear in Patient 1's history table | Critical patient safety test — wrong patient data in history is dangerous |
-| Health endpoint stays 200 | Backend uptime during an active monitoring session | Verifies that predict/vitals/history calls don't put the backend into a broken state |
-| Vitals from predict match vitals endpoint | The latest row returned by /api/vitals must match the values just returned by /api/predict | Verifies consistency between the two most important data sources |
+| Schema (4) | `init_db` creates `patient_vitals`, `prediction_history` and `sample_patients`; is **idempotent** (safe to run twice) | A fresh clone must start with a working database, and the backend runs `init_db()` on every start |
+| Vitals (5) | An insert works; rows come back in **ascending time order**; the **sliding window keeps only 20** after 21 inserts; patient 2 does not see patient 1's rows; `limit` is respected | The 20-reading window drives all trend features; isolation prevents mixing patients |
+| Prediction history (5) | Insert; `limit`; the window keeps **50** after 51 inserts; cross-patient isolation; the stored SOFA value round-trips | History is capped at 50 rows per patient |
+| Sample patients (2) | An empty table gives count 0; a missing row returns `None` | The replay logic must cope with missing data |
+| Connection (1) | `get_conn()` uses **WAL** journal mode | WAL lets the API read while it writes without "database is locked" errors |
 
-**The cross-patient history isolation test in detail:**
+### 1B — `test_ml_service_unit.py` (43 tests)
+It imports only constants and pure functions from `ml_service.py`, so no model is loaded.
 
-```python
-def test_cross_patient_history_isolation(client):
-    # Make predictions for all 3 patients
-    client.post('/api/predict', json={'patient_id': 1, 'row_idx': 0})
-    client.post('/api/predict', json={'patient_id': 2, 'row_idx': 0})
-    client.post('/api/predict', json={'patient_id': 3, 'row_idx': 0})
-    
-    # Get patient 2's SOFA score
-    p2_predict = client.post('/api/predict', json={'patient_id': 2, 'row_idx': 1}).json()
-    p2_sofa = p2_predict['sofa_score']
-    
-    # Get patient 1's history
-    p1_history = client.get('/api/history/1').json()
-    
-    # Patient 1's history must not contain patient 2's SOFA score
-    p1_sofa_values = [row['SOFA'] for row in p1_history]
-    assert p2_sofa not in p1_sofa_values
-```
+| Group | Tests | What is checked and why |
+|---|---|---|
+| `_is_clinical` with known vitals (4) | `HR_mean`, `latest_SpO2`, `GCS_eye_opening`, `stress_score` are clinical | These are the inputs SHAP is allowed to show |
+| `_is_clinical` with keywords (3) | `septic_shock_flag`, `respiratory_distress`, `vasopressor_use` are clinical | Clinical note words are recognised too |
+| Non-clinical (3) | `weight`, `age`, `glucose` are not | Unrelated features are filtered out |
+| **Boundary guards (8)** | `epinephrine`, `norepinephrine`, `thrombocytopenia` do **not** match "hr"; `cirrhosis`, `crrt`, `hemorrhage` do **not** match "rr"; `latest_hr` and `trend_rr` **do** match | "hr" is a substring of "epinephrine". Without a whole-word match, a drug name would be reported as "Abnormal heart rate" in the SHAP explanation. This was a real bug (fix "C3") and these tests lock it in |
+| `_VITAL_ABBR` (8) | Contains `hr`, `rr`, `map`, `sbp`, `dbp`, `gcs`, `spo2` and **exactly** those seven | The whole-word matching depends on this list |
+| `NORMAL_RANGES` (3) | Has all 7 vitals; HR is 60–100; SpO₂ is 95–100 | Status badges depend on these ranges |
+| **`ALERT_THRESHOLD` (2)** | It equals **7.0**, and equals `model_utils.ALERT_THRESHOLD` | The dashboard and the training report must use one shared number. If either side changes it alone, a test fails |
+| `load_training_metadata` (6) | Returns a dict; `final_mae` is between 0 and 5; `final_r2` between 0 and 1; `test_samples` is a positive int; `train_samples` ≈ 4 × `test_samples` (the 80/20 split); `best_round` is an int | These read the **live** `models/training_metadata.json`, so they check the values are *sane*, not that they equal one training run; the file changes on every retrain |
+| Seed timestamps (3, source-level) | The source has no hard-coded `2026-08-29`; it uses `timedelta`; the seed loop starts at `range(1, min(`) | Seed rows must use relative timestamps, and must start at row 1 so row 0 (the current reading) is not duplicated (fix "C7"). **These three read the source code, not behaviour** (Section 14) |
+| `RISK_MAP` (3) | Has `GCS` and `HR` keys; all values are strings | The key-risk labels are built from it |
 
----
+### 1C — `test_llm_service_unit.py` (25 tests)
+No real AI call is made.
 
-## 9. Phase 4 — Frontend Unit Tests
-
-**Goal:** Test every React component, hook, context, and API function in isolation, using jsdom as the browser environment and mocking everything external.
-
-**Key principle:** Each test renders only the component being tested. Child components that make network calls or use browser-only APIs are either mocked or simplified.
+| Group | Tests | What is checked and why |
+|---|---|---|
+| Cache key basics (2) | A non-empty string; **deterministic** | Same reading → same key |
+| What separates a key (8) | Different patient, care mode, SOFA, SBP, RR, HR, SpO₂ give **different** keys; the key contains the patient id | The cache must never serve patient 1's report for patient 2, or an old reading's report for a new reading (fix "C2") |
+| **Every vital in the prompt (5, parametrised)** | DBP, MAP, Temp, GCS eye and stress each change the key | If a vital appears in the AI prompt but not in the key, a changed reading would get a report quoting the **old** numbers. The frontend `reportKey` mirrors this |
+| Missing data (2) | A missing vital field, or a missing `vitals` key, does not crash | Robustness |
+| `judge_used` (3, source-level) | The result dict includes `judge_used`; it is set `False` when the judge fails; failures are logged to stderr | The dashboard shows "7 / 9 methods ran" when the judge failed (fix "C6"). **Source-level checks** (Section 14) |
+| **TTL cache (5)** | An entry is served until the 90-second TTL then expires; setting a new entry **evicts every expired entry**; a repeat request is served from cache; **4 simultaneous identical requests make exactly one AI call**; a **failed report is not cached** and the next request retries | The cache limits cost and avoids stale text; the concurrency test uses 4 real threads and a gate |
 
 ---
 
-### 4A — Layout Components
+## 7. Phase 2 — Backend API Tests (124 tests)
 
-**`AlertBanner.test.jsx`**
+**Goal:** call each endpoint over HTTP with FastAPI's `TestClient`. The real routers, database and ML code all run. These tests need the model files and the database to exist.
 
-The AlertBanner appears at the top of the dashboard when the patient's risk level is Moderate or High. It shows the SOFA score and uses `role="alert"` for screen reader accessibility.
+The fixtures (`conftest.py`): `client` (session-scoped, opens the app once so the models load once), and `predict_p1`, `predict_p2`, `predict_p3` (a cached `/api/predict` result per patient, reused by report and system tests).
 
-```jsx
-// What the component renders for High Risk:
-<div role="alert" className="alert-banner alert-critical">
-    <span>CRITICAL ALERT</span>
-    <span>SOFA Score: 8.4 — Immediate clinical review required</span>
-</div>
-```
+### 2A — `test_api_health.py` (4)
+`GET /health` returns 200, `status == "ok"`, `service == "ClinIQ"`, and a JSON content type.
 
-Why the null-return tests for `predictData=null` and `risk_level="Low Risk"` matter:
-- `predictData=null` is the initial state before the first API call completes — the banner must not crash during loading
-- For "Low Risk", showing an alert would desensitise clinicians to alerts over time (alert fatigue). No alert for stable patients is the correct clinical behaviour.
-
-The `role="alert"` test is an accessibility test — screen readers used by visually impaired clinicians announce `role="alert"` elements automatically. Without this attribute, visually impaired users would not be aware of critical alerts.
-
-**`HeaderBar.test.jsx`**
-
-The header shows the patient name, a countdown timer (seconds until next prediction), and the last-updated timestamp.
-
-Why test the "—" placeholder for missing last-updated?
-
-When the app first loads, no prediction has run yet — `lastUpdated` is null. The header should show "—" (an em dash indicating absence of data) rather than crashing or showing "Invalid Date" from a failed `Date.format()` call on a null value.
-
-**`ThemeToggle.test.jsx`**
-
-Simple toggle tests, but the icon direction matters: Sun icon in dark mode (click to go to light/brighter), Moon icon in light mode (click to go to darker). Reversed icons would confuse users who expect industry-standard toggle conventions.
-
----
-
-### 4B — Overview Components
-
-**`VitalCard.test.jsx`**
-
-The VitalCard is the most frequently rendered component — 7 instances on the dashboard simultaneously (one per vital). The status color tests are critical:
-
-```
-status="normal" → green color token applied
-status="high"   → amber/red color token applied
-status="low"    → blue/amber color token applied
-```
-
-Wrong colors would convey incorrect clinical signals. A patient with critically low SpO₂ shown in green would look fine to a clinician glancing at the dashboard.
-
-The `value=null` test (renders "—" without crash) handles the loading state and also handles the case where a vital sign is not being monitored (e.g., some patients don't have Temp readings in all rows).
-
-**`SOFAGauge.test.jsx`**
-
-The SOFA gauge is an SVG arc gauge showing the score visually (0–24). Critical tests:
-
-- **Zone markers at 6, 9, 12:** These are the visual risk zone boundaries on the gauge. If they are wrong, the gauge gives incorrect visual guidance about where the current SOFA score falls relative to risk thresholds. (Note: 5 and 10 are the classification thresholds, but the visual gauge uses slightly different zone positions for design reasons — the test locks in the actual implemented values.)
-- **score=0 without crash:** The gauge calculates an arc angle from the score — `angle = (score / 24) × 270`. For score=0, the arc has zero length, which could produce NaN in some SVG implementations.
-- **score=24 without crash:** Maximum score — ensures the arc doesn't overflow its container.
-
-**`VitalsGrid.test.jsx`**
-
-Renders exactly 7 VitalCard children. The "exactly 7" test is a snapshot of the system's architecture: the 7 vitals are HR, RR, SpO₂, Temp, SBP, DBP, MAP. If someone adds an 8th vital to the backend but forgets to add its VitalCard, the count test would still pass — but if someone removes a vital from the grid accidentally, the test catches it.
-
----
-
-### 4C — Report Components
-
-**`ReportContainer.test.jsx` — The Most Complex Frontend Test**
-
-ReportContainer is the most complex component in the system — it manages the LLM report lifecycle: detecting when to regenerate, showing loading/stale/error states, and displaying the final report. It has 13 tests.
-
-**The reportKey mechanism — when to regenerate:**
-
-The component uses a `reportKey` value to decide when to trigger a new LLM API call. The key is computed from clinical values that actually affect the SOFA score:
-
-```js
-const reportKey = `${sofa_score}-${GCS_eye}-${stress}`
-```
-
-Tests verify the key changes appropriately:
-```
-reportKey changes when sofa_score changes   ✓ (the main prediction changed)
-reportKey changes when GCS_eye changes      ✓ (neurological state changed)
-reportKey changes when stress changes       ✓ (patient comfort changed)
-reportKey stays SAME when only timestamp changes  ✓ (cosmetic update — no new report needed)
-```
-
-The timestamp-invariance test is subtle but important. The predict endpoint runs every 90 seconds — every call includes a new timestamp. If the report re-generated on every timestamp change, it would trigger a new (expensive, slow) LLM API call every 90 seconds, burning API credits and showing a loading skeleton every minute and a half. The test verifies that cosmetic changes (timestamp) don't trigger unnecessary regeneration.
-
-**Error state tests:**
-
-```
-401 → "Invalid API key" message
-429 → "Rate limit reached" message
-503 → "AI service temporarily unavailable" message
-```
-
-When the LLM call fails, the frontend needs to show the clinician a specific, actionable message — not a generic "error" that leaves them confused:
-- 401: "Your Groq API key is wrong or expired — check the `.env` file"
-- 429: "Too many requests in a short time — wait a minute and try again"
-- 503: "Groq's servers are having issues — this will resolve automatically"
-
-Each status code maps to a specific user-facing message. The tests verify these mappings are correct.
-
-**`SHAPPanel.test.jsx`**
-
-The "Keeps last factors during refresh" test is important UX: when the 90-second polling cycle refreshes the prediction, there is a brief moment where `factors=[]` (the new SHAP values haven't loaded yet). Without this behaviour, the SHAP panel would briefly disappear every 90 seconds — a jarring flash. The test verifies that the component keeps showing the previous SHAP factors until new ones arrive.
-
----
-
-### 4D — Trends Components
-
-**`TrendsSection.test.jsx`**
-
-The vital selector tabs let the clinician choose which of the 7 vitals to see in the trend chart. The "Clicking another vital updates selection" test verifies that tab switching actually changes what is displayed — not just what appears to be highlighted.
-
-```jsx
-// What the test does:
-render(<TrendsSection vitals={mockData} />)
-expect(screen.getByText('HR')).toBeVisible()  // default: HR selected
-
-await userEvent.click(screen.getByRole('tab', { name: 'SpO2' }))
-// Wait for state update
-expect(screen.getByText('SpO₂ (%)')).toBeInTheDocument()  // SpO2 chart now shown
-```
-
----
-
-### 4E — Validation Components
-
-**`SOFAValidationDrawer.test.jsx` — Model Performance Values**
-
-The SOFA Validation Drawer shows the model's validated performance metrics. In an earlier version these numbers were hard-coded in the component (0.9461 / 0.6840 / 1.8968 / 0.5995 / 2,559 rows / 19.8%). Now the drawer reads **every** number from `predictData._training_meta` — the contents of `models/training_metadata.json`, which the backend sends with each prediction. The tests therefore feed the drawer a metadata object shaped like `training_metadata.json` and check that the live values appear:
-
-```
-predictData = { patient_id: 'P1', sofa_score: 6.2, _training_meta: META }
-
-META (mirrors the current training_metadata.json):
-  final_mae = 1.8247, final_r2 = 0.4725
-  train_samples = 41,798, test_samples = 10,450
-  high_risk_alert: threshold 7.0, AUROC 0.9254, PR-AUC 0.6456,
-                   recall 0.6711, specificity 0.9634, FN 198, FP 360
-  risk_bands.confusion_matrix = [[6617, 305, 7], [2159, 669, 91], [112, 203, 287]]
-  per_class['High (>=10)'].recall = 0.4767
-```
-
-**What the 13 tests check:**
-
-| Test | Expected on screen |
+### 2B — `test_api_patients.py` (26)
+| Group | What is checked |
 |---|---|
-| Closed drawer | No content rendered |
-| Open drawer | Renders |
-| MAE / R² / AUROC / PR-AUC from metadata | `1.8247`, `0.4725`, `0.9254`, `0.6456` |
-| 3-class accuracy computed from the confusion matrix | `72.5%` — (6617 + 669 + 287) / 10,450 |
-| Test and total sample counts | "10,450 ICU stays of 52,248 total" |
-| Live alert threshold and alert recall/specificity | "predicted SOFA ≥ 7", `67.1%`, `96.3%` |
-| 3-class High-risk recall from `per_class` | `47.7%` |
-| Confusion matrix rows from metadata | "True Low Risk", "True High Risk", `6,617` |
-| Metadata missing | Shows "—" placeholders and "Confusion matrix not available" instead of crashing |
-| Close button | Calls `onClose` |
+| List (9) | 200; exactly 3 patients; each has `id`, `name`, `short`, `icon`, `description`, `color`, `risk_level`, `sofa_range`; ids are {1, 2, 3}; colours are 7-character hex; risk levels are valid; names, icons and SOFA ranges are non-empty |
+| Risk mapping (3) | Patient 1 is Low Risk, patient 2 Moderate, patient 3 High |
+| One patient (9) | For ids 1, 2, 3: returns 200, echoes the id, has the required fields |
+| Not found (5) | Ids 4, 5, 99, 0 and −1 return **404** |
 
-**What these values mean (current model):**
+### 2C — `test_api_predict.py` (39)
+| Group | Tests | What is checked |
+|---|---|---|
+| Response shape (8) | Required keys; `patient_id` and `row_idx` echoed; SOFA in 0–24; risk level known; risk colour is hex; `is_alert` is a bool | The contract the frontend relies on |
+| Conformal interval (4) | `conformal_lo ≤ sofa ≤ conformal_hi`; lo ≥ 0; hi ≤ 24; both numeric | The 90% range is always valid |
+| Vitals (7) | Keys present; HR numeric; SpO₂ in 50–100; HR in 20–300; temperature in range; `vitals_status` keys and values (`normal`/`high`/`low`) | Plausible values reach the UI |
+| SHAP (6) | A list; at most 5; each has `feature`, `direction`, `rel_impact`; direction is `up` or `down`; `rel_impact` in 0–1; `feature` is a string | The SHAP panel's contract |
+| Row cycling (4) | `cur_idx` within `total_rows`; a huge `row_idx` (99,999) wraps; consecutive rows advance `cur_idx` by one (mod total); `total_rows > 0` | The 30 recorded readings replay in a loop |
+| All patients (3, parametrised) | Patients 1, 2, 3 succeed | |
+| Errors (7) | Patient ids 4, 5, 99, 0, −1 → **400**; an empty body and a missing `row_idx` → **422** | Input validation |
 
-- **AUROC = 0.9254:** If you pick two patients — one truly High Risk (SOFA ≥ 10) and one not — the model gives the critical patient a higher predicted SOFA about 92.5% of the time. This is strong discrimination.
+> **Quirk:** `test_predict_is_alert_true_for_high_sofa` only checks that `is_alert` is a boolean, despite its name. The comment says so ("we do not guarantee it but verify type"). See Section 14.
 
-- **PR-AUC = 0.6456:** The area under the Precision-Recall curve, which is more informative than AUROC when the positive class (High Risk) is rare (602 of 10,450 test stays, about 6%). A random classifier achieves PR-AUC ≈ 0.06 (the base rate), so 0.646 is roughly 10× better than random.
+### 2D — `test_api_vitals.py` (20)
+`GET /api/vitals/{id}`: 200; a list; the default is at most 20 rows; `limit=5` and `limit=1` are respected; columns `time`, `HR`, `RR`, `SpO2`, `Temp`, `SBP`, `DBP`, `MAP` present; `time` is a string; HR, SpO₂, SBP and RR are in plausible ranges; patients 1–3 succeed; errors: ids 4, 99, 0 → 400, and `limit` of 21, 0 or −1 → **400** (the limit must be 1–20).
 
-- **Alert recall = 67.1% at predicted SOFA ≥ 7:** The model under-predicts severe patients, so the alert fires at predicted SOFA ≥ 7 (`ALERT_THRESHOLD = 7.0`, explained in INPUT_OUTPUT.md) instead of waiting for ≥ 10. At this threshold it catches 404 of 602 truly High-Risk patients, with 96.3% specificity (198 missed, 360 false alarms).
+### 2E — `test_api_history.py` (17)
+`GET /api/history/{id}`: 200; a list; the default is at most 5; `limit=2` is respected; columns `Timestamp`, `SOFA`, `Risk`; SOFA values are numeric and in 0–24; risk values are non-empty; patients 1–3 succeed; errors: ids 4, 99, 0 → 400, and `limit` of 0, 51 or −1 → **400** (the limit must be 1–50).
 
-- **3-class High-band recall = 47.7%:** Using the plain risk bands (predicted ≥ 10 = High), fewer critical patients are caught — which is exactly why the separate, lower alert threshold exists.
+### 2F — `test_api_report.py` (18)
+| Group | Tests | What is checked |
+|---|---|---|
+| **Slow happy path (10)** | Hospital mode returns 200; required keys; all 4 sections present; each section is a string longer than 20 characters; reliability score is a float in 0–1; label is High/Moderate/Low; **Home Care mode** returns 200 with all 4 sections; `judge_used` is present and a bool | These call the **real Groq API** (about 16 seconds in total). Marked `slow` |
+| Validation, no AI call (4) | A bad care mode → 400; a missing care mode → 422; patient 4 → 400; patient 0 → 400 | |
+| **Server-side data (3)** | With no earlier prediction, the report returns **409**; **client-supplied data is ignored**: even a malformed `predict_result` for another patient is never used, and the server's own stored prediction is what reaches the report builder; the minimal body `{patient_id, care_mode}` is enough | The report is built **only** from the server's own last prediction, never from browser data |
+| Empty body (1) | → 422 | |
 
-- **Confusion matrix renders 3 rows:** The 3×3 confusion matrix (Low/Moderate/High Risk actual vs predicted) has exactly 3 rows, taken straight from the metadata.
-
-Because the numbers come from metadata, the tests check that the drawer **shows whatever the loaded model achieved** — after a retrain the drawer updates automatically, and the "—" test guarantees it never crashes or shows fake zeros when metadata is missing.
-
-**`LLMValidationDrawer.test.jsx`**
-
-```
-judge_used=True  → "✓ 9 / 9 methods ran"
-judge_used=False → "⚠ 7 / 9 methods ran"
-```
-
-The 9 "methods" in LLM validation refer to 9 consistency measurement dimensions (TF-IDF similarity, intervention agreement for 7 categories). When `judge_used=True`, all 9 ran. When `judge_used=False`, 2 of the 7 intervention categories could not be evaluated (usually because the LLM response didn't discuss those specific interventions), reducing the total to 7.
-
----
-
-### 4F — CV Components
-
-**`CVMonitorModal.test.jsx`**
-
-The CV Monitor modal shows the computer vision feed for GCS Eye Opening and Stress Score assessment. Two key text checks:
-
-```
-Shows supplementary label text
-Shows "SOFA prediction uses dataset values" text
-```
-
-The second check is a crucial disclaimer: in the deployed dashboard, the CV module provides real-time readings, but the SOFA DNN prediction itself uses cycling MIMIC-III dataset rows (not the live vitals). This disclaimer prevents clinicians from thinking the SOFA score reflects the live camera-derived values. Testing this text ensures the disclaimer cannot be accidentally removed.
+> **Quirk:** the 10 slow tests still send `predict_result` in the request body (the old request shape). The API ignores that field now, so the tests work, but they do not exercise the "minimal body" path in the happy case. The three "server-side data" tests above do (Section 14).
 
 ---
 
-### 4G — History Components
+## 8. Phase 3 — Backend System Tests (9 tests)
 
-**`HistoryFAB.test.jsx`**
+**Goal:** simulate real multi-step sessions through the real database and ML stack. Each test is independent.
 
-The HistoryFAB (Floating Action Button) shows a badge with `recordCount` when > 0. This badge tells the clinician "there are N previous predictions in the history" at a glance, without needing to open the drawer. The test verifies the count appears when records exist and does not appear when count is zero.
+| Test | The flow it checks |
+|---|---|
+| `full_patient_select_and_monitor_flow` | List patients (3) → pick patient 2 → predict row 0 (`cur_idx` 0) → predict row 1 (`cur_idx` 1) → vitals (≥ 1 row) → history (SOFA in 0–24). Mirrors SelectPatient → MonitorDashboard → History drawer |
+| `all_patients_predict_independently` | Patients 1, 2, 3 each return their own valid prediction |
+| `row_cycling_stays_in_bounds` | Row indices 0, 1, 50, 500, 10,000, 99,999 always give `0 ≤ cur_idx < total_rows` |
+| `vitals_accumulate_after_predict_calls` | Predict calls append to the vitals window |
+| **`cross_patient_history_isolation`** | Two predictions for patient 2 do **not** change patient 1's history count |
+| `predict_then_vitals_consistency` | The HR returned by `/api/predict` appears in `/api/vitals` |
+| `health_endpoint_stays_responsive_throughout` | `/health` is 200 before and after a monitoring sequence |
+| `history_contains_latest_prediction_data` | After a predict, the history count does not shrink |
+| `vitals_endpoint_returns_valid_sofa_consistent_data` | Returned vitals are numeric and in range |
 
-**`HistoryDrawer.test.jsx`**
-
-The empty state test ("Shows empty state when data=[]") is important for new patients — a patient with no prediction history should see a friendly "No history yet" message, not a blank table with no headers or a JavaScript error from trying to `.map()` over an empty array.
-
----
-
-### 4H — Hook Tests (`useMonitor.test.js`)
-
-`useMonitor` is the most important hook in the application — it drives the entire monitoring loop. It manages:
-- Making the initial prediction on mount
-- Auto-refreshing every 90 seconds
-- Incrementing `rowIdx` on each successful fetch
-- Resetting when the patient changes
-- Preventing race conditions
-
-**The `fetchingRef` concurrent fetch guard:**
-
-```
-Concurrent fetches are guarded (fetchingRef)
-```
-
-This tests a subtle race condition. The hook fires a prediction fetch every 90 seconds. What if the Groq LLM takes 95 seconds to respond? Without the `fetchingRef` guard, the next 90-second tick would fire a second prediction fetch WHILE the first one is still in progress. Two simultaneous fetches could overwrite each other's results in random order, producing inconsistent state.
-
-`fetchingRef` is a ref (not state) that acts as a mutex: "if I'm already fetching, do not start another fetch." The test verifies this guard works.
-
-**The StrictMode double-invoke guard:**
-
-```
-StrictMode double-invoke guard (lastPatientRef)
-```
-
-React's Strict Mode (enabled in development) intentionally renders components twice — once to find side effects and once for the real render. Without a guard, `useMonitor` would fire TWO prediction fetches on mount: one from the Strict Mode test render and one from the real render. This would waste one API call and could cause state to update before the component is ready.
-
-`lastPatientRef` stores the last patient ID that triggered a fetch. On the second Strict Mode invoke with the same patient ID, the guard says "I already fetched for this patient — don't fetch again." The test verifies only ONE fetch fires, not two.
-
-**The `rowIdx` increment test:**
-
-```
-rowIdx increments after each successful fetch
-```
-
-This verifies the row cycling mechanism. Each prediction call uses a different row of MIMIC-III data. If `rowIdx` never incremented, the same patient row would be used for every prediction — the dashboard would appear "stuck" showing the same vitals indefinitely.
+> **Note:** a few of these assertions are deliberately loose because the sliding windows are capped (20 vitals, 50 history rows) and already full: for example "count ≥ before" rather than "count + 1".
 
 ---
 
-### 4I — Context Tests (`ThemeContext.test.jsx`)
+## 9. Phase 4 — Frontend Unit Tests (209 tests)
 
-```
-Default isDark state is boolean   ← not undefined, not null
-toggleTheme flips isDark          ← false→true or true→false
-Calling toggleTheme twice returns to original  ← toggle, not one-way setter
-```
+**Goal:** test each React component, hook and helper in isolation with `render()`; the animation, chart and camera libraries are mocked by `vitest-setup.js`.
 
-The "toggle twice returns to original" test is the most important: it verifies that `toggleTheme` is genuinely a toggle (alternates between states), not a setter that always goes in one direction. A bug like:
+### 4A — Layout (28)
+- **AlertBanner (9):** renders nothing when `predictData` is null or the risk is Low; renders for Moderate and High; shows the SOFA score; label **ELEVATED RISK** for Moderate and **CRITICAL ALERT** for High; `aria-live` is assertive for High and polite for Moderate (so screen readers announce urgency correctly).
+- **HeaderBar (12):** renders; the LIVE indicator; the countdown in seconds; "···" while refreshing; the patient name; the Exit button; the ClinIQ brand mark; the last-updated time; "connection lost" on error; "All Systems Operational" otherwise; no timestamp when `lastUpdated` is null; the theme toggle is an accessible button.
+- **ThemeToggle (7):** is a button with an `aria-label`; shows a text label unless `compact`; clicking toggles the theme; sun icon in dark mode, moon in light.
 
-```js
-const toggleTheme = () => setIsDark(true)   // bug: always sets to dark, never toggles back
-```
+### 4B — Overview (28)
+- **SOFAGauge (8):** renders; shows the score and risk level; has the SVG arc; handles score 0 and score 24 without crashing; shows the conformal interval values; draws **3 zone-marker lines** at SOFA 6, 9 and 12.
+- **VitalCard (14):** label, value and unit; a null value shows "—" without crashing; status labels **Normal**, **Above Normal**, **Below Normal**; up-arrow for high and down-arrow for low; the trend section.
+- **VitalsGrid (6):** renders with valid vitals; shows HR and SpO₂; handles null vitals and undefined `predictData`; renders all 7 vital card labels (including DBP).
 
-would pass all tests except the "toggle twice" test, which would see: `isDark` → `true` → `true` (failed to return to original).
+### 4C — Report (51)
+- **ReliabilityBadge (8):** the percentage; the High, Moderate and Low labels; the caution block appears only when `caution` is truthy; the score-ring SVG; the "AI Clinical Assessment" header.
+- **ReportContainer (22)** is the most heavily tested component, because it decides *when* to call the AI:
+  - skeleton while loading; calls `generateReport` when data arrives; shows content and **all 4 sections**; clear messages for errors **401, 429 and 503**;
+  - does **not** call again when non-clinical fields change, and does call again when `sofa_score`, **`GCS_eye`** or **`stress`** change;
+  - **requests a report for each care mode**, then **prefetches the other mode** once the first has loaded, and **switches mode instantly from cache** with no extra request and no skeleton;
+  - never shows one mode's report under the other tab while loading;
+  - **a new reading empties the cache**, so both modes are regenerated;
+  - **a failed report is not cached**, so the same reading retries;
+  - renders nothing when `predictData` is null; calls `onReportData` after load; shows a "stale" notice while refreshing, or if the API fails after data exists.
+- **ReportSection (5):** the title-case section name; the content; the subtitle; no crash on empty content; works with no colour.
+- **ReportToggle (7):** the Hospital and Home Care buttons; clicking calls `setCareMode` with `"hospital"` or `"homecare"`; two buttons; the active one has a gradient; clicking the active one still fires.
+- **SHAPPanel (9):** renders with factors, nothing for empty or null; shows feature names; **preserves the last factors when an empty array arrives** (the panel does not blank out if SHAP fails once); at most 5 factors; ↑ and ↓ indicators; bars carry a `data-target-width`.
 
----
+### 4D — Trends (11)
+- **TrendChart (5):** renders with data; the chart container; handles an empty array and null; renders for SpO₂.
+- **TrendsSection (6):** renders; shows skeleton cards while loading; after data loads shows **7 charts** and all 7 vital labels.
 
-### 4J — API Client Tests (`client.test.js`)
+### 4E — Validation (28)
+- **LLMValidationDrawer (8):** hidden when closed; shown when open; **"9 / 9 methods ran"** when the judge was used and **"7 / 9 methods ran"** with a warning when it was not; no crash when `reportData` is null; the three tabs (Overview, 9 Methods, Findings); the close button.
+- **LLMValidationFAB (4):** the `aria-label`; clicks work when data exists; it is visually disabled (low opacity, no pointer events) when there is no report yet, and full opacity otherwise.
+- **SOFAValidationDrawer (13)** checks the drawer reads **live** from the training metadata (`_training_meta`) and never shows hard-coded numbers: MAE, R², AUROC and PR-AUC come from the metadata; the **3-class accuracy is computed from the confusion matrix**; the test and total sample counts; the live alert threshold and alert recall; the High-risk recall from `per_class`; the confusion-matrix rows; **placeholders ("—") instead of a crash when the metadata is missing**; the close button.
+- **SOFAValidationFAB (3):** the `aria-label`; clicking; renders.
 
-These tests verify that each API function calls the correct HTTP method and URL with the correct parameters. They use `vi.spyOn(axios, 'get')` and `vi.spyOn(axios, 'post')` to intercept the actual HTTP calls.
+### 4F — Camera monitor (26)
+- **CVMonitorFAB (4):** the `aria-label`; clicking; renders when active; the active state renders different HTML.
+- **CVMonitorModal (6):** hidden when closed, shown when open; the supplementary label; the footer says live readings feed the next SOFA prediction; no score cards before the camera runs; **live readings are cleared (`null` sent) when the monitor closes**.
+- **cvScoring (16)** tests the exported scoring maths directly (no camera needed):
+  - **PSPI (4):** a neutral face gives 0; the formula adds correctly (example 7.5); the maximum is 16; a full smile cancels the score;
+  - **stress (4):** the first frame seeds the average; maximal pain and agitation give 10; smoothing uses α = 0.15; the bands LOW < 3.5 ≤ MODERATE < 6.5 ≤ HIGH (checked at 3.4, 3.5, 6.4, 6.5);
+  - **eye aspect ratio (1)** and **eye state (2):** the blink value overrides the ratio; open, partial and closed thresholds;
+  - **GCS window (5):** E4 at ≥ 70% open (blinks allowed); E3 at ≥ 30% open or partly open; E2 for a flicker of at least 0.1 s; E1 when eyes stay closed; a one-frame twitch is not a flicker.
 
-```js
-test('runPredict sends correct body', async () => {
-    const postSpy = vi.spyOn(axios, 'post').mockResolvedValue({ data: mockPred })
-    await runPredict(1, 5)
-    expect(postSpy).toHaveBeenCalledWith('/api/predict', { patient_id: 1, row_idx: 5 })
-})
-```
+  Details of the algorithm: `docs/CV_MONITOR.md`.
 
-Why test these simple wrapper functions? Because the URL is a contract between frontend and backend. If `getHistory` were accidentally changed to call `/api/prediction_history` instead of `/api/history`, the backend would return 404 — and the bug would only be caught when the two sides are tested together. The API client tests catch this class of URL mismatch immediately.
+### 4G — History (13)
+- **HistoryDrawer (8):** no table when closed; renders when open; the column headers (including Timestamp and Risk); the close button; a SOFA of 5.5 shows as "5.5"; an empty history shows an empty-state message.
+- **HistoryFAB (5):** the `aria-label`; clicking; renders with `recordCount` 0 and above 0; has an SVG icon.
 
----
+### 4H — `useMonitor` hook (11)
+This hook runs the 90-second polling loop, so these tests protect the live behaviour:
+calls `runPredict` on mount with the patient and row 0; sets `predictData` after a successful fetch; sets `error` on a failed fetch; `isRefreshing` is true during a fetch; the countdown **resets to 90** after a fetch; changing the patient resets the data and triggers a new fetch; `lastUpdated` is set; the countdown **decrements** with the timer; the row index goes to 1 on the second fetch; **the concurrent-fetch guard prevents overlapping calls**; **the React StrictMode double-invoke guard prevents a duplicate first fetch**.
 
-## 10. Phase 5 — Frontend Integration Tests
+### 4I — `ThemeContext` (5)
+Provides the theme and `toggleTheme`; toggling flips the theme and twice returns to the original; sets `data-theme` on the document element.
 
-**Goal:** Test complete page components (`SelectPatient` and `MonitorDashboard`) with API calls mocked using MSW.
+### 4J — API client (8)
+With `axios` mocked, checks each call: `getPatients` → `GET /patients`; `getPatient(2)` → `/patients/2`; `runPredict(1, 5)` → `POST /predict` with `{patient_id: 1, row_idx: 5}`; **`generateReport` sends only `patient_id` and `care_mode`**; `getHistory(1, 5)` → `/history/1?limit=5`; `getVitals(1, 20)` → `/vitals/1?limit=20`; the default limits are 50 (history) and 20 (vitals).
 
-**The difference from unit tests:**
-
-Unit tests render a single isolated component. Integration tests render an entire page, including all its child components, with real React routing and real React context providers. The only thing mocked is the network layer.
-
-### `SelectPatient.test.jsx`
-
-**Loading state test:**
-
-```js
-// Before the mock API responds, the component should show a loading state
-render(<SelectPatient />)
-expect(screen.getByRole('progressbar')).toBeInTheDocument()
-// ...wait for API mock to respond...
-expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
-```
-
-The loading state test verifies that the user sees feedback ("loading...") rather than a blank page while the patient list is fetching. Without this test, a developer might accidentally remove the loading state check and produce a blank screen flash on every app load.
-
-**Navigation test:**
-
-```js
-// Clicking a patient card should navigate to /monitor/1
-await userEvent.click(screen.getByText('Patient 1'))
-expect(mockNavigate).toHaveBeenCalledWith('/monitor/1')
-```
-
-This is the critical integration between the SelectPatient page and React Router. The test verifies the entire "click patient → navigate" path, not just that the button exists.
-
-### `MonitorDashboard.test.jsx`
-
-The MonitorDashboard integration test is the largest single test file — it exercises the entire dashboard at once, verifying that all sub-components receive and display data correctly.
-
-**The redirect test:**
-
-```js
-// If no patientId in the URL, redirect to "/"
-render(<MonitorDashboard />, { route: '/monitor/' })
-expect(mockNavigate).toHaveBeenCalledWith('/')
-```
-
-A clinician should not be able to navigate directly to `/monitor/` without a patient ID. The redirect test ensures this protection is working.
-
-**The FAB → Drawer integration tests:**
-
-```
-HistoryFAB opens HistoryDrawer on click
-CVMonitorFAB opens CVMonitorModal on click
-SOFAValidationFAB opens SOFAValidationDrawer on click
-LLMValidationFAB opens LLMValidationDrawer on click
-```
-
-Each of these floating action buttons must open its corresponding drawer or modal. Unit tests verify each component renders correctly in isolation — but they cannot verify that `MonitorDashboard` correctly connects the FAB's `onClick` to the Drawer's `open` state. Integration tests verify this wiring.
-
-**The tab switching test:**
-
-```js
-await userEvent.click(screen.getByRole('tab', { name: 'Trends' }))
-expect(screen.getByTestId('trends-section')).toBeVisible()
-expect(screen.queryByTestId('overview-section')).not.toBeVisible()
-```
-
-Verifies that only one tab's content is visible at a time, and that switching tabs shows the correct content.
+> **Not tested:** `runPredict` with camera data (`cv_gcs_eye`, `cv_stress`) is never exercised in `client.test.js` (Section 14).
 
 ---
 
-## 11. Phase 6 — End-to-End Tests (Playwright)
+## 10. Phase 5 — Frontend Integration Tests (23 tests)
 
-**Goal:** Tests a real user interacting with the real, fully running application in a real browser.
+**Goal:** render a **whole page** with the real components, but with its API calls replaced by mocks (`vi.mock` on `@/api/client.js`), inside a real `MemoryRouter`, `QueryClientProvider` and `ThemeProvider`. (There is no MSW; Section 4.)
 
-**Requirements before running:**
-- Backend server running on `localhost:8000` (`python -m uvicorn backend.main:app --port 8000`)
-- Frontend dev server running on `localhost:5173` (`npm run dev` from `frontend/`)
-- `.env` file with valid `GROQ_API_KEY` (report generation tests need it)
+### `SelectPatient.test.jsx` (7)
+Calls `getPatients` on mount; renders 3 patient cards after load; shows the descriptions; **clicking a card navigates to the monitor page**; shows an error state when the API fails; shows ClinIQ branding; shows no cards while loading.
 
-**Why E2E tests catch bugs that lower-level tests cannot:**
+### `MonitorDashboard.test.jsx` (16)
+`getPatient`/`getVitals`/`getHistory`/`generateReport` are mocked, and **`useMonitor` is mocked** so each test controls the prediction data directly.
 
-- CSS that incorrectly hides an element (the element is in the DOM but not visible)
-- JavaScript that works in jsdom but fails in Chrome's V8 engine
-- Timing issues (a button is clickable but the state hasn't updated yet)
-- Browser-specific rendering quirks (Safari renders SVGs differently than Chrome)
+| What is checked |
+|---|
+| Renders; fetches patient data on mount; shows the SOFA score and risk level from `predictData`; shows the patient name and the HR value in the vitals grid; shows the countdown from the hook; renders **all three section headings** |
+| The alert banner is **absent** for Low Risk and **present** for High Risk |
+| An invalid patient id **redirects to `/`** (two tests: the redirect, and that the home element is then shown) |
+| **Each drawer opens from its floating button:** History, SOFA validation, **Camera monitor** (CV), and LLM validation (after the report loads) |
 
-### `patient_selection.spec.js`
+---
 
-```js
-test('patient cards load and clicking navigates', async ({ page }) => {
-    await page.goto('http://localhost:5173')
-    
-    // Wait for cards to appear (not just the page to load)
-    await expect(page.locator('.patient-card')).toHaveCount(3)
-    
-    // Click Patient 1 by visible text
-    await page.click('text=Patient 1')
-    
-    // Verify navigation happened
-    await expect(page).toHaveURL('http://localhost:5173/monitor/1')
-    
-    // Verify the dashboard loaded with the right patient
-    await expect(page.locator('h1')).toContainText('Patient 1')
-})
-```
+## 11. Phase 6 — End-to-End Tests (21 tests)
 
-### `monitoring_flow.spec.js`
+**Goal:** a real Chromium browser drives the real frontend against the real backend, with no mocks. These test what the clinician actually experiences.
 
-These tests simulate a complete monitoring session from the clinician's perspective:
+**Requirements:** the ClinIQ backend running on **port 8000**; Playwright starts (or reuses) the Vite server on port 5173. The report tests wait on **real Groq calls** and need a valid `GROQ_API_KEY`.
 
-1. Navigate to a patient's dashboard
-2. Verify the SOFA gauge and vital cards appear
-3. Open the History drawer via FAB
-4. Verify history rows appear in the table
-5. Open the CV Monitor modal
-6. Verify the disclaimer text is present
-7. Open the SOFA Validation drawer
-8. Verify the MAE/R² values are displayed (these come from the real backend!)
+### `patient_selection.spec.js` (7)
+The home page shows 3 patient cards; each shows its risk level and description (post-surgical, pneumonia, septic shock); ClinIQ branding; clicking Patient 1 and Patient 3 each navigates to the right monitor page; the header shows a live clock; the dashboard header shows the patient name.
 
-The SOFA validation drawer test is especially valuable in E2E context — it verifies that the real backend correctly loads `training_metadata.json` and returns the right values through the real API, not just that the frontend renders whatever values it receives.
+### `monitoring_flow.spec.js` (8)
+Starting from patient 2: the SOFA gauge is visible; the LIVE indicator; the countdown; the vitals grid shows the vital cards; the **History button** opens the drawer; the **Camera button** opens the camera modal; the **SOFA Validation button** opens its drawer; the Exit button returns to patient selection.
 
-### `report_generation.spec.js`
+### `report_generation.spec.js` (6)
+Starting from patient 1: the loading skeleton does not crash the page; **the 4 report sections appear after load** (up to 30 s with a real AI); the reliability badge appears; **the Hospital → Home Care toggle works** (about 30 s, because the other mode is generated); the LLM Validation button is enabled after the report loads; the LLM drawer opens and shows the method count.
 
-The most time-sensitive E2E test — this calls the real Groq API and must wait for a real LLM response.
+**Last full run (2026-11-24):** all 21 passed in 1.4 minutes.
 
-```js
-test('report shows content after LLM call', async ({ page }) => {
-    await page.goto('http://localhost:5173/monitor/1')
-    
-    // Navigate to Report tab
-    await page.click('text=Report')
-    
-    // Loading skeleton should appear immediately
-    await expect(page.locator('[data-testid="report-skeleton"]')).toBeVisible()
-    
-    // Wait for the real LLM response (can take 10-30 seconds)
-    await expect(page.locator('text=CURRENT CONDITION')).toBeVisible({ timeout: 45000 })
-    
-    // All 4 section cards should be present
-    await expect(page.locator('.report-section')).toHaveCount(4)
-    
-    // Reliability badge should appear
-    await expect(page.locator('[data-testid="reliability-badge"]')).toBeVisible()
-})
-```
-
-The 45-second timeout is explicitly set for LLM response tests. The default Playwright timeout is 5 seconds — waiting for a real LLM call requires a custom timeout. The test is marked `@slow` in pytest (or equivalent in Playwright) so it can be skipped during rapid development cycles and only run in CI or before presentations.
+> **A real pitfall met while running these.** On the machine used for this check, **a different project's server was already listening on port 8000** (a "Prism Dashboard API"). It answers `/health` with 200, so a simple health check looks fine, yet `/api/patients` returns 404 and every E2E test fails after a 2-minute timeout in the setup step (the page shows "Unable to load patients — ensure the API server is running on port 8000"). The ClinIQ backend has to be the thing on port 8000, so before running E2E, check that `curl localhost:8000/api/patients` returns the three patients, not just `/health`. See Section 12.
 
 ---
 
 ## 12. Running the Tests
 
-### Install Dependencies
+**All commands run from `icu_monitor/` unless a `cd` is shown.**
 
+### Backend (pytest)
 ```bash
-# Backend test dependencies (activate virtualenv first)
-pip install pytest pytest-asyncio httpx
+pytest tests/cliniq/backend                  # all 218 backend tests          (≈ 20 s with the slow ones)
+pytest tests/cliniq/backend -m "not slow"    # 208 tests, no real AI calls    (≈ 4–10 s)
+pytest tests/cliniq/backend -m slow          # only the 10 real-Groq tests    (≈ 16 s, needs GROQ_API_KEY)
+pytest tests/cliniq/backend/unit             # 85 unit tests
+pytest tests/cliniq/backend/api              # 124 API tests
+pytest tests/cliniq/backend/system           # 9 system tests
 
-# Frontend test dependencies
-cd icu_monitor/frontend
-npm install --save-dev \
-  vitest \
-  @vitest/coverage-v8 \
-  @testing-library/react \
-  @testing-library/jest-dom \
-  @testing-library/user-event \
-  jsdom \
-  msw
+pytest tests/cliniq/backend/api/test_api_predict.py -v                              # one file
+pytest tests/cliniq/backend/unit/test_ml_service_unit.py::test_alert_threshold_is_7 # one test
 
-# E2E dependencies (optional — only for Phase 6)
-npm install --save-dev @playwright/test
-npx playwright install chromium   # Install the browser Playwright will drive
+pytest tests                                 # whole Python suite: 513 (218 backend + 295 FL)
+pytest tests -m "not slow"                   # 472 (skips 41 slow: 10 real-Groq + 31 FL simulation)
 ```
+The API and system tests load the real model files and the real database (read-only in effect: the sliding windows are capped), so `models/` must be populated. The API tests do **not** need a server running; `TestClient` runs the app in-process.
 
-### Run Commands
-
+### Frontend unit and integration (Vitest)
+**One-time setup.** The frontend test files live in `icu_monitor/tests/`, **outside** `frontend/`, so Node cannot find packages such as `react` and `vitest` from them. Create a symlink once (it is git-ignored):
 ```bash
-# ── BACKEND TESTS ──────────────────────────────────────────────────
-
-# All backend tests (unit + API + system)
-cd icu_monitor
-pytest tests/cliniq/backend/ -v
-
-# Whole Python suite (ClinIQ backend + FL tests) — currently 513 passed
-pytest tests
-
-# Unit tests only (fast — no database or ML load needed)
-pytest tests/cliniq/backend/unit/ -v
-
-# API tests only (need the DB to exist — run init_db first)
-pytest tests/cliniq/backend/api/ -v
-
-# System tests only
-pytest tests/cliniq/backend/system/ -v
-
-# Skip slow tests (LLM tests that call real Groq API)
-pytest tests/cliniq/backend/ -v -m "not slow"
-
-# Run specific test file
-pytest tests/cliniq/backend/unit/test_db_unit.py -v
-
-# Run specific test by name
-pytest tests/cliniq/backend/api/test_api_predict.py::test_sofa_in_valid_range -v
-
-# ── FRONTEND TESTS ─────────────────────────────────────────────────
-
-# One-time setup: the test files live in icu_monitor/tests/, outside frontend/,
-# so they need this symlink to resolve packages like react and vitest
-# (the symlink is gitignored):
 cd icu_monitor
 ln -s frontend/node_modules node_modules
-
-# All frontend unit + integration tests (currently 232 tests in 27 files)
-cd icu_monitor/frontend
-npx vitest run
-
-# Watch mode (re-runs tests on file changes — use during development)
-npx vitest
-
-# With coverage report
-npx vitest run --coverage
-# Coverage HTML report: open frontend/coverage/index.html in browser
-
-# Run specific test file
-npx vitest run tests/cliniq/frontend/unit/components/overview/SOFAGauge.test.jsx
-
-# ── E2E TESTS ──────────────────────────────────────────────────────
-# (Start backend and frontend servers first in separate terminals)
-
-# Run all E2E tests
-npx playwright test
-
-# Run one E2E spec file
-npx playwright test tests/cliniq/frontend/e2e/patient_selection.spec.js
-
-# Run E2E with visible browser (helpful for debugging)
-npx playwright test --headed
-
-# Show Playwright trace/report (HTML page with test recording)
-npx playwright show-report
+```
+Then:
+```bash
+cd frontend
+npx vitest run                  # all 232 tests in 27 files          (≈ 6 s)
+npx vitest                      # watch mode, re-runs on changes
+npx vitest run --coverage       # with a coverage report (text + html in frontend/coverage/)
+npx vitest run ../tests/cliniq/frontend/unit/components/cv      # one folder
 ```
 
-### The Recommended Development Workflow
+### End-to-end (Playwright)
+The **same symlink is required**, for the same reason (the specs import `@playwright/test`). Without it every spec fails with "Cannot find module '@playwright/test'".
+```bash
+# 1. Start the ClinIQ backend on port 8000 (and check it is really ClinIQ):
+cd icu_monitor && uvicorn backend.main:app --port 8000
+curl localhost:8000/api/patients        # must list 3 patients (not just /health)
 
-When actively coding, run tests in this sequence:
-
+# 2. Symlink (once), then run. Playwright starts/reuses the Vite server on 5173:
+ln -s frontend/node_modules node_modules
+cd frontend
+npx playwright test                                   # all 21 (≈ 1.5 min; needs a valid GROQ_API_KEY)
+npx playwright test ../tests/cliniq/frontend/e2e/patient_selection.spec.js
+npx playwright test --headed                          # watch the browser
+npx playwright show-report                            # HTML report
 ```
-1. After editing a backend function:
-   pytest tests/cliniq/backend/unit/ -v -m unit
-   → Fast feedback (<5 seconds)
+**If port 8000 is taken by another program**, ClinIQ cannot use it and the Vite proxy (fixed at `localhost:8000`) will reach the wrong server. Stop the other program, or run ClinIQ elsewhere and point a temporary copy of the Vite config's `/api` proxy at it.
 
-2. After editing a backend route:
-   pytest tests/cliniq/backend/api/test_api_[changed_endpoint].py -v
-   → Medium feedback (<30 seconds)
-
-3. After a significant backend change:
-   pytest tests/cliniq/backend/ -v -m "not slow"
-   → Full backend feedback (<60 seconds, skips LLM calls)
-
-4. After editing a frontend component:
-   npx vitest run tests/cliniq/frontend/unit/components/[changed_component].test.jsx
-   → Fast feedback (<5 seconds)
-
-5. Before a presentation or demo:
-   pytest tests/cliniq/backend/ -v     (ALL backend tests, including slow)
-   npx vitest run --coverage           (ALL frontend tests + coverage report)
-   npx playwright test                 (ALL E2E tests — need servers running)
+### Recommended workflow
+```
+While editing a backend helper:        pytest tests/cliniq/backend/unit
+After changing an endpoint:            pytest tests/cliniq/backend/api -m "not slow"
+After editing a React component:       cd frontend && npx vitest run   (or watch mode)
+Before committing:                     pytest tests -m "not slow"  and  npx vitest run
+Before a demo or submission:           pytest tests  and  npx vitest run  and  npx playwright test
 ```
 
 ---
 
-## 13. Coverage Targets and What They Mean
+## 13. Coverage — Measured, Not Guessed
 
-Coverage measures what percentage of your production code is exercised by at least one test.
+Earlier versions of this document listed *target* percentages. The numbers below were **measured on 2026-11-24**. They are **line coverage**.
 
-```
-Line coverage 80% means: 80% of the lines in the file were executed
-                         during the test run. 20% were never touched.
-```
+### Backend (the ClinIQ backend and `db.py`, from the 218 backend tests)
+| File | Lines | Missed | Coverage |
+|---|---|---|---|
+| `backend/api/patients.py` | 11 | 0 | **100%** |
+| `backend/main.py` | 27 | 1 | **96%** |
+| `db.py` | 97 | 7 | **93%** |
+| `backend/services/ml_service.py` | 282 | 33 | **88%** |
+| `backend/services/llm_service.py` | 279 | 43 | **85%** |
+| `backend/api/report.py` | 28 | 5 | **82%** |
+| `backend/api/history.py` | 25 | 5 | **80%** |
+| `backend/api/vitals.py` | 25 | 5 | **80%** |
+| `backend/api/predict.py` | 29 | 8 | **72%** |
+| **Total** | **803** | **107** | **87%** |
 
-**The coverage targets:**
+**Without the 10 slow tests** (no real AI calls) the total is **67%**, because `llm_service.py` falls from **85% to 28%**: its nine-method reliability scoring only runs when a real report is generated. So the slow tests carry most of the AI-report coverage.
 
-| Layer | Target | Why This Level |
-|---|---|---|
-| `db.py` | ≥ 90% | Database bugs are the most dangerous — wrong data in → wrong prediction out |
-| `backend/api/*.py` | ≥ 85% | Route handlers are the interface contract — most paths must be tested |
-| `ml_service.py` (pure fns) | ≥ 80% | Model loading and inference are tested through API tests, not unit tests |
-| `llm_service.py` (pure fns) | ≥ 75% | LLM calls are expensive — heavy mocking is expected, reducing measurable coverage |
-| Frontend components | ≥ 70% | UI components have many rendering variants — 70% is realistic without screenshot tests |
-| `hooks/useMonitor.js` | ≥ 80% | The monitoring loop is critical — most timing and state branches must be tested |
-| `contexts/ThemeContext.jsx` | ≥ 95% | Simple context with 2 values and 1 toggle — almost everything is testable |
-| `api/client.js` | ≥ 95% | Thin wrappers around axios — every function must be called in at least one test |
+### Frontend (from the 232 Vitest tests; `src/main.jsx` is excluded)
+**Overall: 79.2% of lines, 73.4% of functions, 72.5% of branches.**
 
-**Coverage is a minimum bar, not a quality measure:**
+| Coverage | Files |
+|---|---|
+| **100%** | `AlertBanner`, `ReliabilityBadge`, `ReportToggle`, `ThemeContext`, `useMonitor`, `api/client` |
+| **95–99%** | `SHAPPanel`, `SOFAGauge`, `HistoryDrawer`, `VitalsGrid`, `VitalCard`, `HeaderBar`, `SelectPatient` |
+| **85–94%** | `ReportContainer` (89%), `TrendsSection` (89%), `MonitorDashboard` (88%), `ThemeToggle` (86%) |
+| **70–84%** | `CVMonitorFAB` (84%), `ReportSection` (77%), `TrendChart` (76%) |
+| **50–66%** | `LLMValidationFAB`, `SOFAValidationFAB`, `HistoryFAB`, `LLMValidationDrawer` (57%), `SOFAValidationDrawer` (56%), `CVMonitorModal` (51%) |
+| **0%** | **`App.jsx`** (the router) and **`components/ErrorBoundary.jsx`** have no unit tests |
 
-100% coverage does not mean the code is correct — it means every line was executed. You could have 100% coverage and still have wrong output if your test assertions don't verify the right things. Coverage tells you "this code was run during tests." Assertions tell you "this code produced the right result."
-
-Think of coverage as a **floor** (below 70% means significant untested areas), not a **ceiling** (100% doesn't mean done).
-
----
-
-## 14. Implementation Status
-
-| Phase | Status | Files |
-|---|---|---|
-| 1A — DB unit tests | ✅ Implemented | `tests/cliniq/backend/unit/test_db_unit.py` |
-| 1B — ML service unit tests | ✅ Implemented | `tests/cliniq/backend/unit/test_ml_service_unit.py` |
-| 1C — LLM service unit tests | ✅ Implemented | `tests/cliniq/backend/unit/test_llm_service_unit.py` |
-| 2A — Health API tests | ✅ Implemented | `tests/cliniq/backend/api/test_api_health.py` |
-| 2B — Patients API tests | ✅ Implemented | `tests/cliniq/backend/api/test_api_patients.py` |
-| 2C — Predict API tests | ✅ Implemented | `tests/cliniq/backend/api/test_api_predict.py` |
-| 2D — Vitals API tests | ✅ Implemented | `tests/cliniq/backend/api/test_api_vitals.py` |
-| 2E — History API tests | ✅ Implemented | `tests/cliniq/backend/api/test_api_history.py` |
-| 2F — Report API tests | ✅ Implemented | `tests/cliniq/backend/api/test_api_report.py` |
-| 3 — Backend system flows | ✅ Implemented | `tests/cliniq/backend/system/test_system_flows.py` |
-| 4 — Frontend unit tests | ✅ Implemented | `tests/cliniq/frontend/unit/**/*.test.{js,jsx}` |
-| 5 — Frontend integration tests | ✅ Implemented | `tests/cliniq/frontend/integration/*.test.jsx` |
-| 6 — E2E tests (Playwright) | ✅ Implemented | `tests/cliniq/frontend/e2e/*.spec.js` |
-| FL tests | ✅ Implemented | `tests/fl/` (see FL_SERVER_CLIENT_DB_TESTING.md) |
+**Reading the numbers**
+- **`ReportContainer` (89%) and `useMonitor` (100%)** are the logic-heavy parts that decide when to call the AI and when to refresh; they are the best covered, as intended.
+- **`CVMonitorModal` (51%)**: the scoring functions are tested directly (Section 9, 4F), but the camera loop, the model loading and the on-screen layout need a real camera and browser, so they are not unit-tested.
+- **The two validation drawers (about 56%)**: the tests cover the metrics, the placeholders and closing; much of the file is layout for the other tabs.
+- **`App.jsx` and `ErrorBoundary.jsx` at 0%:** the routes are exercised only indirectly (the page tests mount pages directly, and the E2E tests use the real router). `ErrorBoundary` is used in `main.jsx` and is **not tested at all**.
+- Coverage of the Python federated-learning code is in `FL_SERVER_CLIENT_DB_TESTING.md` (80%).
 
 ---
 
-*Documentation for ICU CDSS Capstone Project*
-*Test suite (current run): 513 Python tests passed (`pytest tests`, ClinIQ backend + FL) · 232 frontend Vitest tests passed (27 files) · plus Playwright E2E tests*
-*Tools: pytest + httpx (backend) · Vitest + RTL + MSW (frontend) · Playwright (E2E)*
+## 14. Known Gaps and Quirks
+
+Stating limits honestly is part of testing well.
+
+**Gaps (behaviour that is not tested)**
+- **The live camera inputs at the API.** No backend test sends `cv_gcs_eye` or `cv_stress` to `/api/predict`, so the 400 errors for out-of-range values ("cv_gcs_eye must be 1–4", "cv_stress must be 0–10") and the "live values replace recorded values" path are not covered by a test. `client.test.js` does not test `runPredict` with camera data either. (An earlier note in `CV_MONITOR.md` implied the API limits are covered; they are not.)
+- **`App.jsx` (routes) and `ErrorBoundary.jsx`:** 0% unit coverage (Section 13).
+- **No test checks the exact content of a report** beyond structure and length; the AI's wording is not deterministic.
+- **The real camera and face model** are never exercised by automated tests (they need a webcam and browser).
+
+**Quirks in the existing tests**
+- **Three "source-level" tests read code instead of running it.** `test_generate_report_response_has_judge_used_key`, `test_judge_used_is_set_when_judge_fails` and `test_judge_failure_logged_to_stderr` use `inspect.getsource` and check that certain text appears in `llm_service.py`; the three seed-timestamp tests in `test_ml_service_unit.py` do the same for `ml_service.py`. They guard against a regression in a particular fix, but they would still pass if the text stayed and the behaviour broke. (The live API tests do check `judge_used` at run time.)
+- **`test_predict_is_alert_true_for_high_sofa`** only checks that `is_alert` is a boolean (its own comment says "we do not guarantee it"). It does not assert the alert fires for patient 3.
+- **The 10 slow report tests send the old request shape** (a `predict_result` body the server now ignores). They pass, but the three "server-side data" tests are the ones that cover the current contract.
+- **Some system-test assertions are intentionally loose** (for example `after >= before`), because the sliding windows are capped and already full.
+- **`test_api_predict.py` and the system tests write to the real database** (predictions are appended; the sliding windows keep counts constant at 20 and 50 rows per patient). They do not change the model files. The backend unit tests use a temporary database and never touch it.
+- **Vitest prints a harmless warning** about a duplicate `borderBottom` key in the two validation drawers' source (`SOFAValidationDrawer.jsx`, `LLMValidationDrawer.jsx`). It is a small code-style issue in the components, not a test failure.
+
+**Environment notes**
+- E2E needs the real ClinIQ backend on port 8000 and the `node_modules` symlink (Section 12).
+- The 10 slow backend tests and the report E2E tests spend a few Groq API calls each run.
+
+---
+
+## 15. Implementation Status
+
+| Phase | Tests | Status | Location |
+|---|---|---|---|
+| 1 — Backend unit | 85 | ✅ Passing | `tests/cliniq/backend/unit/` |
+| 2 — Backend API | 124 | ✅ Passing (10 slow) | `tests/cliniq/backend/api/` |
+| 3 — Backend system | 9 | ✅ Passing | `tests/cliniq/backend/system/` |
+| 4 — Frontend unit | 209 | ✅ Passing | `tests/cliniq/frontend/unit/` |
+| 5 — Frontend integration | 23 | ✅ Passing | `tests/cliniq/frontend/integration/` |
+| 6 — End-to-end | 21 | ✅ Passing | `tests/cliniq/frontend/e2e/` |
+| **Total ClinIQ** | **471** | **✅ all passing** | |
+
+Related totals: **Python suite 513** (218 ClinIQ backend + 295 federated-learning tests) · **Vitest 232** (Phases 4 and 5) · **Playwright 21** (Phase 6) · overall **745 automated unit/integration/system tests** (513 + 232) plus the 21 end-to-end tests.
+
+---
+
+*Documentation for the ClinIQ ICU CDSS capstone — last updated 2026-11-24.*
+*ClinIQ test suite: 85 backend unit + 124 backend API + 9 backend system + 209 frontend unit + 23 frontend integration + 21 end-to-end = **471 tests, all passing**.*
+*Tools actually used: pytest, FastAPI `TestClient`, `monkeypatch`, Vitest, React Testing Library, jsdom, `vi.mock`, Playwright. Not used: pytest-asyncio, httpx.AsyncClient, MSW.*
+*Measured coverage: backend 87%, frontend 79% (Section 13).*

@@ -1,6 +1,6 @@
 # TRAIN_FEDERATED — How the Model Is Trained
 **Module:** ICU CDSS Capstone — Federated Learning Training Pipeline (`train_federated.py`)
-**Last updated:** 2026-11-12
+**Last updated:** 2026-11-24
 
 ---
 
@@ -19,6 +19,22 @@ The document has two parts:
 Each section explains the idea in plain words first, then the exact rule or formula, then a worked example.
 
 > **Read [Section 15](#15-the-current-model-and-todays-changes) before quoting any result.** It lists the current numbers (from `models/training_metadata.json`) and explains, in plain words, the four changes made on 2026-11-12: plain MSE loss, FedAvg instead of FedYogi, a wider network with dropout, and an alert threshold of 7.
+
+### Quick facts (the final run, at a glance)
+
+| Item | Value |
+|---|---|
+| Data | MIMIC-III, one row per ICU stay: 52,248 stays from 38,304 patients |
+| Training / test split | 41,798 stays (80%) / 10,450 stays (20%), stratified by High Risk |
+| Hospitals (simulated) | 3, IID split: 13,932 / 13,933 / 13,933 stays |
+| Inputs | 108 = 9 trend vitals + 7 latest vitals + 2 observation scores + 90 note-word scores |
+| Model | 108 → 256 → 128 → 64 → 1, ReLU, Dropout 0.3, **69,121** weights |
+| Training | 100 rounds × 3 local epochs, batch 64, AdamW (lr 0.001, ×0.99 per round), gradient clip 1.0 |
+| Server method | **FedAvg**, with **FedProx (μ = 0.5)** on every hospital; plain MSE loss |
+| Saved model | The round with the lowest validation error: **round 37** |
+| Test results | MAE **1.80**, R² **0.48**, AUROC **0.918**, PR-AUC **0.647** |
+| Alert (predicted SOFA ≥ 7) | Recall **67.8%** (408 of 602), specificity **96.6%**, precision 54.9% |
+| Privacy extras | Differential privacy: available, **off**. Non-IID split: available, **off** |
 
 ---
 
@@ -181,7 +197,7 @@ A big step learns fast but may overshoot the best answer; a small step is precis
 learning rate in round r = max(0.0001,  0.001 × 0.99^(r − 1))
 
 Round 1:    0.001000
-Round 26:   0.000778   ← the best round of the current model
+Round 37:   0.000696   ← the best round of the current model
 Round 50:   0.000611
 Round 100:  0.000370
 ```
@@ -420,7 +436,7 @@ X_train, X_test, y_train, y_test = train_test_split(
 - **`stratify=(y >= 10)`:** High Risk patients (SOFA ≥ 10) are only about 6% of the data. Stratifying guarantees that both sets get the **same share** of them. Without it, the test set could end up with very few High Risk patients, and their scores would be meaningless.
 - **`random_state=42`:** the same split every time.
 
-**Result:** 41,798 ICU stays for training and **10,450** for testing (602 High, 2,919 Moderate, 6,929 Low).
+**Result:** 41,798 ICU stays for training and **10,450** for testing (602 High, 2,821 Moderate, 7,027 Low). Together that is the 52,248 stays of the cohort.
 
 **A limitation:** there is one row per ICU stay, so the split is **by ICU stay**, not by patient. One person with two ICU stays could have one stay in training and one in testing, which can make the test results look slightly better than they would be on brand-new patients.
 
@@ -472,7 +488,7 @@ This is an **IID** split (Independent and Identically Distributed): all 3 hospit
 
 > The hospital names are only labels; in IID mode the split is random, so the "Cardiac/Trauma ICU" does not actually have more cardiac or trauma patients.
 >
-> The data currently in the database came from this stratified split: the hospitals have **13,932 / 13,933 / 13,933** rows, and each one is about **67% Low, 27% Moderate and 6% High** (802 High Risk patients each).
+> The data currently in the database came from this stratified split: the hospitals have **13,932 / 13,933 / 13,933** rows, and each one is about **67% Low, 27% Moderate and 6% High** (802 High Risk patients each; Low 9,323 / 9,348 / 9,276 and Moderate 3,807 / 3,783 / 3,855).
 
 ### 0i. Saving the results
 
@@ -583,7 +599,7 @@ predicted SOFA (one number)
 | **BatchNorm** | It learns batch statistics, which differ between hospitals; averaging them breaks them. |
 | **LayerNorm** | Tested twice. It rescales each patient's internal numbers to the same size, which erased the difference between a SOFA 2 and a SOFA 20 patient. Predictions collapsed into 0.2–7.0. |
 
-> **A worry that did not come true:** an earlier version of this doc left out dropout, fearing that each hospital would switch off different neurons, so their weight updates would not fit together when averaged. In the dataset_v2 runs this did not happen; dropout improved every test metric (Section 15).
+> **A worry that did not come true:** an earlier version of this doc left out dropout, fearing that each hospital would switch off different neurons, so their weight updates would not fit together when averaged. In the dataset_v2 runs this did not happen; dropout removed the overfitting and improved MAE, R², AUROC and PR-AUC (Section 15).
 
 ### 8.2 The error measure: plain mean squared error
 
@@ -745,10 +761,12 @@ After each round, every hospital reports the shared model's error on its validat
 
 ```
 Early rounds:   error falls quickly.
-Then:           the server validation loss settles and stays flat at about 5.8–6.1.
-                No explosion (FedAvg) and no steady climb (dropout stops overfitting).
-Best round:     the lowest point. In the current model this was round 26.
-Later rounds:   tiny ups and downs around the same level as the
+Then:           the server validation loss settles and stays roughly flat (about 5.8–6.1
+                in the earlier FedAvg + dropout run). No explosion (FedAvg) and no steady
+                climb (dropout stops overfitting).
+Best round:     the lowest point. It moves a little between runs: round 26 in the earlier
+                run, round 37 in the final run.
+Later rounds:   tiny ups and downs around the same level while the
                 learning rate keeps shrinking.
 ```
 Because the **best** round is kept (not the last one), later drift does no harm.
@@ -932,6 +950,23 @@ python train_federated.py
 uvicorn backend.main:app --port 8000 --reload
 ```
 
+**What to expect when it runs:**
+- Phase 0 (only the first time) takes the longest, because it downloads about 52,000 vitals rows and 283,208 notes from BigQuery and scores the notes.
+- Each of the 100 rounds prints one line, for example `[Server] Round 37 — lr=0.00070 | avg_loss=…  ← best ✓`. The `← best ✓` tag marks a new lowest validation error.
+- At the end it prints the per-band scores and the final MAE, R², AUROC and alert counts, then writes the files in Section 13.
+
+**Results can differ slightly between runs.** The script fixes all random seeds (42), but Flower's simulation schedules the 3 hospitals through Ray, and the order in which they finish can change small details. Two runs of the same settings therefore give very close, but not identical, numbers (for example the best round was 26 in one run and 37 in the next, with MAE 1.825 and 1.801). Quote the numbers saved in `models/training_metadata.json`, which belong to the model file actually on disk.
+
+**Common problems**
+
+| Message or symptom | Likely cause | Fix |
+|---|---|---|
+| Google credentials / quota error in Phase 0 | Not logged in to Google Cloud, or no quota project | Run the two `gcloud auth application-default` commands above |
+| Temporary `ServiceUnavailable` / DNS error | A short BigQuery network problem | Run the script again |
+| Stops at Phase 1 saying files are missing | `scaler.pkl`, `tfidf_vectorizer.pkl` or `feature_columns.pkl` is absent | Delete the `fl_training` rows (command above) and run again so Phase 0 recreates them |
+| Dashboard still shows old numbers after training | The backend loaded the old model at start-up | Restart `uvicorn backend.main:app --port 8000 --reload` |
+| Tests fail with "size mismatch" when loading weights | An old `federated_model.pth` with a different network shape | Retrain, so the saved weights match the current 108-256-128-64-1 network |
+
 **Real (non-simulated) federated training** uses two other scripts: start `python server.py`, then `python client.py --client_id 0`, `1` and `2` in three terminals. Like the simulation, `server.py` uses **plain FedAvg**, and it saves the best round to `federated_model.pth` and every round to `federated_model_latest.pth`.
 
 ---
@@ -940,38 +975,45 @@ uvicorn backend.main:app --port 8000 --reload
 
 ### What is saved right now
 
-From `models/training_metadata.json` (best round **26** of 100), tested on the real held-out test set:
+From `models/training_metadata.json` (best round **37** of 100), tested on the real held-out test set:
 
 | | Value |
 |---|---|
 | ICU stays used for training | 41,798 (13,932 / 13,933 / 13,933 per hospital) |
-| ICU stays used for testing | 10,450 (602 High, 2,919 Moderate, 6,929 Low) |
-| MAE | 1.82 SOFA points (1.8247) |
-| R² | 0.47 (0.4725) |
-| AUROC (High Risk) | 0.925 |
-| PR-AUC (High Risk) | 0.646 |
-| Alert recall / specificity (predicted ≥ 7 vs actual ≥ 10) | 67.1% / 96.3% |
-| Prediction range on the test set | 1.72 – 23.45 |
+| ICU stays used for testing | 10,450 (602 High, 2,821 Moderate, 7,027 Low) |
+| MAE | 1.80 SOFA points (1.8006) |
+| R² | 0.48 (0.4806) |
+| AUROC (High Risk) | 0.918 (0.9181) |
+| PR-AUC (High Risk) | 0.647 (0.6466) |
+| Alert recall / specificity (predicted ≥ 7 vs actual ≥ 10) | 67.8% / 96.6% |
+| Alert precision / F1 | 54.9% / 0.607 |
+| Alert counts | 408 caught, 194 missed, 335 false alarms, 9,513 correctly quiet |
+| 3-band accuracy | 73.2% (7,647 of 10,450) |
+| Prediction range on the test set | 1.78 – 23.07 |
 
-**Per risk band MAE:** Low 1.33 (n = 6,929), Moderate 2.48 (n = 2,919), High 4.33 (n = 602). Per-band R² is negative by design (Section 10); only the overall R² is meaningful.
+**Per risk band MAE:** Low 1.33 (n = 7,027), Moderate 2.44 (n = 2,821), High 4.36 (n = 602). Per-band R² is negative by design (Section 10): Low −0.71, Moderate −3.53, High −1.75; only the overall R² is meaningful.
+
+**The 3-band confusion matrix** (rows = actual, columns = predicted): Low [6,714 · 306 · 7], Moderate [2,086 · 669 · 66], High [119 · 219 · 264]. Most Moderate stays are called Low, and 338 of the 602 High stays are predicted below the High line (explained in `docs/VALIDATION.md`, Section 3.5).
 
 **The data is clean now.** The old caveats (most rows missing their SOFA answer, and a test set that overlapped training) are gone: `dataset_v2` was rebuilt in BigQuery, every row in `fl_training` has its SOFA answer, and Phase 0 saved a real held-out test set (`fl_test_X.npy` / `fl_test_y.npy`). One honest caveat remains: the split is **by ICU stay**, so a patient with several stays can appear in both training and test data. These are retrospective MIMIC-III results, not an independent clinical validation.
 
-### The progress table (2026-11-12)
+### The progress table
 
-Each row adds one change to the row above. All rows except the first use the same `dataset_v2` test set.
+Each row adds one change to the row above. All rows except the first use the same `dataset_v2` test set. The last row is the final retrain of the current setup.
 
 | Run | MAE | R² | AUROC | PR-AUC | Recall | Specificity |
 |---|---|---|---|---|---|---|
 | Old dataset (FedYogi, weighted MSE, 128-64-32), alert ≥8 *(historical)* | 1.80 | 0.398 | 0.879 | — | 23% | — |
 | dataset_v2, FedYogi η=0.01, weighted MSE, alert ≥8 *(historical)* | 1.914 | 0.426 | 0.915 | 0.599 | 53.8% | 98.0% |
 | + FedAvg + plain MSE, alert ≥8 *(historical)* | 1.850 | 0.457 | 0.921 | 0.628 | 59.3% | 97.7% |
-| + 256-128-64 + dropout 0.3, alert ≥8 *(historical)* | 1.825 | 0.473 | 0.925 | 0.646 | 61.1% | 97.8% |
-| **same model, alert ≥7 (current)** | **1.825** | **0.473** | **0.925** | **0.646** | **67.1%** | **96.3%** |
+| + 256-128-64 + dropout 0.3, alert ≥8 *(first run of this setup, historical)* | 1.825 | 0.473 | 0.925 | 0.646 | 61.1% | 97.8% |
+| **Final retrain, same setup, alert ≥7 (current)** | **1.801** | **0.481** | **0.918** | **0.647** | **67.8%** | **96.6%** |
 
 "Recall" and "Specificity" are for the red alert: what share of truly High Risk patients (actual SOFA ≥ 10) got an alert, and what share of the others were correctly left alone.
 
 > The MAE in the first row is **not directly comparable**: the old dataset used a different label definition. Compare R², AUROC and recall instead.
+>
+> **Why the last two rows differ even though the settings are the same:** the final retrain is a second run of the same configuration. Federated simulation is not exactly repeatable (Section 14), so MAE, R² and AUROC moved by a small amount (for example AUROC 0.925 → 0.918). The recall jump from 61.1% to 67.8% comes mostly from the threshold change (8 → 7); at threshold 8 the final model's recall is 59.6%.
 
 ### Why each change was made, in plain words
 
@@ -1004,39 +1046,41 @@ After round 13:
 ```
 That gap is the classic sign of a model **memorising** its training patients instead of learning general patterns. It is like a student who memorises last year's exam answers: perfect on old papers, worse on a new one.
 
-**After:** dropout 0.3 switches off a random 30% of neurons in each training step, so the model cannot memorise through any single path. The wider layers give it enough room to still learn with dropout on. Now the server validation loss stays flat at about **5.8–6.1** with no climb, the best round moved to 26, and the test scores improved (table rows 3 → 4: MAE 1.850 → 1.825, R² 0.457 → 0.473, PR-AUC 0.628 → 0.646). An even wider 512-256-128 gave no further gain.
+**After:** dropout 0.3 switches off a random 30% of neurons in each training step, so the model cannot memorise through any single path. The wider layers give it enough room to still learn with dropout on. In the first run of this setup the server validation loss stayed flat at about **5.8–6.1** with no climb, and the test scores improved (table rows 3 → 4: MAE 1.850 → 1.825, R² 0.457 → 0.473, PR-AUC 0.628 → 0.646). The final retrain confirmed it (R² 0.481, PR-AUC 0.647). An even wider 512-256-128 gave no further gain.
 
 #### Change 4 — alert threshold 7 instead of 8
 
 **Before:** the red alert fired when predicted SOFA ≥ 8.
 
-**What went wrong:** the model still **under-predicts severe patients**. For patients whose true SOFA is ≥ 10, the average prediction is only about 9.7. So many truly High Risk patients sat just under 8 and got no alert.
+**What went wrong:** the model still **under-predicts severe patients**. For patients whose true SOFA is ≥ 10 the average true SOFA is about 13.1, but the average prediction is only about 9.5. So many truly High Risk patients sat just under 8 and got no alert.
 
 **After:** `ALERT_THRESHOLD = 7.0`, defined once in `model_utils.py`. The backend (`backend/services/ml_service.py`) imports it, and `compute_sofa_risk_metrics()` uses it by default, so training metrics and the dashboard always agree.
 
 ```
-Threshold 8:  missed 234 High Risk patients, 220 false alarms
-Threshold 7:  missed 198 High Risk patients, 360 false alarms
-→ 36 more sick patients caught, for 140 more false alarms (out of 9,848 non-High patients)
+Threshold 8:  missed 243 High Risk patients, 207 false alarms   (recall 59.6%)
+Threshold 7:  missed 194 High Risk patients, 335 false alarms   (recall 67.8%)
+→ 49 more sick patients caught, for 128 more false alarms (out of 9,848 non-High patients)
 ```
 
-The full sweep on the current model:
+The full sweep on the final model (recomputed from the saved model and `fl_test_X.npy` / `fl_test_y.npy`):
 
-| Alert when predicted SOFA ≥ | Recall | Specificity |
-|---|---|---|
-| 8 | 61.1% | 97.8% |
-| 7.5 | 64.3% | 97.1% |
-| **7 (current)** | **67.1%** | **96.3%** |
-| 6.5 | 69.9% | 95.3% |
-| 6 | 73.1% | 93.9% |
+| Alert when predicted SOFA ≥ | Recall | Specificity | Missed High Risk | False alarms |
+|---|---|---|---|---|
+| 10 | 43.9% | 99.3% | 338 | 73 |
+| 9 | 51.5% | 98.8% | 292 | 117 |
+| 8 | 59.6% | 97.9% | 243 | 207 |
+| 7.5 | 64.3% | 97.3% | 215 | 263 |
+| **7 (current)** | **67.8%** | **96.6%** | **194** | **335** |
+| 6.5 | 70.6% | 95.6% | 177 | 436 |
+| 6 | 73.1% | 94.1% | 162 | 578 |
 
-In an ICU, missing a deteriorating patient costs more than an extra alarm, so 7 was chosen as a balance. Going lower catches a few more but the false alarms grow quickly. AUROC, PR-AUC and MAE do not change with the threshold; only the yes/no alert does. The alert drives the red banner, the `is_alert` flag and the urgent ("immediate actions first") AI report format in both Hospital and Home Care modes.
+In an ICU, missing a deteriorating patient costs more than an extra alarm, so 7 was chosen as a balance. Going lower catches a few more but the false alarms grow quickly (7 → 6 adds 243 false alarms to catch 32 more patients). AUROC, PR-AUC and MAE do not change with the threshold; only the yes/no alert does. The alert drives the red banner, the `is_alert` flag and the urgent ("immediate actions first") AI report format in both Hospital and Home Care modes.
 
 ### What did not help (tried on the same data)
 
 Lower learning rate (5e-4), stronger weight decay (1e-3), Huber loss, an even wider 512-256-128 network, averaging 8 models, isotonic recalibration, missing-value indicator flags, and using several hourly rows per stay (only +0.007 R² for 9× the data).
 
-**The ceiling:** a centralized gradient-boosting model on the same 108 inputs reaches about MAE 1.81, R² 0.49, AUROC 0.927, so our federated model is already close to what these inputs allow. The main limit is that SOFA is mostly computed from labs (bilirubin, creatinine, platelets, PaO₂/FiO₂) and vasopressor doses, which are deliberately **not** inputs (the system is non-invasive).
+**The ceiling:** a centralized gradient-boosting model on the same 108 inputs and the same test stays reaches about MAE 1.79, R² 0.50, AUROC 0.922, so our federated model (MAE 1.80, R² 0.48, AUROC 0.918) is already close to what these inputs allow. The main limit is that SOFA is mostly computed from labs (bilirubin, creatinine, platelets, PaO₂/FiO₂) and vasopressor doses, which are deliberately **not** inputs (the system is non-invasive).
 
 ---
 
@@ -1178,9 +1222,10 @@ All rows except the last are **historical** experiments. The current setup is th
 | 7 | **FedYogi** | **0.223** | 2.15 | ~24 |
 | 9 | **All 283,208 notes + 10,000 characters** | **0.472** | 1.76 | 24 |
 | 10 | dataset_v2, FedYogi η=0.01, weighted MSE (historical) | 0.426 | 1.914 | — |
-| **Current saved model** | **dataset_v2 + FedAvg + plain MSE + 256-128-64 with dropout 0.3** (Section 15) | **0.473** | **1.825** | **26** |
+| 11 | dataset_v2 + FedAvg + plain MSE + 256-128-64 with dropout 0.3, first run (historical) | 0.473 | 1.825 | 26 |
+| **Current saved model** | **Same setup, final retrain** (Section 15) | **0.481** | **1.801** | **37** |
 
-Stages 1–9 used the old dataset and label definition, so their MAE is not directly comparable with the dataset_v2 rows. The current model's numbers come from a real held-out test set of 10,450 ICU stays.
+Stages 1–9 used the old dataset and label definition, so their MAE is not directly comparable with the dataset_v2 rows. The current model's numbers come from a real held-out test set of 10,450 ICU stays and are stored in `models/training_metadata.json`.
 
 ---
 
@@ -1192,7 +1237,7 @@ Stages 1–9 used the old dataset and label definition, so their MAE is not dire
 | **Keep missing GCS and stress values as "missing"** instead of 0 | Those inputs currently barely influence the model | The live camera readings could actually change the SOFA prediction |
 | **Split by patient, not by ICU stay** | One person's stays could land in both training and testing | More honest test results |
 | **Hold back a calibration set** | The conformal interval is measured on training data | A trustworthy 90% range on the dashboard |
-| **Better handling of severe cases** | The model still under-predicts severe patients (mean prediction for true High ≈ 9.7). Simply weighting them more (the old weighted MSE) did not help | More High Risk patients caught by the alert |
+| **Better handling of severe cases** | The model still under-predicts severe patients (mean prediction for true High ≈ 9.5, true mean ≈ 13.1). Simply weighting them more (the old weighted MSE) did not help | More High Risk patients caught by the alert |
 
 ---
 
@@ -1231,4 +1276,4 @@ Stages 1–9 used the old dataset and label definition, so their MAE is not dire
 
 ---
 
-*Documentation for the ICU CDSS Capstone Project. Training framework: Flower 1.32 (simulation), PyTorch. Aggregation: FedAvg + FedProx. Data: MIMIC-III via Google BigQuery (`dataset_v2`). When the model is retrained, update Section 15 and the last row of Section 19.*
+*Documentation for the ICU CDSS Capstone Project. Training framework: Flower 1.32 (simulation), PyTorch. Aggregation: FedAvg + FedProx. Data: MIMIC-III via Google BigQuery (`dataset_v2`). When the model is retrained, update the Quick facts table, Section 15 and the last row of Section 19. The progress table's earlier rows are historical and should stay as they are.*

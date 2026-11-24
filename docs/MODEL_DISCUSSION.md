@@ -1,40 +1,49 @@
 # Model Discussion — ICU CDSS
 **From Weighted Ensemble (Trial Version) to Federated DNN (Final Version)**
 **Status:** Fully implemented and verified
-**Current result (2026-11-12):** MAE 1.8247, R² 0.4725, AUROC 0.9254 on the held-out test set (10,450 ICU stays, dataset_v2)
+**Last updated:** 2026-11-24
+**Final result:** MAE 1.80, R² 0.48, AUROC 0.918 on the held-out test set (10,450 ICU stays, `dataset_v2`)
 
 ---
 
-## Current model (2026-11-12)
+## Current model at a glance
 
-This is the model the dashboard runs today. Sections below that describe older settings are marked as historical.
+This is the model the dashboard runs today. Sections below that describe older settings are marked **historical**.
 
 | Item | Current value |
 |---|---|
-| Data | BigQuery dataset `dataset_v2`: adults (age ≥ 16), ICU stay ≥ 6 h, 52,248 ICU stays / 38,304 patients. Newest row per ICU stay; label = SOFA_24hours at that hour |
-| Split | 80/20 stratified by High-Risk (SOFA ≥ 10): train 41,798 / test 10,450 |
-| Hospitals | 3 IID, stratified: 13,932 / 13,933 / 13,933 (each Low 67%, Moderate 27%, High 6%) |
-| Inputs | 108 features = 9 trend vitals + 7 latest vitals + 2 CV + 90 SOFA-vocabulary TF-IDF terms |
-| Network | 108 → 256 → 128 → 64 → 1, ReLU, Dropout 0.3 after each hidden layer — 69,121 parameters |
+| Data | BigQuery dataset `dataset_v2`: adults (age ≥ 16), ICU stay ≥ 6 h, 52,248 ICU stays from 38,304 patients. The newest row per ICU stay is used; the label is `SOFA_24hours` at that hour |
+| Split | 80/20, stratified by High Risk (SOFA ≥ 10): train 41,798 / test 10,450 (602 High, 2,821 Moderate, 7,027 Low) |
+| Hospitals | 3, IID and stratified: 13,932 / 13,933 / 13,933 (each about Low 67%, Moderate 27%, High 6%) |
+| Inputs | 108 = 9 trend vitals + 7 latest vitals + 2 camera/observation values + 90 SOFA-word TF-IDF terms (fixed, never changed) |
+| Network | 108 → 256 → 128 → 64 → 1, ReLU, Dropout 0.3 after each hidden layer — **69,121** parameters |
 | Loss | Plain MSE (`train_model(..., weighted_loss=True)` restores the earlier weighted loss) |
-| Federated setup | FedAvg server + FedProx clients (μ=0.5), 100 rounds, 3 local epochs, batch 64, AdamW lr 0.001 (×0.99/round, floor 1e-4), weight decay 1e-4, grad clip 1.0, no oversampling, DP off |
-| Model selection | Round with the lowest average server validation MSE — round 26 in the current run |
-| Test results | MAE 1.8247, R² 0.4725, prediction range 1.72–23.45 |
-| High-risk alert | Predicted SOFA ≥ 7 (`ALERT_THRESHOLD = 7.0`) vs actual SOFA ≥ 10: AUROC 0.9254, PR-AUC 0.6456, recall 67.1% (404/602), specificity 96.3% |
+| Federated setup | **FedAvg** server + **FedProx** clients (μ = 0.5), 100 rounds, 3 local epochs, batch 64, AdamW lr 0.001 (×0.99 per round, floor 1e-4), weight decay 1e-4, gradient clip 1.0, no oversampling, differential privacy off |
+| Model selection | The round with the lowest average server validation MSE — **round 37** in the final run |
+| Test results | MAE **1.80**, R² **0.48**, prediction range 1.78–23.07 |
+| High-risk alert | Predicted SOFA ≥ 7 (`ALERT_THRESHOLD = 7.0`) vs actual SOFA ≥ 10: AUROC **0.918**, PR-AUC **0.647**, recall **67.8%** (408 of 602), specificity **96.6%**, precision 54.9% |
 
-**How we got here (same test set except the first row):**
+**How we got here** (same test set except the first row):
 
 | Run | MAE | R² | AUROC | Recall |
 |---|---|---|---|---|
 | Old dataset (FedYogi, weighted MSE, 128-64-32), alert ≥ 8 — *historical* | 1.80 | 0.398 | 0.879 | 23% |
-| dataset_v2, FedYogi η=0.01, weighted MSE, alert ≥ 8 — *historical* | 1.914 | 0.426 | 0.915 | 53.8% |
-| + FedAvg + plain MSE, alert ≥ 8 | 1.850 | 0.457 | 0.921 | 59.3% |
-| + 256-128-64 + dropout 0.3, alert ≥ 8 | 1.825 | 0.473 | 0.925 | 61.1% |
-| same model, alert ≥ 7 (**current**) | 1.825 | 0.473 | 0.925 | 67.1% |
+| `dataset_v2`, FedYogi η = 0.01, weighted MSE, alert ≥ 8 — *historical* | 1.914 | 0.426 | 0.915 | 53.8% |
+| + FedAvg + plain MSE, alert ≥ 8 — *historical* | 1.850 | 0.457 | 0.921 | 59.3% |
+| + 256-128-64 + dropout 0.3, alert ≥ 8 — *first run of this setup, historical* | 1.825 | 0.473 | 0.925 | 61.1% |
+| **Final retrain, alert ≥ 7 (current)** | **1.801** | **0.481** | **0.918** | **67.8%** |
 
-(MAE on the old dataset is not directly comparable: the label definition changed.)
+(MAE on the old dataset is not directly comparable: the label definition changed. The last two rows are two runs of the same setup; federated simulation is not exactly repeatable, so they differ slightly. Most of the recall jump is the alert moving from 8 to 7.)
 
-The main limit on accuracy is the input design, not the network: SOFA is mostly computed from labs (bilirubin, creatinine, platelets, PaO2/FiO2) and vasopressor doses, which are deliberately not inputs (non-invasive design). A centralized gradient-boosting reference on the same 108 columns reaches only MAE ~1.81, R² ~0.49, AUROC ~0.927.
+**The main limit on accuracy is the input design, not the network.** SOFA is mostly computed from lab values (bilirubin, creatinine, platelets, PaO₂/FiO₂) and vasopressor doses, which are deliberately not inputs (the system is non-invasive). Measured on the same 10,450 test stays:
+
+| Model on the same 108 inputs | MAE | R² | AUROC |
+|---|---|---|---|
+| **Federated neural network (ours)** | **1.80** | **0.48** | **0.918** |
+| Centralised gradient boosting (no federation) | 1.79 | 0.50 | 0.922 |
+| Ridge (linear) regression, centralised | 1.94 | 0.39 | 0.900 |
+
+Even a different, strong model reaches almost the same score, so the ceiling is set by the inputs. Section 2.11 explains these numbers.
 
 ---
 
@@ -70,6 +79,8 @@ Every concept is explained from first principles with examples, so anyone readin
    - [Dropout: Rejected Earlier, Used Now](#28-dropout-rejected-earlier-used-now)
    - [Why No BatchNorm or LayerNorm](#29-why-no-batchnorm-or-layernorm)
    - [How Federated Learning Works With This DNN](#210-how-federated-learning-works-with-this-dnn)
+   - [How Good Is the Final Model?](#211-how-good-is-the-final-model)
+   - [How the Model Is Used at the Bedside](#212-how-the-model-is-used-at-the-bedside)
 3. [Alternative Models Considered](#3-alternative-models-considered)
    - [LSTM and GRU (Recurrent Neural Networks)](#31-lstm-and-gru-recurrent-neural-networks)
    - [Transformer (Self-Attention)](#32-transformer-self-attention)
@@ -365,18 +376,18 @@ The weights and bias are the **learnable parameters** — they start random and 
 
 #### A layer of neurons
 
-A layer consists of multiple neurons, each looking at all the same inputs but with different weights. Our first hidden layer has 128 neurons, all looking at the same 108 input features but detecting 128 different patterns simultaneously.
+A layer consists of multiple neurons, each looking at all the same inputs but with different weights. Our first hidden layer has 256 neurons, all looking at the same 108 input features but detecting 256 different patterns simultaneously.
 
 ```
-Layer 1 (128 neurons, each with 108 inputs):
+Layer 1 (256 neurons, each with 108 inputs):
   Neuron 1:  detects "respiratory distress" (activates on low SpO2 + high RR)
   Neuron 2:  detects "cardiovascular collapse" (activates on low MAP + vasopressor mentions)
   Neuron 3:  detects "renal failure" (activates on "creatinine" mentions + low urine)
   ...
-  Neuron 128: detects some combination of features the training data found useful
+  Neuron 256: detects some combination of features the training data found useful
 ```
 
-The 128 outputs from Layer 1 become the inputs to Layer 2, which detects patterns in those 128 "clinical syndrome" signals. Layer 3 detects patterns in Layer 2's output. The final layer maps the 32 remaining abstract representations to a single SOFA score.
+The 256 outputs from Layer 1 become the inputs to Layer 2 (which compresses them to 128), which detects patterns in those "clinical syndrome" signals. Layer 3 (64 values) detects patterns in Layer 2's output. The final layer maps the 64 remaining abstract representations to a single SOFA score.
 
 #### Why "deep"?
 
@@ -476,7 +487,7 @@ In an earlier version the network was 108 → 128 → 64 → 32 → 1 with no Dr
 - **Dropout 0.3** after each hidden layer stops the network from memorising individual training patients.
 - **Extra width** (256-128-64) gives the network room to keep learning while Dropout is switched on.
 
-On the same test set this improved MAE 1.850 → 1.825, R² 0.457 → 0.473 and AUROC 0.921 → 0.925 (alert ≥ 8 in both runs). In the current run the server validation loss stayed flat (~5.8–6.1) with no overfitting climb, and an even wider 512-256-128 network gave no further gain.
+On the same test set this improved MAE 1.850 → 1.825, R² 0.457 → 0.473 and AUROC 0.921 → 0.925 (alert ≥ 8 in both runs). In that run the server validation loss stayed flat (about 5.8–6.1) with no overfitting climb. An even wider 512-256-128 network gave no further gain, and the final retrain of the same setup confirmed the result (R² 0.481, AUROC 0.918).
 
 An even older architecture (618 → 256 → 128 → 64 → 1, from before the 90-term SOFA vocabulary whitelist) had ~200,000 parameters, most of them attached to noisy TF-IDF inputs — that was over-parameterisation on the input side, which the whitelist removed.
 
@@ -493,7 +504,7 @@ Dataset: 41,798 ICU stays (80% of the 52,248 stays in dataset_v2)
 Mini-batch size: 64 patients per step
 Steps per epoch (per hospital): hospital size / 64 gradient steps
 Epochs per FL round: 3
-Total FL rounds: 100 (the best round is kept — round 26 in the current run)
+Total FL rounds: 100 (the best round is kept — round 37 in the final run)
 Dropout: active during these training steps only
 ```
 
@@ -907,8 +918,9 @@ Round 2:
   Server sends W¹ to all 3 hospitals.
   ... repeat for 100 rounds ...
 
-Round 26: Best-performing round in the current run (lowest average server validation MSE)
-  W²⁶ saved as the deployed model.
+Round 37: Best-performing round in the final run (lowest average server validation MSE)
+  W³⁷ saved as the deployed model.
+  (The best round varies a little between runs: it was round 26 in an earlier run of the same setup.)
 ```
 
 **Why this is fundamentally different from tree-based FL:**
@@ -916,6 +928,69 @@ Round 26: Best-performing round in the current run (lowest average server valida
 For a DNN, the weight matrix W[i][j] for Layer 1, neuron i, input j has a consistent meaning across all hospitals — it represents "how much does the j-th input feature (e.g., MAP_mean) influence the i-th Layer 1 neuron?" This meaning is the same regardless of which hospital's data was used to train it. Averaging W[i][j] from Hospital A and Hospital B produces a valid "how much should MAP_mean influence neuron i, on average across both populations."
 
 For a decision tree, there is no equivalent operation. "Hospital A's tree splits on MAP_mean < 60.5 at depth 2" and "Hospital B's tree splits on SpO2_min < 88 at depth 1" refer to completely different structural positions in different trees. There is no meaningful average of these two facts.
+
+---
+
+### 2.11 How Good Is the Final Model?
+
+**In one line:** the network separates sick from not-sick patients very well (AUROC 0.918) and predicts the exact score moderately well (R² 0.48), and that is close to the most these inputs allow.
+
+All numbers below are on the **held-out test set** of 10,450 ICU stays that the model never saw while training (602 High, 2,821 Moderate, 7,027 Low). They come from `models/training_metadata.json`.
+
+| Metric | Value | Plain meaning |
+|---|---|---|
+| MAE | 1.80 SOFA points | The average guess is about 1.8 points off (7.5% of the 0–24 scale) |
+| R² | 0.48 | The model explains about 48% of why patients differ in SOFA |
+| AUROC (High Risk) | 0.918 | Ranks a High Risk patient above a non-High Risk one 92% of the time |
+| PR-AUC (High Risk) | 0.647 | Finds the rare sick patients far better than chance (chance ≈ 0.06) |
+| Alert recall (predicted ≥ 7) | 67.8% | Of 602 truly High Risk stays, the alert caught 408 |
+| Alert specificity | 96.6% | Of 9,848 others, 9,513 got no false alarm |
+| Alert precision | 54.9% | Of 743 alerts fired, 408 were real |
+| 3-band accuracy | 73.2% | The Low / Moderate / High band was right for 7,647 of 10,450 |
+
+**Error by risk band:**
+
+| Band | Stays | MAE | Correctly placed in its band |
+|---|---|---|---|
+| Low (< 5) | 7,027 | 1.33 | 95.5% |
+| Moderate (5–9) | 2,821 | 2.44 | 23.7% |
+| High (≥ 10) | 602 | 4.36 | 43.9% |
+
+The error grows with severity: the model is accurate for the many healthy patients and least accurate for the few sickest ones.
+
+**It under-predicts severe patients.** For the 602 truly High Risk stays the average true SOFA is about 13.1, but the average prediction is only about 9.5. This is why the alert fires at a predicted **7** and not 10. At 10 the alert would catch only 43.9% of High Risk stays; at 7 it catches 67.8%. Even so, 194 of 602 (32%) get no alert, which is why ClinIQ is decision support and not a replacement for clinicians. The full threshold table is in `docs/VALIDATION.md`, Section 3.6.
+
+**Per-band R² is negative by design.** Inside one narrow band the differences between patients come from lab-based organs (clotting, liver, kidney) that the model cannot see, so "guess the band average" is hard to beat. Only the overall R² (0.48) is meaningful.
+
+**Why the accuracy stops here — the measured evidence:**
+
+| Check | Result | What it tells us |
+|---|---|---|
+| Centralised gradient boosting on the same inputs | R² 0.50, AUROC 0.922 | A very different strong model gets nearly the same score, so the inputs, not the network, are the limit |
+| Ridge (linear) regression on the same inputs | R² 0.39, AUROC 0.900 | The network adds a real but modest gain over a linear model |
+| Wider network (512-256-128) | No gain | More capacity does not help |
+| Lower learning rate, stronger weight decay, Huber loss, averaging 8 models, recalibration, missing-value flags, several hourly rows per stay | No gain | Tuning has hit the ceiling |
+| Adding the dataset rebuild (`dataset_v2`) | R² 0.398 → 0.426 and much better recall | Fixing the data helped more than any model change |
+
+**What would actually raise accuracy:** adding real lab values (creatinine, bilirubin, platelets, blood gases) as inputs, especially for the Moderate band. The project keeps its 108 inputs fixed (non-invasive design), so this is listed as future work.
+
+**Honest caveat.** The split is by ICU stay, so a patient with several stays can appear in both training and test data, which can flatter the scores slightly. These are retrospective MIMIC-III results, not independent clinical validation.
+
+**Why federated training costs almost nothing:** the centralised model (all data in one place, no privacy) is only 0.02 higher in R² (0.50 vs 0.48). So the privacy benefit of federated learning comes at a very small accuracy price.
+
+---
+
+### 2.12 How the Model Is Used at the Bedside
+
+**In one line:** the saved network is loaded once and gives one SOFA number per 90-second reading; everything else on the dashboard is built around that number.
+
+1. **Files loaded once** (cached): `federated_model.pth`, `scaler.pkl`, `tfidf_vectorizer.pkl`, `feature_columns.pkl`, `shap_background.npy`. The model is set to `eval()` so dropout is off.
+2. **Input built** every 90 seconds: 9 trend features from the last 20 readings, 7 latest vitals, GCS eye and stress (recorded or live from the webcam), and 90 TF-IDF scores from the clinical note. Together: 108 numbers, in the saved order, scaled with the training scaler and clipped to ±10.
+3. **Prediction:** one forward pass, then clipped to 0–24. The same patient with the same inputs always gets the same score.
+4. **Wrapped around the number:** the risk band (Low / Moderate / High), the alert (predicted ≥ 7), a 90% conformal range (prediction ± 3.28), three runtime safety checks, and SHAP explanations (top 5 drivers).
+5. **Used downstream:** the SOFA score, risk band and SHAP drivers go into the AI report prompt; the report is then checked by a nine-method reliability score.
+
+Details: `docs/INPUT_OUTPUT.md`, `docs/VALIDATION.md`.
 
 ---
 
@@ -1104,7 +1179,7 @@ All 108 features contribute with fixed linear weights. Ridge Regression adds an 
 
 **Why it matters to understand:**
 
-Linear Regression serves as our **interpretability baseline**. If the DNN achieves R²≈0.47 and Linear Regression achieves R²=0.15, the difference (0.32 R²) is the value that the DNN's non-linearity and depth added — the learned feature interactions and threshold effects that a linear model cannot capture.
+Linear Regression serves as our **simple baseline**. We measured it: a Ridge regression trained centrally on the same 108 inputs and scored on the same 10,450 test stays gets **MAE 1.94, R² 0.39, AUROC 0.900**, against **MAE 1.80, R² 0.48, AUROC 0.918** for our network. The difference (0.09 in R²) is the value the network's non-linearity and depth added: learned feature interactions and threshold effects that a linear model cannot capture. The gap is real but smaller than many people expect, because a large part of the signal in these inputs is roughly linear (for example, more abnormal vitals and more organ-failure words mean a higher SOFA). At the alert line of 7 the linear model catches 60.8% of High Risk stays against 67.8% for the network.
 
 **Why it cannot be the primary model:**
 
@@ -1130,7 +1205,7 @@ Reality 2 — Feature interactions:
   The DNN can, because its hidden layers learn to combine these features non-linearly.
 ```
 
-**FL compatibility:** Linear Regression IS compatible with Federated Learning — weights are vectors of floats, FedAvg applies. It would be a valid simpler baseline but with substantially lower performance.
+**FL compatibility:** Linear Regression IS compatible with Federated Learning — weights are vectors of floats, FedAvg applies. It would be a valid simpler model. It is lower on every measure (and worst on the severe patients that matter most), so we did not choose it, but it shows that most of the project's accuracy comes from the good inputs, not from model complexity.
 
 ---
 
@@ -1186,20 +1261,22 @@ Additionally, for MIMIC-III data specifically, TF-IDF with our clinical vocabula
 
 ## 4. Complete Model Comparison Table
 
-| Model | FL Compatible | SHAP Method | Estimated R² | Complexity | Why Not Used |
-|---|---|---|---|---|---|
-| **PyTorch DNN (current)** | ✅ Yes — FedAvg + FedProx | DeepExplainer (gradient-based) | **0.4725** (measured) | Medium | **Current choice** |
-| LightGBM + XGBoost Ensemble | ❌ No — cannot FedAvg trees | TreeExplainer (path-based) | ~0.35–0.40* | Low | Fundamental FL incompatibility |
-| Random Forest | ❌ No | TreeExplainer | ~0.25–0.30* | Low | FL incompatible; 0% weight in ensemble |
-| LSTM / GRU | ✅ Yes — gradient-based | GradientExplainer | ~0.28–0.35* | High | Integration complexity; feature engineering achieves similar result |
-| Transformer (Vital Signs only) | ⚠️ Expensive — large size | Attention maps | ~0.30–0.35* | Very High | FL communication overhead; size inappropriate for tabular |
-| ClinicalBERT + Transformer | ❌ Too large for FL | Attention maps | ~0.35–0.45* | Extreme | 440 MB model → 132 GB FL communication; impractical |
-| TabNet | ✅ Yes — gradient-based | Custom attention masks | ~0.27–0.35* | Medium-High | SHAP integration non-standard; less established in FL |
-| FedBoost (Federated Trees) | ✅ Yes — histogram FL | TreeExplainer | ~0.35–0.42* | Very High | Not in Flower; active research area; custom implementation risk |
-| Linear Regression / Ridge | ✅ Yes — FedAvg on weight vector | Linear SHAP | ~0.10–0.18* | Very Low | Cannot learn non-linear thresholds or feature interactions |
-| BioBERT + DNN | ❌ Too large for FL | DeepExplainer | ~0.30–0.45* | Extreme | 440 MB per hospital per round; 132 GB total FL traffic |
+"Measured" means we trained and scored it on our test set. "Not tested" means we did not train it; the reason is the practical one given in Section 3, not a measured result.
 
-*Estimated on our specific dataset; not empirically measured.
+| Model | FL compatible | SHAP method | Accuracy on our data | Complexity | Why not used |
+|---|---|---|---|---|---|
+| **PyTorch DNN (current)** | ✅ Yes — FedAvg + FedProx | DeepExplainer (gradient-based) | **Measured: R² 0.48, MAE 1.80, AUROC 0.918** | Medium | **Current choice** |
+| LightGBM + XGBoost ensemble (centralised) | ❌ No — trees cannot be averaged | TreeExplainer (path-based) | Measured: R² 0.50, MAE 1.79, AUROC 0.922 (gradient boosting on the same 108 inputs). The original trial ensemble on the old 618-feature dataset scored R² 0.40, MAE 1.86 | Low | Fundamental FL incompatibility |
+| Random Forest | ❌ No | TreeExplainer | Not tested on `dataset_v2`; it got 0% weight in the original ensemble | Low | FL incompatible; worse than boosting |
+| Ridge / linear regression | ✅ Yes — FedAvg on the weight vector | Linear SHAP | **Measured: R² 0.39, MAE 1.94, AUROC 0.900** (centralised) | Very low | Lower on every measure; cannot learn thresholds or interactions |
+| LSTM / GRU | ✅ Yes — gradient-based | GradientExplainer | Not tested | High | Integration complexity; our 9 trend features already capture the temporal statistics |
+| Transformer (vital signs only) | ⚠️ Expensive — large size | Attention maps | Not tested | Very high | FL communication overhead; unsuited to a tabular task of this size |
+| ClinicalBERT + Transformer | ❌ Too large for FL | Attention maps | Not tested | Extreme | 440 MB model → 132 GB of FL traffic; impractical |
+| TabNet | ✅ Yes — gradient-based | Custom attention masks | Not tested | Medium-high | SHAP integration non-standard; less established in FL |
+| FedBoost (federated trees) | ✅ Yes — histogram FL | TreeExplainer | Not tested | Very high | Not in Flower; active research area; custom implementation risk |
+| BioBERT + DNN | ❌ Too large for FL | DeepExplainer | Not tested | Extreme | 440 MB per hospital per round; 132 GB total FL traffic |
+
+The measured rows show the key point: a strong centralised model and our federated network score almost the same on these inputs, so choosing a model that supports federated learning cost very little accuracy.
 
 ---
 
@@ -1229,7 +1306,7 @@ A **PyTorch Deep Neural Network**:
 - SHAP DeepExplainer for feature attribution
 - Predicts raw SOFA directly (0–24) — no unit conversion multiplication
 
-**Performance (held-out test set, 10,450 ICU stays; trained on 41,798):** MAE 1.8247, R² 0.4725, AUROC 0.9254, PR-AUC 0.6456; alert recall 67.1% at 96.3% specificity
+**Performance (held-out test set, 10,450 ICU stays; trained on 41,798):** MAE 1.80, R² 0.48, AUROC 0.918, PR-AUC 0.647; alert recall 67.8% at 96.6% specificity
 
 ### Q3: Why did you switch from the ensemble to the DNN?
 
@@ -1248,9 +1325,9 @@ Without a DNN, there is no federated learning. Without federated learning, the p
 
 ### Q4: Is there a performance trade-off?
 
-Yes. Tree-based models (LightGBM, XGBoost) typically outperform DNNs on tabular datasets with fewer than 100,000 training samples. The ensemble would likely achieve R² ≈ 0.35–0.40 on our task. Our DNN achieves R² = 0.4725. A centralized gradient-boosting reference on the same 108 columns (no federated learning) reaches R² ~0.49, MAE ~1.81, AUROC ~0.927 — so the federated DNN is close to the ceiling set by the inputs.
+Yes, but a very small one. Tree-based models (LightGBM, XGBoost) typically match or beat neural networks on tabular data of this size. We measured it: a centralised gradient-boosting model on the same 108 inputs and the same test stays reaches R² 0.50, MAE 1.79 and AUROC 0.922. Our federated DNN reaches R² 0.48, MAE 1.80 and AUROC 0.918 — so the federated DNN is close to the ceiling set by the inputs, and federation cost about 0.02 R². (The original trial ensemble scored R² 0.40 on the old dataset, which is not directly comparable.)
 
-The gap is smaller than expected because:
+The gap is small because:
 1. The DNN was tuned for the federated setting (FedProx on the clients, FedAvg on the server, plain MSE, Dropout 0.3 with a wider network) — each step improved test performance
 2. The 90-term SOFA vocabulary whitelist removed the noise that typically hurts DNNs on TF-IDF features
 
@@ -1259,7 +1336,8 @@ The trade-off is:
 
 ---
 
-*Documentation for ICU CDSS Capstone Project*
+*Documentation for ICU CDSS Capstone Project — last updated 2026-11-24*
 *Model framework: PyTorch DNN + Flower Federated Learning*
 *SHAP: DeepExplainer with 300-sample background*
 *Previous baseline: LightGBM (52%) + XGBoost (48%) ensemble, SHAP TreeExplainer*
+*Final model: FedAvg + FedProx, plain MSE, 108→256→128→64→1 with Dropout 0.3, best round 37, alert at predicted SOFA ≥ 7. When the model is retrained, update the "Current model at a glance" table, Section 2.11 and the Q&A numbers from `models/training_metadata.json`.*

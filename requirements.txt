@@ -1,42 +1,88 @@
-# ── FastAPI Backend ───────────────────────────────────────────────────────────
-fastapi>=0.115.0
-uvicorn[standard]>=0.30.0
-python-dotenv>=1.0.0
+# =============================================================================
+# ClinIQ — Python dependencies
+# =============================================================================
+# Install everything with:   pip install -r requirements.txt
+# (or run  python setup.py  which also makes a virtual environment, installs the
+#  frontend and creates the database).
+#
+# Python 3.12 or newer is required.
+# The frontend (React + Vite) has its own list in frontend/package.json and is
+# installed with  cd frontend && npm install.
+#
+# Versions: the project was built and all 513 Python tests pass with the versions
+# shown in the comments ("tested with"). The ">=" lines are the minimum that is
+# known to work; newer versions are fine unless a "<" upper limit is given.
+# =============================================================================
 
-# ── ML / Inference ────────────────────────────────────────────────────────────
-torch>=2.0.0
-numpy>=1.24.0
-pandas>=2.0.0
 
-# scaler.pkl and tfidf_vectorizer.pkl were fitted with scikit-learn 1.6.1.
-# Pin to <2.0.0 to avoid breaking changes in a future sklearn 2.0 release.
-scikit-learn>=1.6.0,<2.0.0
-joblib>=1.3.0
-shap>=0.44.0
+# ── Web backend (FastAPI, port 8000) ─────────────────────────────────────────
+# Run with:  uvicorn backend.main:app --reload --port 8000
+fastapi>=0.115.0                 # tested with 0.138.2 — the API (backend/main.py, backend/api/)
+uvicorn[standard]>=0.30.0        # tested with 0.49.0  — the web server that runs FastAPI
+pydantic>=2.0.0                  # tested with 2.13.4  — request validation (installed with FastAPI; listed because the API imports it directly)
+python-dotenv>=1.0.0             # tested with 1.2.2   — loads GROQ_API_KEY from the .env file
 
-# ── LLM (Groq) ────────────────────────────────────────────────────────────────
-groq>=0.9.0
 
-# ── SQLite Database ───────────────────────────────────────────────────────────
-# sqlite3 is part of the Python standard library — no installation needed.
-# The database file (models/icu_monitor.db) is created by migrate_to_db.py.
+# ── Machine learning and prediction ──────────────────────────────────────────
+torch>=2.0.0                     # tested with 2.13.0  — the neural network (model_utils.py); CPU is enough
+numpy>=1.24.0                    # tested with 2.4.6   — arrays and maths
+pandas>=2.0.0                    # tested with 3.0.3   — tables for vitals, features and the database
 
-# ── FL Dashboard (fl_dashboard.py — run standalone with `streamlit run`) ─────
-streamlit>=1.35.0
-plotly>=5.20.0
+# IMPORTANT: models/scaler.pkl and models/tfidf_vectorizer.pkl are scikit-learn
+# objects saved with scikit-learn 1.9.0 (tested with 1.9.0). A pickle saved by one
+# scikit-learn version may not load, or may behave differently, in another; if you
+# retrain, the files are re-saved with whatever version you have installed.
+# The "<2.0.0" cap avoids breaking changes in a future scikit-learn 2.x.
+scikit-learn>=1.6.0,<2.0.0       # scaling (StandardScaler), text features (TF-IDF), metrics (AUROC, R², ...)
+joblib>=1.3.0                    # tested with 1.5.3  — saves and loads scaler.pkl, tfidf_vectorizer.pkl, feature_columns.pkl
+shap>=0.44.0                     # tested with 0.52.0 — SHAP explanations (DeepExplainer) for each prediction
 
-# ── Federated Learning ────────────────────────────────────────────────────────
-flwr[simulation]>=1.8.0
 
-# The CV monitor (Stress Score + GCS Eye) runs in the browser via the npm
-# package @mediapipe/tasks-vision — no Python computer-vision packages needed.
+# ── AI report (Groq) ─────────────────────────────────────────────────────────
+groq>=0.9.0                      # tested with 1.5.0  — client for the Groq API (backend/services/llm_service.py)
 
-# ── BigQuery — Phase 0 preprocessing only ────────────────────────────────────
-# Required only for running train_federated.py from scratch.
-# Skip if models/icu_monitor.db is already populated (run migrate_to_db.py once).
-google-cloud-bigquery>=3.11.0
-google-cloud-bigquery-storage>=2.20.0
-# db-dtypes and pyarrow are required by google-cloud-bigquery's .to_dataframe()
-# but are not installed transitively on all platforms.
-db-dtypes>=1.1.0
-pyarrow>=12.0.0
+
+# ── Federated learning ───────────────────────────────────────────────────────
+# Flower runs the federated rounds. The [simulation] extra also installs Ray, which
+# train_federated.py needs to run the 3 simulated hospitals in one process.
+# The "<2.0.0" cap protects against a future major release changing the API that
+# server.py, client.py and train_federated.py use (tested with 1.32.1).
+flwr[simulation]>=1.8.0,<2.0.0
+
+
+# ── Federated-learning simulation dashboard (optional) ───────────────────────
+# Only for:  streamlit run fl_dashboard.py   (opens on port 8501).
+# The main ClinIQ dashboard does NOT need these two.
+streamlit>=1.35.0                # tested with 1.59.1
+plotly>=5.20.0                   # tested with 6.8.0
+
+
+# ── SQLite database ──────────────────────────────────────────────────────────
+# sqlite3 is part of Python's standard library — nothing to install.
+# The database file is models/icu_monitor.db. If it is missing, run
+# `python migrate_to_db.py` (or python setup.py) to create it.
+
+
+# ── Camera monitor (stress + eye-opening) ────────────────────────────────────
+# No Python packages are needed. It runs in the browser using the npm package
+# @mediapipe/tasks-vision (listed in frontend/package.json).
+
+
+# ── BigQuery — only for re-running Phase 0 of train_federated.py ─────────────
+# Needed ONLY to rebuild the training data from MIMIC-III on Google BigQuery
+# (requires PhysioNet access and `gcloud auth application-default login`).
+# You can skip these if you only run the dashboard or train on an existing
+# models/icu_monitor.db; installing them anyway is harmless.
+google-cloud-bigquery>=3.11.0            # tested with 3.42.1
+google-cloud-bigquery-storage>=2.20.0    # tested with 2.41.0 — faster downloads
+# db-dtypes and pyarrow are needed by google-cloud-bigquery's .to_dataframe() but
+# are not installed with it on every platform.
+db-dtypes>=1.1.0                         # tested with 1.7.1
+pyarrow>=12.0.0                          # tested with 24.0.0
+
+
+# ── Testing (optional — only to run the test suite) ──────────────────────────
+# Run with:  pytest tests          (513 Python tests)
+# The frontend's 232 tests use Vitest from frontend/package.json instead.
+pytest>=8.0.0                    # tested with 9.1.1
+httpx>=0.27.0                    # tested with 0.28.1 — required by FastAPI's TestClient used in tests/cliniq/backend

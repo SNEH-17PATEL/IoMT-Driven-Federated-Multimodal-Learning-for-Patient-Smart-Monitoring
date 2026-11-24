@@ -1,3 +1,35 @@
+"""
+model_utils.py — shared machine-learning code for the ClinIQ ICU CDSS
+======================================================================
+This one file is imported by everything that touches the model, so training,
+the real federated demo and the live dashboard all use *identical* logic:
+
+    train_federated.py   federated training simulation (Flower + Ray)
+    server.py / client.py  real federated demo (separate processes)
+    fl_dashboard.py      Streamlit page that shows a federated run live
+    backend/services/ml_service.py   live prediction for the dashboard
+
+What is in here (in file order)
+-------------------------------
+    ALERT_THRESHOLD         predicted SOFA at which the red alert fires (7.0)
+    ICUModel                the neural network: 108 -> 256 -> 128 -> 64 -> 1
+    ICUDataset              wraps numpy arrays for PyTorch's DataLoader
+    weighted_mse_loss       OPTIONAL loss that emphasises high-SOFA patients
+    get_sample_weights      OPTIONAL oversampling weights (off by default)
+    train_model             one hospital's local training (AdamW, plain MSE,
+                            optional FedProx penalty, gradient clipping)
+    evaluate_model          MAE, MSE and R2 on the 0-24 SOFA scale
+    compute_sofa_risk_metrics   risk-band and alert metrics (AUROC, recall...)
+    get_weights / set_weights   turn a model into numpy arrays and back, which
+                            is what travels between hospitals and the server
+    get_trend / classify_range  trend direction and low/normal/high labels
+    apply_dp_to_update / estimate_privacy_budget   differential privacy
+                            (implemented, switched off by default)
+
+Final trained model (models/training_metadata.json): MAE 1.80, R2 0.48,
+AUROC 0.918 on 10,450 held-out ICU stays.
+"""
+
 import math
 import torch
 import torch.nn as nn
@@ -17,14 +49,28 @@ from sklearn.metrics import (
 # ALERT THRESHOLD  (shared by training evaluation and the backend)
 # =============================================================
 # The dashboard raises a clinical alert when predicted SOFA ≥ ALERT_THRESHOLD.
-# It is lower than the High-risk band (actual SOFA ≥ 10) because the model
-# under-predicts severe patients (mean prediction for true High ≈ 9.7).
-# Lowered 8.0 → 7.0: in an ICU, a missed deteriorating patient costs more than
-# a false alarm.  Saved model (256-128-64 + dropout), held-out test set,
-# 602 true High-risk patients out of 10,450:
-#     threshold 8.0 : recall 61.1%  specificity 97.8%  missed 234  false alarms 220
-#     threshold 7.0 : recall 67.1%  specificity 96.3%  missed 198  false alarms 360
-# AUROC / PR-AUC / MAE do not depend on this value.
+#
+# Why 7 and not the clinical High-risk line of 10?
+#   The model under-predicts severe patients: for stays whose TRUE SOFA is ≥ 10
+#   the average true SOFA is about 13.1, but the average prediction is only
+#   about 9.5 (SOFA is mostly computed from lab values and drug doses, which are
+#   deliberately not model inputs).  An alert at 10 would catch under half of
+#   the truly High-risk patients.
+#
+# Why 7 and not the earlier 8?  In an ICU a missed deteriorating patient costs
+# more than a false alarm.  Final saved model, held-out test set of 10,450 ICU
+# stays, 602 of them truly High-risk (SOFA ≥ 10):
+#     threshold 10  : recall 43.9%  specificity 99.3%  missed 338  false alarms  73
+#     threshold  8  : recall 59.6%  specificity 97.9%  missed 243  false alarms 207
+#     threshold  7  : recall 67.8%  specificity 96.6%  missed 194  false alarms 335   <- chosen
+#     threshold  6  : recall 73.1%  specificity 94.1%  missed 162  false alarms 578
+# Going from 8 to 7 catches 49 more patients for 128 more false alarms; going
+# below 7 adds false alarms quickly for small gains.  AUROC, PR-AUC and MAE do
+# not depend on this value; only the yes/no alert does.
+#
+# This is the ONLY place the number is defined.  backend/services/ml_service.py
+# imports it, and compute_sofa_risk_metrics() uses it as its default, so the
+# live dashboard and the training report can never disagree.
 ALERT_THRESHOLD = 7.0
 
 
@@ -55,6 +101,8 @@ class ICUModel(nn.Module):
             128-64-32, no dropout  : MAE 1.854  R² 0.458  AUROC 0.921  PR-AUC 0.632
             256-128-64, dropout 0.3: MAE 1.831  R² 0.472  AUROC 0.925  PR-AUC 0.645
         (confirmed on two random seeds; 512-256-128 gave no further gain).
+        The final retrain of the 256-128-64 setup scored MAE 1.801  R² 0.481
+        AUROC 0.918  PR-AUC 0.647 (best round 37 of 100).
         An earlier note warned that per-hospital dropout masks could pull FedAvg
         in different directions — that did not happen in these runs.
 
@@ -89,6 +137,11 @@ class ICUModel(nn.Module):
 # =============================================================
 
 class ICUDataset(Dataset):
+    """
+    Wraps numpy arrays (X = inputs, y = SOFA answers) so PyTorch's DataLoader
+    can hand them to the model in mini-batches.  y is reshaped to a column
+    (n, 1) so it lines up with the model's one-number-per-patient output.
+    """
     def __init__(self, X, y):
         self.X = torch.tensor(X, dtype=torch.float32)
         self.y = torch.tensor(y, dtype=torch.float32).view(-1, 1)
@@ -106,6 +159,13 @@ class ICUDataset(Dataset):
 
 def weighted_mse_loss(preds, targets):
     """
+    OPTIONAL loss — NOT used by default.  The final model is trained with plain
+    MSE.  This function is only used when train_model(..., weighted_loss=True).
+
+    Why it is off: on dataset_v2 this weighting pushed every prediction upward
+    and raised MAE without catching more high-risk patients (see train_model).
+    It is kept so the earlier behaviour can be reproduced.
+
     Linear weighted MSE: mild emphasis on high-SOFA patients.
 
     Formula: weight = 1 + target × 0.5
@@ -269,14 +329,22 @@ def compute_sofa_risk_metrics(y_true, y_score, alert_threshold=ALERT_THRESHOLD):
     Alert logic: predicted SOFA ≥ alert_threshold → alert fired
                  actual SOFA ≥ 10                 → true high-risk case
 
-    Returns a nested dict saved to training_metadata.json and displayed in
-    the app's Tab 1 "Held-out Risk Classification Metrics" expander.
+    Returns a nested dict saved to training_metadata.json (key
+    "risk_classification_metrics").  The backend sends that file with every
+    prediction and the dashboard's SOFA Validation drawer
+    (frontend/src/components/validation/SOFAValidationDrawer.jsx) reads every
+    number from it.  Keys: "risk_bands" (3-band confusion matrix and per-band
+    precision / recall / specificity / F1) and "high_risk_alert" (confusion
+    matrix, recall, specificity, precision, F1, AUROC, PR-AUC).
+
+    Inputs: y_true = actual SOFA, y_score = predicted SOFA (both 0-24).
+    alert_threshold defaults to ALERT_THRESHOLD (7.0).
 
     AUROC and PR-AUC use the continuous predicted SOFA score, not the
     thresholded alert label — this gives a threshold-free discrimination
     metric.  Both are set to None when the test set contains only one class.
 
-    Method adapted from: teammate's model_utils.py (test/ folder).
+    Method adapted from a teammate's earlier implementation.
     """
     y_true  = np.asarray(y_true,  dtype=np.float64).reshape(-1)
     y_score = np.asarray(y_score, dtype=np.float64).reshape(-1)
@@ -369,12 +437,22 @@ def compute_sofa_risk_metrics(y_true, y_score, alert_threshold=ALERT_THRESHOLD):
 # =============================================================
 
 def get_weights(model):
+    """
+    Turn a model into a list of numpy arrays, one per weight and bias tensor.
+    This list (and nothing else) is what a hospital sends to the server and
+    what the server sends back: no patient data ever travels.
+    """
     # .copy() ensures the returned arrays are independent snapshots — training the
     # model afterwards will not mutate them (numpy shares memory with CPU tensors).
     return [val.cpu().numpy().copy() for val in model.state_dict().values()]
 
 
 def set_weights(model, weights):
+    """
+    Load a list of numpy arrays (from get_weights) into a model.  The list must
+    have exactly one array per tensor in the model, in the same order; a model
+    of a different size (for example an old 128-64-32 checkpoint) is refused.
+    """
     state_dict = model.state_dict()
     if len(weights) != len(state_dict):
         raise ValueError(
@@ -388,7 +466,7 @@ def set_weights(model, weights):
 
 
 # =============================================================
-# TREND UTILITIES (shared between app and training)
+# TREND UTILITIES (shared between the backend and training)
 # =============================================================
 
 def get_trend(series):
@@ -461,6 +539,12 @@ def estimate_privacy_budget(num_rounds, sigma, delta=1e-5):
 
     Conservative upper bound — advanced composition (RDP / moments accountant)
     gives tighter bounds but is more complex.
+
+    Example (sigma = 1.0, delta = 1e-5): about 4.84 per round, so 100 rounds
+    gives epsilon ≈ 484.5.  Smaller is more private (below about 1 is strong),
+    so that is a very weak guarantee: differential privacy is implemented and
+    tested here but switched off (USE_DP = False), and is a demonstration of
+    the mechanism rather than real protection.
     """
     if sigma <= 0:
         return float("inf")

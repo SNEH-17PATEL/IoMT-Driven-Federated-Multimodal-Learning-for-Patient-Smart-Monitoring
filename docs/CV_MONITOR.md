@@ -1,28 +1,23 @@
 # CV Monitor — Technical Documentation
-**Module:** ICU Clinical Decision Support System — Computer Vision Subsystem
+**Module:** ClinIQ ICU Clinical Decision Support System — Camera (Computer Vision) Monitor
 **Status:** Fully implemented and verified
-**Purpose:** Real-time measurement of Stress Score and GCS Eye Opening Score from a camera feed using facial analysis — no physical contact with the patient required.
+**Last updated:** 2026-11-24
+**Purpose:** Measure two values from a webcam using facial analysis, with no contact with the patient: a **Stress Score (0–10)** and a **GCS Eye-Opening score (1–4)**.
+
+> **What changed since the first version of this document.** The monitor used to be a separate Python program (`cv_monitor.py`, OpenCV). **That file no longer exists.** The monitor is now built into the dashboard and runs **entirely in the web browser**: React plus Google's MediaPipe FaceLandmarker compiled to WebAssembly. The scoring formulas are the same ones described here; they were ported one-to-one into JavaScript. Everything in this document describes the current browser implementation, in `frontend/src/components/cv/CVMonitorModal.jsx`.
 
 ---
 
-## What This Module Does and Why It Exists
+## How to Read This Document
 
-In an ICU, clinicians need to continuously monitor two things about every patient that are extremely difficult to measure automatically:
-
-1. **How much pain or distress is the patient experiencing?**
-2. **What is the patient's level of consciousness?**
-
-Traditional methods have serious limitations:
-- Pain assessment requires the patient to self-report ("rate your pain 1–10") — impossible for sedated, intubated, or unconscious patients
-- Level of consciousness (GCS) is assessed by nurses every 1–4 hours — it misses rapid changes between assessments
-- Both require a human to be physically present at the bedside
-
-The CV Monitor module solves this with a **camera**. By continuously analysing the patient's face using MediaPipe's facial AI model, it computes two scores in real time:
-
-- **Stress Score (0.0–10.0):** How distressed or in pain the patient appears, based on their facial muscle movements
-- **GCS Eye Opening Score (1–4):** How spontaneously and frequently the patient opens their eyes, a key indicator of consciousness level
-
-Both scores feed directly into the 108-feature vector that the SOFA prediction model uses, adding a computer-vision dimension that no other ICU monitoring system in the market currently provides.
+- **Sections 1–2** explain what the two scores mean clinically.
+- **Section 3** explains the face-analysis technology (MediaPipe landmarks and blendshapes).
+- **Sections 4–5** are the history: what was tried first and why it failed.
+- **Sections 6–7** are the heart of the document: the **current stress method (PSPI)** and the **current eye method (30-second window with personal calibration)**, step by step with worked examples.
+- **Section 8** explains why these methods were chosen.
+- **Sections 9–11** cover how the monitor runs in the browser, what the screen shows, and how the two numbers reach the SOFA model (including an honest measurement of how much they change the result).
+- **Sections 12–14** are the constants, the tests, and the limitations.
+- **Section 15** is a glossary.
 
 ---
 
@@ -36,10 +31,13 @@ Both scores feed directly into the 108-feature vector that the SOFA prediction m
 6. [The Current Stress Method: PSPI](#6-the-current-stress-method-pspi)
 7. [The Current GCS Method: Rolling Window with Personal Calibration](#7-the-current-gcs-method-rolling-window-with-personal-calibration)
 8. [Why These Are the Best Methods Available](#8-why-these-are-the-best-methods-available)
-9. [Complete Technical Pipeline](#9-complete-technical-pipeline)
-10. [Output Scores and Dashboard Display](#10-output-scores-and-dashboard-display)
-11. [System Constants Explained](#11-system-constants-explained)
-12. [Limitations and Clinical Disclaimer](#12-limitations-and-clinical-disclaimer)
+9. [How It Runs in the Browser — Complete Pipeline](#9-how-it-runs-in-the-browser--complete-pipeline)
+10. [What the Screen Shows](#10-what-the-screen-shows)
+11. [How the Two Numbers Reach the SOFA Model](#11-how-the-two-numbers-reach-the-sofa-model)
+12. [System Constants Explained](#12-system-constants-explained)
+13. [Tests](#13-tests)
+14. [Limitations and Clinical Disclaimer](#14-limitations-and-clinical-disclaimer)
+15. [Glossary](#15-glossary)
 
 ---
 
@@ -47,35 +45,35 @@ Both scores feed directly into the 108-feature vector that the SOFA prediction m
 
 ### The clinical problem it solves
 
-An ICU patient under mechanical ventilation cannot speak. A patient in delirium may not be able to follow instructions. A heavily sedated patient cannot press a button. Yet all of these patients may be experiencing significant pain, respiratory distress, or psychological agitation — conditions that worsen outcomes and increase SOFA scores if left unaddressed.
+An ICU patient on a ventilator cannot speak. A patient in delirium may not follow instructions. A heavily sedated patient cannot press a button. Yet all of them may be in significant pain, breathless or agitated, which worsens outcomes if nobody notices.
 
-The Stress Score gives clinicians a continuous, objective, non-contact measurement of visible distress, updated every second from the patient's facial expression.
+The Stress Score gives clinicians a continuous, non-contact measure of **visible distress**, updated about once a second from the patient's face.
 
 ### Definition and scale
 
-The **Stress Score** is a continuous number from **0.0 to 10.0**, representing the severity of observable physiological and psychological distress:
+The **Stress Score** is a number from **0.0 to 10.0**:
 
-| Score Range | Label | Colour | Clinical Meaning | Typical Causes in ICU |
+| Score | Label | Colour | Meaning | Typical ICU causes |
 |---|---|---|---|---|
-| 0.0 – 3.4 | LOW | Green | Patient appears calm, comfortable, relaxed | Effective sedation, resting state, comfortable positioning |
-| 3.5 – 6.4 | MODERATE | Amber | Noticeable discomfort or agitation, needs monitoring | Procedural discomfort, mild inadequate analgesia, mild dyspnoea |
-| 6.5 – 10.0 | HIGH | Red | Severe distress, probable acute pain or agitation | Ventilator dyssynchrony, untreated pain, ICU delirium, acute deterioration |
+| 0.0 – 3.4 | **LOW** | Green | Calm, comfortable | Effective sedation, resting, comfortable position |
+| 3.5 – 6.4 | **MODERATE** | Amber | Noticeable discomfort or agitation; keep watching | Procedures, mild under-treated pain, mild breathlessness |
+| 6.5 – 10.0 | **HIGH** | Red | Severe distress, probable acute pain or agitation | Ventilator mismatch, untreated pain, delirium, acute deterioration |
 
-### What the score actually measures
+These exact bands (LOW < 3.5 ≤ MODERATE < 6.5 ≤ HIGH) are used in **four places** that must stay in sync: the camera monitor, the dashboard's Stress vital card, the SHAP explanations in `ml_service.py`, and the AI-report rule "Stress ≥ 6.5 must mention pain management or sedation".
 
-The score is driven by specific facial muscle groups that pain and stress research has shown to activate involuntarily and consistently across people during distress — even when a patient is trying to appear calm. This is not based on subjective appearance; it is based on the activation of specific Action Units (AU) in the Facial Action Coding System (FACS), which were identified through decades of controlled pain research.
+### What the score measures
 
-Key muscle groups that drive the score:
-- **Brow furrow (inner brow pulled down and together):** The most reliable single indicator of pain
-- **Eye squinting and cheek raising:** Orbital tension around the eye, activated by pain
-- **Nose wrinkling:** The grimace component of pain expression
-- **Upper lip raising:** The lip component of a pain grimace
-- **Tight eye closure:** Eyes shut during a pain episode
-- **Physical restlessness:** Head movement indicating agitation, not just facial expression
+It is driven by facial muscle groups that pain research has shown to activate involuntarily during distress, described by the **Facial Action Coding System (FACS)**, not by how the face "looks" to a person:
+- **Brow furrow** (inner brows pulled down and together): the most reliable single sign of pain.
+- **Eye squint and cheek raise:** tension around the eye.
+- **Nose wrinkle:** the grimace component.
+- **Upper-lip raise:** the lip part of a grimace.
+- **Forced eye closure:** eyes shut during a pain episode.
+- **Restlessness:** head movement, which shows agitation even when the face is held still.
 
-### Why this matters more than traditional monitoring
+### Why it adds something
 
-Traditional vital signs (heart rate, blood pressure) can be elevated by pain — but they are not specific. A high heart rate could mean pain, fever, hypovolaemia, anxiety, or normal exertion. The Stress Score is specifically targeted at facial expression of distress, providing a signal that is more direct and interpretable.
+Heart rate and blood pressure rise with pain but also with fever, low blood volume, anxiety or exertion, so they are not specific. The Stress Score looks directly at the facial expression of distress, a more direct signal.
 
 ---
 
@@ -83,951 +81,572 @@ Traditional vital signs (heart rate, blood pressure) can be elevated by pain —
 
 ### The Glasgow Coma Scale — background
 
-The **Glasgow Coma Scale (GCS)** was developed by Teasdale and Jennett in 1974 and is the most widely used tool in medicine for measuring a patient's level of consciousness. It is a composite score made up of three independent components:
+The **Glasgow Coma Scale (GCS)**, developed by Teasdale and Jennett in 1974, is the most widely used measure of consciousness. It has three parts: **Eye opening (E, 1–4)**, **Verbal response (V, 1–5)** and **Motor response (M, 1–6)**, giving 3 (unresponsive) to 15 (fully conscious).
 
-- **Eye Opening (E):** Does the patient open their eyes? When? Scored 1–4.
-- **Verbal Response (V):** Can the patient speak coherently? Scored 1–5.
-- **Motor Response (M):** Can the patient follow commands and respond appropriately? Scored 1–6.
+The camera measures only the **Eye-opening part**, because it is the only one visible without touching or speaking to the patient.
 
-The full GCS ranges from 3 (completely unresponsive) to 15 (fully conscious).
+### The four levels
 
-The CV Monitor measures only the **Eye Opening component**, because it is the only one accessible from a camera without applying stimuli to the patient. Eyes can be observed continuously and non-invasively. Voice and motor responses require interaction.
-
-### The four GCS Eye Opening levels
-
-| Score | Label | What it means | What it tells us about the brain |
+| Score | Label | What it means | What it says about the brain |
 |---|---|---|---|
-| **E4** | Spontaneous | Eyes open naturally, without any prompting | Arousal mechanisms in the brainstem are intact — the patient's brain is keeping itself awake |
-| **E3** | To Voice | Eyes open only when someone speaks to the patient | Partial arousal — the brainstem can respond to external stimuli but cannot maintain arousal independently |
-| **E2** | To Pain | Eyes open only when painful pressure is applied (in clinical practice: sternal rub, nail bed pressure) | Minimal arousal — only the strongest stimuli penetrate |
-| **E1** | No Response | Eyes remain closed regardless of any stimulus | No functional brainstem arousal — deep coma or sedation |
+| **E4** | Spontaneous | Eyes open on their own | Brainstem arousal intact: the patient keeps themselves awake |
+| **E3** | To Voice | Eyes open when spoken to | Partial arousal |
+| **E2** | To Pain | Eyes open only to painful pressure | Minimal arousal |
+| **E1** | No Response | Eyes stay closed whatever the stimulus | No functional arousal: deep coma or heavy sedation |
 
-### Why a one-point change in GCS eye score matters
+### Why one point matters
 
-In clinical practice, the difference between E3 and E4 is the difference between "patient is semi-conscious and needs close monitoring" and "patient is alert and oriented." The difference between E2 and E1 can signal brainstem herniation — a neurological emergency.
+E4 versus E3 is the difference between "alert" and "semi-conscious, watch closely". E2 versus E1 can signal a neurological emergency. The camera adds **continuous** assessment between nurse checks, so a drop from E4 to E3 at 2 a.m. (between 12 a.m. and 4 a.m. checks) is noticed, and the next SOFA prediction can reflect it.
 
-The camera provides **continuous automated assessment** between nurse assessments. If a patient deteriorates from E4 to E3 at 2:00 AM between the scheduled 12:00 AM and 4:00 AM nurse assessments, the system detects it and the SOFA score updates immediately — potentially triggering a clinical alert before the nurse's scheduled check.
+### An important limitation upfront
 
-### An important limitation to understand upfront
-
-True clinical GCS E3 (eyes open to voice) requires a nurse to call the patient's name. True GCS E2 (eyes open to pain) requires physical pressure stimuli that a camera cannot apply. Our system can reliably assess **spontaneous eye opening (E4)** and makes reasonable inferences about E3 and E2 from observed eye behaviour patterns. This is explicitly acknowledged as a limitation in Section 12.
+True E3 needs a voice stimulus and true E2 needs a painful stimulus. A camera can apply neither. It reliably sees **spontaneous** opening (E4) and **infers** E3 and E2 from eye-opening patterns. Treat E3/E2 as "this patient may need a formal nurse GCS assessment", not as a replacement for one (Section 14).
 
 ---
 
 ## 3. The Foundation: MediaPipe and Facial Blendshapes
 
-Before explaining the algorithms, it is essential to understand the technology they are built on — because the choice of MediaPipe blendshapes over raw geometry is a core design decision that determines why the current methods work when earlier approaches failed.
-
 ### What MediaPipe does
 
-**MediaPipe FaceLandmarker** is Google's real-time facial analysis AI model. When given a video frame, it outputs two types of data:
+**MediaPipe FaceLandmarker** is Google's real-time face model. For each video frame it returns two things:
+1. **478 face landmarks:** the position of 478 points on the face (eye corners, nose tip, lip edges, brow points…), normalised to 0–1.
+2. **52 blendshapes:** each a score from 0.0 to 1.0 for the strength of one facial-muscle action (for example `browDownLeft`, `eyeBlinkRight`, `mouthSmileLeft`).
 
-1. **478 face landmarks** — the 3D position (x, y, z) of 478 specific points on the face (corners of the eyes, tip of the nose, edges of the lips, points along the brow, etc.), all normalised to a [0, 1] coordinate space relative to the face bounding box.
+**Where it runs.** The model runs **in the browser**, using WebAssembly code stored in the project at `frontend/public/mediapipe/wasm/` (six files, loaded from `/mediapipe/wasm`) and the npm package `@mediapipe/tasks-vision`. The model weights file (about **12 MB**, `face_landmarker.task`) is downloaded from Google's storage **the first time** the monitor is opened, so that first launch needs internet. The monitor asks for the GPU where available.
 
-2. **52 blendshapes** — learned neural network activations, each a continuous score from 0.0 to 1.0, representing the strength of a specific facial muscle action.
+### Landmarks versus blendshapes
 
-### Landmarks vs. blendshapes — the crucial difference
-
-**Landmarks** give you raw positions: "the left eye corner is at position (0.34, 0.41)." To know whether the eye is open, you compute the distance between the upper and lower eyelid landmarks and compare it to some threshold. This is the geometric approach.
-
-**Blendshapes** give you interpretations: "the left eye is 73% squinting" or "the brow is 45% furrowed downward." These are output by a neural network that was trained on thousands of people's faces in controlled expressions, and it has learned to output muscle activation levels directly — regardless of face shape, eye size, or lighting.
-
-**Why blendshapes are better for this application:**
+- **Landmarks** are positions: "the eye corner is at (0.34, 0.41)". To tell whether an eye is open you must measure distances and pick a threshold. That is the *geometric* approach.
+- **Blendshapes** are interpretations by a neural network trained on many faces: "the brow is 45% furrowed". They are largely independent of face shape.
 
 | Situation | Geometric approach | Blendshape approach |
 |---|---|---|
-| Person with naturally narrow eyes | Narrow eye gap → always reads as "partially closed" even when wide open | Neural network learned: this is what THIS person's "open" looks like → correctly reads as open |
-| Person with thick brows | Brow landmarks close together even when relaxed → always reads as "slightly furrowed" | Neural network: brow furrow blendshape reflects actual muscle tension, not resting anatomy |
-| Different lighting angles | Shadows change apparent landmark positions → wrong distances | Neural network trained across lighting conditions → more robust |
-| Facial hair or partially obscured face | Missing landmarks cause errors | Neural network fills in from context |
+| Naturally narrow eyes | Always looks "partly closed" even when wide open | The network has learned what this person's "open" looks like |
+| Thick, low brows | Looks "slightly furrowed" even when relaxed | The blendshape reflects actual muscle tension |
+| Different lighting | Shadows move landmarks, so distances change | Trained across lighting conditions, more robust |
+| Facial hair, partly hidden face | Missing landmarks cause errors | The network fills in from context |
 
-The key insight: **blendshapes are person-independent absolute measures of muscle activation, while geometric distances are person-dependent relative measures of facial anatomy.**
+**Key idea:** blendshapes are person-independent measures of muscle activation, while geometric distances depend on each person's anatomy. The monitor uses blendshapes for stress and as a cross-check for eye state, and landmarks only for the eye-opening ratio (EAR) and head movement.
 
 ---
 
 ## 4. Evolution of Methods — Stress Score
 
-Understanding why the current method was chosen requires understanding what was tried first and why it failed.
+### Version 1: geometric approach (rejected)
 
-### Version 1: Geometric Approach (Rejected)
-
-The first implementation computed stress from raw geometric distances between face landmarks:
-
+The first version computed stress from raw landmark distances:
 ```
-Stress components:
-  c_eye   = (baseline_EAR − current_EAR) / (baseline_EAR × 0.30)
-  c_brow  = (baseline_brow − current_brow_dist) / (baseline_brow × 0.35)
-  c_blink = (blink_rate − 8) / 22.0
-
-Stress Score = 10 × (0.42 × c_brow + 0.36 × c_eye + 0.22 × c_blink)
+c_eye   = (baseline_EAR − current_EAR) / (baseline_EAR × 0.30)
+c_brow  = (baseline_brow − current_brow_dist) / (baseline_brow × 0.35)
+c_blink = (blink_rate − 8) / 22.0
+Stress  = 10 × (0.42·c_brow + 0.36·c_eye + 0.22·c_blink)
 ```
-
-Where **Eye Aspect Ratio (EAR)** is:
+where **EAR (Eye Aspect Ratio)** is
 ```
-EAR = (upper_lid_to_lower_lid_distance) / (inner_canthus_to_outer_canthus_distance)
-
-More specifically:
-  EAR = (||p1–p5|| + ||p2–p4||) / (2 × ||p0–p3||)
-  where p0–p5 are 6 landmark points around each eye
-  High EAR (e.g. 0.35) = wide open eye
-  Low EAR (e.g. 0.08) = nearly closed eye
+EAR = (‖p1−p5‖ + ‖p2−p4‖) / (2 × ‖p0−p3‖)      p0…p5 = six landmarks around one eye
+High EAR (~0.35) = wide open eye     Low EAR (~0.08) = nearly closed
 ```
 
-**The fatal flaw — calibration baseline mismatch:**
+**The fatal flaw: a baseline mismatch.** The formula needed each user's own resting EAR, but a default of 0.28 was hard-coded. The tester's natural open-eye EAR was 0.325. So `(0.28 − 0.325) / 0.14 = −0.32`, which was clipped to 0. The eye component stayed at 0 permanently, the same happened to the brow component, and the blink component had no data in the first 60 seconds. **The stress score was exactly 0.0 whatever the expression.**
 
-The formula required a personal baseline EAR for each user. The system had a hardcoded default baseline of 0.28. The person testing the system had a natural open-eye EAR of 0.325 (their eyes were naturally slightly wider than average).
-
-When the formula computed `(0.28 − 0.325) / 0.14 = −0.32`, this negative value was clipped to 0. The eye component was permanently 0. The same happened to the brow component. The blink component had no data in the first 60 seconds. **Result: stress score was always exactly 0.0 regardless of any expression.**
-
-**Additional problems beyond the baseline bug:**
-
-| Problem | Why It Matters |
+| Other problem | Why it matters |
 |---|---|
-| Only 2 muscle groups measured (brow, eye) | Pain research identifies 6 distinct muscle groups — ignoring 4 of them misses most of the signal |
-| No smile correction | A smiling patient and a pain-grimacing patient both squint and furrow → both get high stress scores |
-| Mouth tension metric was broken | MediaPipe inner-lip landmarks 13 and 14 give near-zero gap for any closed mouth, regardless of tension |
-| Blink rate used 60-second window | In the first 60 seconds, the window has no data → always returns wrong results |
-| Required 5-second personal calibration | Score stayed at 0.0 during calibration, misleading users into thinking the system was not working |
+| Only 2 muscle groups | Pain research names 6; ignoring four loses most of the signal |
+| No smile correction | A smile and a grimace both squint and furrow, so both scored as stress |
+| Broken mouth-tension metric | Inner-lip landmarks 13/14 give near-zero gap for any closed mouth |
+| 60-second blink window | Empty at the start, so wrong results early on |
+| 5-second personal calibration | The score sat at 0.0 meanwhile, so users thought it was broken |
 
----
+### Version 2: PSPI from blendshapes (current)
 
-### Version 2: PSPI from MediaPipe Blendshapes (Current Implementation)
-
-The geometric approach was completely replaced with the **Prkachin-Solomon Pain Intensity (PSPI)** index — a clinically validated, peer-reviewed formula that measures pain intensity directly from facial muscle activations.
-
-This is explained in full detail in Section 6.
+The geometric method was replaced by the clinically validated **Prkachin–Solomon Pain Intensity (PSPI)** index (Section 6).
 
 ---
 
 ## 5. Evolution of Methods — GCS Eye Score
 
-### Version 1: Single-Frame EAR Threshold (Rejected)
+### Version 1: single-frame EAR threshold (rejected)
 
-The first GCS implementation applied fixed population-average EAR thresholds to the EAR value computed from the current frame:
-
+The first version compared the current frame's EAR with fixed population thresholds:
 ```
-if EAR ≥ 0.22 → GCS Eye = 4 (Spontaneous)
-if EAR ≥ 0.12 → GCS Eye = 3 (To Voice)
-if EAR ≥ 0.04 → GCS Eye = 2 (To Pain)
-else           → GCS Eye = 1 (No Response)
+EAR ≥ 0.22 → E4      EAR ≥ 0.12 → E3      EAR ≥ 0.04 → E2      else → E1
 ```
+It failed for three reasons.
 
-**Why this fails fundamentally:**
+**1. Fixed thresholds ignore anatomy.** A fully awake person with naturally narrow eyes (open EAR 0.19) reads 0.19 < 0.22 → "E3, semi-conscious". A wide-eyed person (0.40) reads E4. No single threshold fits all eye shapes.
 
-**Problem 1 — Fixed thresholds ignore individual anatomy:**
+**2. A snapshot is not what GCS means.** GCS describes sustained behaviour. A frame during a blink (EAR ≈ 0.03) would read "E1 — no response" for an alert patient, while an unconscious patient with one eye slightly ajar (EAR ≈ 0.08) would read "E2".
 
-```
-Person A (naturally narrow eyes, fully awake and alert):
-  Open-eye EAR = 0.19
-  Fixed threshold for E4 = 0.22
-  System reads: 0.19 < 0.22 → E3 (To Voice)
-  Reality: Person A is fully awake, looking around, completely alert
-  Result: Healthy awake person misclassified as semi-conscious
-```
+**3. No confidence indicator.** It claimed E4 from the very first frame with no data at all.
 
-```
-Person B (naturally wide eyes, same situation):
-  Open-eye EAR = 0.40
-  System reads: 0.40 ≥ 0.22 → E4 (Spontaneous) ✓
-  Result: Correct, but only because this person's anatomy happened to fit
-```
+### Version 2: rolling window with personal calibration (current)
 
-The same threshold that works for Person B misclassifies Person A. There is no single EAR threshold that works across all human eye shapes.
-
-**Problem 2 — Snapshot misses clinical GCS definition:**
-
-GCS is a behavioural assessment, not a measurement of the position of your eyelids at a single moment in time.
-
-```
-Scenario: Patient is fully awake but blinks during the exact frame being analysed
-  EAR during blink ≈ 0.03  (lids nearly touching)
-  System reads: 0.03 < 0.04 → E1 (No Response)
-  Reality: Patient is conscious and alert, just happened to blink
-
-Scenario: Patient is unconscious but one eye is slightly ajar
-  EAR ≈ 0.08 (eyes not fully closed)
-  System reads: 0.08 ≥ 0.04 → E2 (To Pain)
-  Reality: Patient has no functional eye opening behaviour
-```
-
-Clinical GCS is defined over a **sustained observation period** with applied stimuli, not over a single moment. The snapshot approach violates this fundamental definition.
-
-**Problem 3 — No confidence indicator:**
-
-The system claimed E4 from the very first frame with zero data. A single blurry or poorly lit initial frame could produce a confident but completely wrong score.
-
----
-
-### Version 2: Rolling Window with Personal Calibration (Current Implementation)
-
-Completely redesigned to match the clinical definition of GCS. The key innovations are:
-- **Personal calibration** adapts thresholds to each patient's individual eye anatomy
-- **30-second behavioral window** assesses what the patient does over time, not at one instant
-- **Blendshape cross-check** validates EAR-based classifications with neural network output
-- **Provisional flag** communicates confidence level to clinicians
-
-This is explained in full detail in Section 7.
+Redesigned to match the clinical definition (Section 7): a **personal calibration** adapts thresholds to each patient's eyes; a **30-second window** assesses what the patient does over time; a **blendshape cross-check** catches blinks; and a **provisional flag** tells the clinician how much data stands behind the number.
 
 ---
 
 ## 6. The Current Stress Method: PSPI
 
-### 6.1 What PSPI Is and Where It Comes From
+### 6.1 What PSPI is
 
-The **Prkachin-Solomon Pain Intensity (PSPI)** index is a clinical pain assessment formula published in peer-reviewed pain research (Prkachin & Solomon, 2008, *Pain*, 137(2), 242–251). It was derived from the **Facial Action Coding System (FACS)** — a comprehensive, empirically-derived taxonomy of all possible human facial movements, created by psychologist Paul Ekman and Wallace Friesen after analysing thousands of hours of facial video.
-
-FACS defines **Action Units (AUs)** — the smallest independently controllable facial muscle movements, each coded with a number. For example, AU1 is inner brow raise, AU4 is brow lowerer, AU43 is eye closure. PSPI identifies the six specific AUs that pain research has shown to be the most reliably activated during pain and distress.
-
-**The formula:**
-```
-PSPI = AU4 + max(AU6, AU7) + max(AU9, AU10) + AU43
-
-Maximum possible value: 16
-```
-
-Think of this as a checklist of the most pain-specific facial muscle actions — with a maximum score when all of them activate simultaneously.
-
----
-
-### 6.2 Each Action Unit Explained
-
-**AU4 — Brow Lowerer (most important pain indicator)**
-
-The corrugator supercilii and depressor supercilii muscles pull the inner brow downward and inward, creating the characteristic V-shaped frown seen in pain. This is the single most reliable indicator of pain across all facial expression research. It is very difficult to fake and almost impossible to suppress when experiencing genuine acute pain.
+The **Prkachin–Solomon Pain Intensity (PSPI)** index is a peer-reviewed pain formula (Prkachin & Solomon, 2008, *Pain* 137(2)), built on the **Facial Action Coding System (FACS)**, Ekman and Friesen's catalogue of every possible facial movement. FACS defines **Action Units (AUs)**: the smallest separately controllable facial-muscle movements (AU4 = brow lowerer, AU43 = eye closure…). PSPI picks the AUs most reliably active in pain:
 
 ```
-What it looks like: The space between the eyebrows narrows and a vertical
-                    crease forms at the centre of the forehead.
-                    Think of the expression "furrowed brow."
-
-MediaPipe blendshape: browDownLeft, browDownRight
-Scaling: multiplied by 5 to bring the 0–1 blendshape range to a 0–5 contribution
+PSPI = AU4 + max(AU6, AU7) + max(AU9, AU10) + AU43        maximum possible value: 16
 ```
 
----
+### 6.2 Each Action Unit
 
-**max(AU6, AU7) — Orbital Eye Tension**
+Each blendshape pair is averaged over the left and right side, then (except AU43) multiplied by 5 to give a 0–5 contribution.
 
-Two separate muscles around the eye can both activate in pain, but they are anatomically related and often co-activate. The `max()` takes the stronger of the two:
+| AU | Muscle action | What it looks like | Blendshapes used |
+|---|---|---|---|
+| **AU4** Brow lowerer | Inner brow pulled down and together | The "furrowed brow", a vertical crease between the eyebrows. The single most reliable pain sign, hard to fake and hard to suppress | `browDownLeft/Right` × 5 |
+| **AU6** Cheek raiser | Cheeks lift, lower lid rises | Crow's-feet, skin creasing under the eye (also appears in genuine smiling) | `cheekSquintLeft/Right` × 5 |
+| **AU7** Lid tightener | Eyelid tightens | Narrowed, squinting eyes | `eyeSquintLeft/Right` × 5 |
+| **AU9** Nose wrinkler | Nostril wing lifts | The wince | `noseSneerLeft/Right` × 5 |
+| **AU10** Upper-lip raiser | Upper lip lifts | Part of the grimace (also part of a smile) | `mouthUpperUpLeft/Right` × 5 |
+| **AU43** Eye closure | Eyes shut firmly | A forced closure, not a quick blink | average `eyeBlink` > 0.55 → 1.0, else 0.0 |
 
-- **AU6 — Cheek Raiser:** The orbital portion of orbicularis oculi lifts the cheeks, creating crow's feet wrinkles and raising the lower eyelid. Seen in genuine smiling AND in pain.
-- **AU7 — Lid Tightener:** The palpebral portion of orbicularis oculi tightens the eyelid, creating a narrowed, squinting appearance characteristic of the stress squint.
+`max(AU6, AU7)` and `max(AU9, AU10)` take the stronger of two anatomically overlapping muscles instead of adding them, to avoid counting one tension twice. AU43 is all-or-nothing because forced closure either happened or did not.
 
+### 6.3 Worked example
+
+A patient with moderate post-surgical pain; MediaPipe returns:
 ```
-What it looks like: Eyes narrowed and tightened, cheeks slightly lifted,
-                    skin creasing below the eyes.
-
-MediaPipe blendshapes: 
-  AU6 → cheekSquintLeft, cheekSquintRight
-  AU7 → eyeSquintLeft, eyeSquintRight
-
-Why max() instead of sum():
-  These muscles partially overlap in their anatomy.
-  Taking max() prevents double-counting when both activate together.
-  It picks the dominant orbital tension signal.
+browDown      L 0.48  R 0.51        eyeSquint    L 0.41  R 0.38
+cheekSquint   L 0.22  R 0.25        mouthUpperUp L 0.08  R 0.09
+noseSneer     L 0.19  R 0.22        eyeBlink     L 0.12  R 0.10
+mouthSmile    L 0.03  R 0.02
 ```
-
----
-
-**max(AU9, AU10) — Nose-Lip Grimace**
-
-The pain grimace around the nose and upper lip:
-
-- **AU9 — Nose Wrinkler:** Levator labii superioris alaeque nasi pulls the nostril wing up and wrinkles the nose bridge — the characteristic "wincing" expression during sharp pain.
-- **AU10 — Upper Lip Raiser:** Levator labii superioris raises the upper lip, contributing to the grimace shape. Note: this is the same muscle that activates in a genuine smile, which is why smile correction (see 6.4) is critical.
-
 ```
-What it looks like: Nose wrinkled, upper lip slightly raised,
-                    creating the "grimace" shape.
+AU4  = 0.495 × 5 = 2.48                       AU9  = 0.205 × 5 = 1.03
+AU6  = 0.235 × 5 = 1.18                       AU10 = 0.085 × 5 = 0.43
+AU7  = 0.395 × 5 = 1.98                       AU43 = 0.11 < 0.55  → 0.0
 
-MediaPipe blendshapes:
-  AU9  → noseSneerLeft, noseSneerRight
-  AU10 → mouthUpperUpLeft, mouthUpperUpRight
-
-Why max() again:
-  Same reasoning as AU6/7 — anatomically adjacent muscles,
-  dominant signal is more informative than sum.
+PSPI (raw)  = 2.48 + max(1.18, 1.98) + max(1.03, 0.43) + 0.0 = 5.49   (of 16)
+smile       = (0.03 + 0.02) / 2 = 0.025
+PSPI        = 5.49 × (1 − 0.025) = 5.35
 ```
 
----
+### 6.4 Smile correction — why it is essential
 
-**AU43 — Eye Closure (pain episode indicator)**
+A genuine smile activates AU6 and AU10, the same muscles PSPI counts as pain. Without a correction, a happy patient could score 6+ out of 16. So the raw PSPI is multiplied by `(1 − mouthSmile)`:
+```
+mouthSmile 0.0 (no smile)   → PSPI unchanged
+mouthSmile 0.5 (half smile) → PSPI halved
+mouthSmile 1.0 (full smile) → PSPI = 0
+```
+(Example: AU6 = 2.0, AU10 = 1.5. With a big smile of 0.85 the score is 3.5 × 0.15 = 0.53, correctly near zero. With no smile, 0.02, it is 3.5 × 0.98 = 3.43, a genuine grimace.) The test suite checks that a full smile cancels the score.
 
-During acute intense pain, the eyes often shut tight — not a normal blink, but a sustained or forced closure. This is distinct from normal blinking (which lasts 150–400ms) and represents a pain episode.
+### 6.5 Head-movement (agitation) component
+
+Restlessness is a validated agitation sign: a patient may hold their face still but cannot stop moving. The monitor tracks the **nose tip** (landmark 1, the most stable and always-visible point, unaffected by expressions):
+```
+Keep the nose-tip position of the last 30 frames.
+motion = average distance the nose moved between consecutive frames  (in 0–1 picture units)
+agitation = min(motion / 0.020, 1.0)        0.020 = 2% of the picture width per frame = maximum
+```
+If the face is lost, the nose-position history is **cleared**, so a head that reappears somewhere else is not read as one huge jump that pins agitation at maximum for 30 frames.
+
+### 6.6 Combining and smoothing
 
 ```
-What it looks like: Eyes shut firmly, not a quick blink.
-
-MediaPipe blendshape: eyeBlinkLeft, eyeBlinkRight
-Threshold: average eyeBlink > 0.55 → AU43 = 1.0 (eyes closing detected)
-           otherwise → AU43 = 0.0
-
-This is binary (0 or 1), not scaled, because forced eye closure
-is a qualitative event — it either happened or it did not.
+facial     = min(PSPI / 16, 1.0)
+frame_stress = 10 × (0.80 × facial + 0.20 × agitation)          80% face, 20% movement
+EMA        = 0.15 × frame_stress + 0.85 × EMA_previous           (the first frame seeds the EMA directly)
+Stress Score = min(EMA, 10), rounded to 1 decimal place
 ```
+The 80/20 split reflects that facial expression is the more specific, validated pain signal, while movement is a broader distress signal.
 
----
-
-### 6.3 Putting the Formula Together: A Worked Example
-
-**Scenario: A patient is experiencing moderate post-surgical pain**
-
-MediaPipe outputs these blendshape values:
+**EMA (exponential moving average)** smooths momentary noise: the current frame counts 15%, the history 85%. With α = 0.15:
 ```
-browDownLeft = 0.48,  browDownRight = 0.51
-cheekSquintLeft = 0.22, cheekSquintRight = 0.25
-eyeSquintLeft = 0.41, eyeSquintRight = 0.38
-noseSneerLeft = 0.19, noseSneerRight = 0.22
-mouthUpperUpLeft = 0.08, mouthUpperUpRight = 0.09
-eyeBlinkLeft = 0.12, eyeBlinkRight = 0.10
-mouthSmileLeft = 0.03, mouthSmileRight = 0.02
+Sustained pain, frame_stress jumps 2.0 → 8.0:           A one-frame twitch to 8.0, then back to 2.0:
+  frame 1  EMA 2.90                                       frame 1  EMA 2.90
+  frame 3  EMA 4.32                                       frame 2  EMA 2.77
+  frame 7  EMA ≈ 6.0  (≈ 0.23 s at 30 fps)                frame 3  EMA 2.65
+  frame 10 EMA ≈ 7.0                                      → barely moved, correctly ignored
 ```
+So a real sustained change registers within about a third of a second, but a flicker does not. EMA also weights recent frames more than a plain rolling mean would, which suits a "what is happening now" signal.
 
-**Step 1: Compute AUs**
-```
-AU4  = avg(browDownLeft, browDownRight) × 5
-     = avg(0.48, 0.51) × 5 = 0.495 × 5 = 2.48
-
-AU6  = avg(cheekSquintLeft, cheekSquintRight) × 5
-     = avg(0.22, 0.25) × 5 = 0.235 × 5 = 1.18
-
-AU7  = avg(eyeSquintLeft, eyeSquintRight) × 5
-     = avg(0.41, 0.38) × 5 = 0.395 × 5 = 1.98
-
-AU9  = avg(noseSneerLeft, noseSneerRight) × 5
-     = avg(0.19, 0.22) × 5 = 0.205 × 5 = 1.03
-
-AU10 = avg(mouthUpperUpLeft, mouthUpperUpRight) × 5
-     = avg(0.08, 0.09) × 5 = 0.085 × 5 = 0.43
-
-AU43 = avg(eyeBlinkLeft, eyeBlinkRight) = avg(0.12, 0.10) = 0.11
-     → 0.11 < 0.55 threshold → AU43 = 0.0  (eyes not closed)
-```
-
-**Step 2: Compute raw PSPI**
-```
-PSPI = AU4 + max(AU6, AU7) + max(AU9, AU10) + AU43
-     = 2.48 + max(1.18, 1.98) + max(1.03, 0.43) + 0.0
-     = 2.48 + 1.98 + 1.03 + 0.0
-     = 5.49  (out of 16)
-```
-
-**Step 3: Apply smile correction**
-```
-smile = avg(mouthSmileLeft, mouthSmileRight) = avg(0.03, 0.02) = 0.025
-corrected_PSPI = 5.49 × (1 − 0.025) = 5.49 × 0.975 = 5.35
-(almost no correction — patient is not smiling)
-```
-
----
-
-### 6.4 Smile Correction — Why It Is Critical
-
-A genuine Duchenne smile activates AU6 (cheek squinting) and AU10 (upper lip raising) — the exact same muscles that PSPI uses as pain indicators. Without correction, a patient who is genuinely happy or laughing could score a PSPI of 6+ out of 16 — a falsely elevated stress reading.
-
-The correction multiplies raw PSPI by `(1 − mouthSmile)`:
+### 6.7 Per-frame stress, step by step
 
 ```
-mouthSmile = 0.0  (no smile)   → PSPI unchanged
-mouthSmile = 0.5  (half smile) → PSPI × 0.5  (halved)
-mouthSmile = 1.0  (full smile) → PSPI × 0.0  (zeroed out)
-```
-
-**Example:**
-```
-Patient A: AU6 = 2.0, AU10 = 1.5, mouthSmile = 0.85
-  Meaning: cheeks squinting + upper lip raised because of a big smile
-  Raw PSPI (AU portion) = 2.0 + 1.5 = 3.5
-  With smile correction: 3.5 × (1 − 0.85) = 3.5 × 0.15 = 0.53
-  Result: near-zero stress score → correct (this person is happy, not in pain)
-
-Patient B: AU6 = 2.0, AU10 = 1.5, mouthSmile = 0.02
-  Meaning: same muscle activation but no smile → genuine pain grimace
-  Raw PSPI (AU portion) = 3.5
-  With smile correction: 3.5 × (1 − 0.02) = 3.5 × 0.98 = 3.43
-  Result: meaningful stress score → correct (this person is in pain)
-```
-
----
-
-### 6.5 Head Movement Agitation Component
-
-Facial expression is not the only indicator of distress. Physical restlessness — constant head movement, repositioning — is a validated behavioural indicator of agitation in ICU patients. A patient who is physically agitated may suppress their facial expression but cannot stop moving.
-
-The agitation component is computed by tracking the movement of the nose tip (landmark 1) across frames:
-
-```
-For each consecutive pair of frames:
-  displacement = Euclidean distance between nose tip positions
-                 in normalised coordinates [0, 1]
-
-Motion energy = mean displacement over the last 30 frames
-
-Saturation level: 0.020 (2% of the frame width per frame)
-  → Any motion above 0.020 per frame is considered maximum agitation
-```
-
-**Why the nose tip specifically?**
-The nose tip is the most stable and accurately tracked facial landmark — it is in the centre of the face, always visible unless completely side-on, and is not affected by expression changes (it does not move like eyebrows or lips do during expressions).
-
-**Final stress score combination:**
-```
-frame_stress = 10 × (0.80 × PSPI/16 + 0.20 × min(motion/0.020, 1.0))
-
-80% of the signal comes from facial pain expression (PSPI)
-20% comes from physical agitation (head movement)
-```
-
-The 80/20 weighting was chosen because facial expression is a more specific pain indicator (validated by PSPI research), while motion is a broader distress signal (includes discomfort from positioning, restlessness, etc.).
-
----
-
-### 6.6 EMA Smoothing — Why It Is Used and How It Works
-
-Raw per-frame stress values jump around. A single frame where the patient tightens their face for 33ms would produce a spike, then instantly return to zero. This is not clinically meaningful — it is noise.
-
-**Exponential Moving Average (EMA)** smooths the signal:
-
-```
-EMA_new = 0.15 × frame_stress + 0.85 × EMA_prev
-
-α = 0.15 (smoothing factor)
-```
-
-This formula weights the current frame's stress at 15% and the running history at 85%. The effect is a smooth signal that responds to real sustained changes but does not spike from momentary noise.
-
-**Why α = 0.15 specifically?**
-
-```
-If a patient suddenly develops genuine acute pain (sustained activation):
-  Their frame_stress jumps from 2.0 to 8.0
-
-  Frame 1:  EMA = 0.15 × 8.0 + 0.85 × 2.0 = 1.20 + 1.70 = 2.90
-  Frame 2:  EMA = 0.15 × 8.0 + 0.85 × 2.90 = 1.20 + 2.47 = 3.67
-  Frame 3:  EMA = 0.15 × 8.0 + 0.85 × 3.67 = 1.20 + 3.12 = 4.32
-  Frame 7:  EMA ≈ 6.0  (alert zone reached in ~0.23 seconds at 30fps)
-  Frame 10: EMA ≈ 7.0  (fully responsive in ~0.33 seconds)
-
-This is fast enough to detect a genuine pain episode almost instantly.
-```
-
-```
-If a patient twitches their face for a single frame:
-  frame_stress spikes to 8.0 for 1 frame, then returns to 2.0
-
-  Frame 1 (spike):  EMA = 0.15 × 8.0 + 0.85 × 2.0 = 2.90
-  Frame 2 (normal): EMA = 0.15 × 2.0 + 0.85 × 2.90 = 2.77
-  Frame 3 (normal): EMA = 0.15 × 2.0 + 0.85 × 2.77 = 2.65
-
-The spike barely moved the score and decayed within 3 frames.
-Not clinically significant — correctly ignored.
-```
-
-**Advantage over a simple rolling mean:**
-A 30-frame rolling mean treats a stress event 29 frames ago equally to the current frame. EMA weights recent frames more heavily — newer information about the patient's state counts more than older information. This makes the score more clinically relevant: what is happening *now* matters more than what happened 30 frames ago.
-
----
-
-### 6.7 Complete Stress Score Computation — Step by Step
-
-```
-Every frame:
-
-1. Feed frame to MediaPipe FaceLandmarker
-   → Get 478 landmarks (3D positions)
-   → Get 52 blendshapes (0.0–1.0 each)
-
-2. Extract AU blendshapes and scale to 0–5:
-   au4  = avg(browDownLeft, browDownRight) × 5
-   au6  = avg(cheekSquintLeft, cheekSquintRight) × 5
-   au7  = avg(eyeSquintLeft, eyeSquintRight) × 5
-   au9  = avg(noseSneerLeft, noseSneerRight) × 5
-   au10 = avg(mouthUpperUpLeft, mouthUpperUpRight) × 5
-   au43 = 1.0 if avg(eyeBlinkLeft, eyeBlinkRight) > 0.55 else 0.0
-
-3. Get smile correction factor:
-   smile = avg(mouthSmileLeft, mouthSmileRight)
-
-4. Compute smile-corrected PSPI:
-   PSPI = (au4 + max(au6, au7) + max(au9, au10) + au43) × (1 − smile)
-   Range: 0 to 16
-
-5. Compute head movement agitation:
-   Track nose tip (landmark 1) position
-   motion = mean displacement of nose over last 30 frames
-
-6. Combine into frame-level stress:
-   frame_stress = 10 × (0.80 × PSPI/16 + 0.20 × min(motion/0.020, 1.0))
-   Range: 0 to 10
-
-7. Apply EMA smoothing:
-   EMA = 0.15 × frame_stress + 0.85 × EMA_prev
-
-8. Final output:
-   Stress Score = round(min(EMA, 10.0), 1)
+Every new camera frame in which a face is found:
+ 1. Read the 52 blendshapes.
+ 2. Compute AU4, AU6, AU7, AU9, AU10, AU43 and the smile value.
+ 3. PSPI = (AU4 + max(AU6,AU7) + max(AU9,AU10) + AU43) × (1 − smile)      range 0–16
+ 4. motion = mean nose-tip movement over the last 30 frames
+ 5. frame_stress = 10 × (0.80 × PSPI/16 + 0.20 × min(motion/0.020, 1))     range 0–10
+ 6. EMA smoothing (α = 0.15), cap at 10, round to 1 decimal
+ 7. Update the on-screen number, band, colour and the three component bars
+ 8. Session peak: the highest rounded score since monitoring began, counted
+    only after the first 90 face frames (so start-up noise cannot set the peak)
 ```
 
 ---
 
 ## 7. The Current GCS Method: Rolling Window with Personal Calibration
 
-### 7.1 Why a Window, Not a Snapshot
+### 7.1 Why a window, not a snapshot
 
-The GCS clinical definition describes sustained behavioural patterns observed over time:
+Clinical GCS describes sustained behaviour: E4 means the patient's *predominant* behaviour is to keep their eyes open unprompted. One video frame (33 ms) cannot show that, so the monitor watches **30 seconds** and judges the **distribution** of eye states.
 
-- **E4 (Spontaneous)** does not mean "eyes are open at this instant." It means the patient's **predominant, spontaneous behaviour** is to keep their eyes open without any prompting.
-- **E3 (To Voice)** means the patient **tends to open their eyes** when spoken to — a pattern, not a single event.
-- **E2 (To Pain)** means there is **some observable eye-opening response**, even if brief.
+### 7.2 Personal calibration
 
-A single video frame captures a millisecond in time. It cannot capture any of these patterns. The solution is to observe eye behaviour over **30 seconds** — matching the clinical observation period — and assess the distribution of eye states across that window.
-
-### 7.2 Personal Calibration — Adapting to Each Patient
-
-Eye shape varies enormously between individuals. This is not a small difference:
+Eye shape varies a lot: an alert person with narrow eyes may have a resting open-eye EAR of 0.19, an alert wide-eyed person 0.42. With a fixed open threshold of 0.22 the first would be scored E3 while fully awake. So the monitor first learns **this** patient's open-eye EAR:
 
 ```
-Person A (naturally narrow eyes, fully alert and awake):
-  Normal open-eye EAR ≈ 0.19
-  
-Person B (naturally wide eyes, same alertness level):
-  Normal open-eye EAR ≈ 0.42
+During the first frames of video:
+  For each frame, compute EAR (average of both eyes).
+  Keep the frame's EAR only if the eyeBlink blendshape is below 0.30 (eyes clearly open).
+
+When 90 such frames are collected (about 3 seconds at 30 fps):
+  baseline = the median of those EAR values       (median, so a stray blink cannot skew it)
+  Valid only if 0.15 ≤ baseline ≤ 0.50            (outside = tracking error)
+  open_threshold    = baseline × 0.70
+  partial_threshold = baseline × 0.40
+  If invalid, keep the defaults 0.22 and 0.12.
 ```
+Example: baseline 0.19 → open ≥ 0.133, partial ≥ 0.076. Baseline 0.42 → open ≥ 0.294, partial ≥ 0.168. Both patients are now judged against their own eyes. The blendshape check makes sure the baseline really is an open-eye state and not a half-closed wide eye.
 
-If we use a fixed threshold (e.g., open = EAR ≥ 0.22), then:
-- Person A: 0.19 < 0.22 → E3 (misclassified as not fully open, despite being awake)
-- Person B: 0.42 ≥ 0.22 → E4 (correctly classified)
+**Fallback for patients whose eyes stay closed (new).** A patient who really is E1 or E2 never produces 90 clearly-open frames, so calibration would never finish and the monitor could never score the very patients who matter most. After **300 face frames (about 10 seconds)** calibration ends anyway: it uses the personal baseline if enough open frames were found, otherwise the **default** thresholds 0.22 / 0.12. The screen then shows "(default)" instead of "(personal)".
 
-Person A would consistently be underscored. Personal calibration fixes this by learning each patient's own anatomy before starting assessment.
+When calibration finishes, the eye-state history logged so far (which used default thresholds) is **discarded** and the 30-second window starts fresh with the final thresholds.
 
-**How calibration works:**
+### 7.3 Per-frame eye state
 
+Each frame gets one of three states, with the blendshape given priority:
 ```
-Phase: First ~3 seconds of face video
-
-For each frame:
-  1. Compute EAR (Eye Aspect Ratio from 6 eye landmarks per eye)
-  2. Check eyeBlink blendshape: if eyeBlink < 0.30 → eyes are clearly open
-     (blendshape provides a second opinion — neural network confirms eyes are open)
-  3. If confirmed open: record this frame's EAR value
-
-After collecting 90 such clearly-open frames:
-  4. baseline_EAR = median of all collected EAR values
-     (median used, not mean, because it is robust to the occasional blink)
-  
-  5. Validate the baseline is within physiological range:
-     Must be between 0.15 and 0.50
-     (outside this range → calibration failed → use population defaults)
-  
-  6. Set personalised thresholds:
-     open_threshold    = baseline_EAR × 0.70
-     partial_threshold = baseline_EAR × 0.40
+1. If average eyeBlink > 0.55                 → "closed"    (the blendshape overrides the EAR)
+2. else if smoothed EAR ≥ open_threshold      → "open"
+3. else if smoothed EAR ≥ partial_threshold   → "partial"    (drooping, drowsy)
+4. else                                       → "closed"
 ```
+The EAR used here is a **20-frame rolling mean** (about 0.67 s), to smooth frame-to-frame noise.
 
-**What the multipliers mean:**
+**Why the blendshape overrides the EAR:** in a fast blink the landmarks are imprecisely tracked, but the blendshape network recognises the blink reliably. Example with open ≥ 0.175, partial ≥ 0.100: a mid-blink frame with EAR 0.12 and eyeBlink 0.64 reads "closed" (the EAR alone would wrongly say "partial"); a drowsy frame with EAR 0.14 and eyeBlink 0.30 correctly reads "partial".
 
+### 7.4 The 30-second window and the score
+
+Every frame's state is added to a window that keeps the last **30 seconds** (older entries are dropped by timestamp). The score comes from three statistics:
 ```
-Person A: baseline_EAR = 0.19
-  open_threshold    = 0.19 × 0.70 = 0.133  (eyes at 70% normal aperture → "open")
-  partial_threshold = 0.19 × 0.40 = 0.076  (eyes at 40% normal aperture → "partial/drowsy")
+open_fraction     = frames "open" / all frames
+any_open_fraction = frames "open" or "partial" / all frames
+longest_run       = longest unbroken stretch of non-"closed" frames
 
-Person B: baseline_EAR = 0.42
-  open_threshold    = 0.42 × 0.70 = 0.294  (eyes at 70% normal aperture → "open")
-  partial_threshold = 0.42 × 0.40 = 0.168  (eyes at 40% normal aperture → "partial")
-
-Now if both people close their eyes to 70% of their normal aperture,
-both correctly score as "open" — the threshold adapted to their anatomy.
+  open_fraction     ≥ 0.70                          → E4  Spontaneous
+  else any_open_fraction ≥ 0.30                     → E3  To Voice
+  else longest_run × seconds-per-frame ≥ 0.10 s     → E2  To Pain
+  else                                              → E1  No Response
 ```
+Seconds-per-frame is measured from the real timestamps (window length ÷ number of frames), so it adapts to the camera's actual speed. An empty window returns E4 "Spontaneous" until data arrives.
 
-**Why the eyeBlink blendshape is used during calibration:**
+**Why 70% for E4.** A healthy awake person blinks about 12–15 times a minute, each blink lasting 150–400 ms (5–12 frames at 30 fps). Over 30 s that is about 900 frames, with about 150 closed, so about 83% are open, comfortably above 70%. A 90% cutoff would mark frequent blinkers E3; 50% would let drowsy, half-closed patients score E4.
 
-The EAR alone cannot reliably distinguish "Person A with naturally narrow eyes that are wide open" from "Person B with wide eyes that are half-closed." The eyeBlink blendshape provides a neural network's assessment: "is this eye actually closing?" By only collecting calibration frames where the blendshape says the eye is clearly open, we ensure the baseline truly represents this person's open-eye state.
+**Why 0.10 s for E2.** A real flicker lasts at least 3–4 frames (about 100–130 ms). One noisy frame (33 ms) must not count, so a single-frame twitch is **not** a flicker (a test checks this).
 
----
+### 7.5 The provisional flag
 
-### 7.3 Per-Frame Eye State Classification
+For the first **10 seconds** of observation the window has too little data, so the score is shown as **provisional**. After 10 seconds the qualifier disappears. Ten seconds is about 300 frames, enough for stable fractions even if half are blinks.
 
-Once thresholds are calibrated, every frame is classified into one of three states using a dual-check:
+### 7.6 When the patient leaves the picture
 
-```
-1. Check blendshape first (highest priority):
-   if avg(eyeBlinkLeft, eyeBlinkRight) > 0.55:
-     state = "closed"   ← blendshape overrides EAR completely
-
-2. If blendshape does not indicate closure, use EAR:
-   elif EAR ≥ open_threshold:
-     state = "open"
-   elif EAR ≥ partial_threshold:
-     state = "partial"   (drowsy, drooping — eyes present but not fully open)
-   else:
-     state = "closed"
-```
-
-**Why blendshape overrides EAR:**
-
-During a blink, the EAR drops very rapidly (from ~0.30 to near 0 in 5–10 frames). However, EAR is computed from 6 landmark positions that may be imprecisely tracked during fast motion. The blendshape, being a neural network trained on blink motion, is more reliable for detecting the blink event itself. If the network says "eye is closing," that takes precedence over what the EAR geometry says.
-
-**Concrete example:**
-
-```
-Patient with calibrated thresholds: open = 0.175, partial = 0.100
-
-Frame A: EAR = 0.22, eyeBlink = 0.15
-  Blendshape: 0.15 < 0.55 → not forcing override
-  EAR: 0.22 ≥ 0.175 → state = "open" ✓
-
-Frame B (mid-blink): EAR = 0.12, eyeBlink = 0.64
-  Blendshape: 0.64 > 0.55 → state = "closed" (blink event)
-  EAR would say: 0.12 ≥ 0.100 → "partial" (wrong — it's a blink)
-  Blendshape override prevents this misclassification ✓
-
-Frame C (drowsy patient): EAR = 0.14, eyeBlink = 0.30
-  Blendshape: 0.30 < 0.55 → no override
-  EAR: 0.14 ≥ 0.100 but < 0.175 → state = "partial" ✓
-  (correctly identifies drooping but not closed eyes)
-```
-
----
-
-### 7.4 The 30-Second Rolling Window
-
-Every frame's eye state is added to a sliding 30-second window. When enough data has accumulated, the GCS score is computed from the distribution of states in that window:
-
-```
-Window statistics computed:
-  open_fraction     = count("open") / total_frames
-  any_open_fraction = count("open" or "partial") / total_frames
-  longest_run       = longest consecutive sequence of non-"closed" frames
-
-GCS score determination:
-
-  if open_fraction ≥ 0.70:
-    → E4 (Spontaneous)
-    Patient's eyes are open for at least 70% of the observation window
-    
-  elif any_open_fraction ≥ 0.30:
-    → E3 (To Voice)
-    Patient opens their eyes (even partially) for at least 30% of the window
-    
-  elif longest_run × frame_duration ≥ 0.10 seconds:
-    → E2 (To Pain)
-    There was at least one brief but genuine sustained opening (≥ 100ms, ≥ 3 frames)
-    
-  else:
-    → E1 (No Response)
-    Eyes remained essentially closed throughout the entire window
-```
-
-**Explaining the 70% threshold for E4:**
-
-A healthy, fully awake person blinks approximately 12–15 times per minute. Each blink takes about 150–400ms. At 30 frames per second, a blink takes roughly 5–12 frames.
-
-```
-Calculation for a healthy awake person:
-  30 seconds × 30fps = 900 total frames
-  15 blinks × 10 frames per blink = 150 frames with closed eyes
-  Open frames = 900 − 150 = 750
-  Open fraction = 750/900 = 83.3%
-
-83.3% comfortably exceeds the 70% threshold.
-→ Normal blinking does not prevent an awake patient from scoring E4. ✓
-```
-
-If the threshold were 90%, some awake patients who blink frequently would score E3. If it were 50%, drowsy patients with eyes half-closed would score E4. The 70% value represents the optimal point that separates truly alert patients from drowsy ones while allowing for normal blinking.
-
-**Explaining the 0.10-second (100ms) minimum for E2:**
-
-Clinical GCS E2 requires the patient to open their eyes in response to pain — even briefly. However, a single video frame at 30fps represents only 33ms. A genuine flicker (a patient partially opening their eyes in response to stimulus) lasts at least 3–4 consecutive frames (100–130ms).
-
-Without the 100ms minimum, a single noisy frame where the eye landmark positions momentarily fluctuated upward could be counted as an E2 flicker — a false positive from noise. The 100ms threshold ensures only genuine, sustained openings count.
-
----
-
-### 7.5 Provisional Score Flag
-
-For the first 10 seconds, there is insufficient behavioural data to make a reliable GCS assessment. The score is marked as **provisional**:
-
-```
-If observed_seconds < 10.0:
-  Display: "E4 (provisional — < 10s data)"
-
-After 10 seconds:
-  Display: "E4"  (no qualifier — full confidence in the assessment)
-```
-
-**Why 10 seconds?**
-
-Ten seconds at 30fps provides 300 frames. Even if half are blinks or transitions, 150 frames of data is sufficient to reliably compute the open_fraction and any_open_fraction statistics. Before 10 seconds, the window is too short to distinguish a patient who is truly awake from one who just happened to have their eyes open in the first few frames.
+If **no face is seen for 3 seconds**, the monitor starts a **fresh observation**: it empties the 30-second window and eye-smoothing queue, resets the stress smoothing, marks the score provisional again, and tells the dashboard to **stop using the last reading**. Otherwise the gap would count as "observed time", and the E2 test (run length × seconds-per-frame) could misfire on it.
 
 ---
 
 ## 8. Why These Are the Best Methods Available
 
-### 8.1 Stress Score: PSPI vs. Geometric EAR/Brow
+### 8.1 Stress: PSPI versus the geometric method
 
-| Criterion | Geometric V1 | PSPI V2 (Current) |
+| Criterion | Geometric V1 | PSPI V2 (current) |
 |---|---|---|
-| **Clinical validation** | None — self-derived formula | Peer-reviewed publication (Prkachin & Solomon, 2008) |
-| **Muscle groups covered** | 2 (brow gap, eye width) | 6 (brow furrow, cheek squint, lid tighten, nose wrinkle, lip raise, eye closure) |
-| **Person independence** | No — fails if natural EAR ≠ hardcoded baseline | Yes — blendshapes are trained across diverse faces |
-| **Smile false-positive** | Yes — smiling = stress | No — smile multiplier explicitly cancels this |
-| **Agitation component** | No — expression only | Yes — 20% from head movement |
-| **Response speed** | ~1.5 seconds (45-frame rolling mean) | ~0.2 seconds (EMA α=0.15) |
-| **Works from frame 1** | No — 5-second calibration required, score stays 0.0 | Yes — PSPI is absolute, no calibration needed |
-| **Fatal bug risk** | Yes — hardcoded baseline caused permanent 0.0 | No — blendshapes are relative to muscle activation, not anatomy |
+| Clinical validation | None | Peer-reviewed (Prkachin & Solomon, 2008) |
+| Muscle groups | 2 | 6 |
+| Person independence | No (fails if natural EAR ≠ hard-coded baseline) | Yes |
+| Smile false positive | Yes | No (smile multiplier) |
+| Agitation (movement) | No | Yes (20%) |
+| Response speed | ~1.5 s | ~0.2–0.3 s |
+| Works from frame 1 | No (needs 5 s calibration, score stays 0.0) | Yes (PSPI needs no baseline) |
+| Fatal-bug risk | Yes (permanent 0.0) | No |
 
-### 8.2 GCS Eye Score: Rolling Window vs. Snapshot
+### 8.2 GCS: rolling window versus snapshot
 
-| Criterion | Snapshot V1 | Rolling Window V2 (Current) |
+| Criterion | Snapshot V1 | Rolling window V2 (current) |
 |---|---|---|
-| **Matches GCS clinical definition** | No — GCS is a behavioural pattern, not a pixel measurement | Yes — 30-second window assesses sustained behaviour |
-| **Handles individual anatomy** | No — fixed 0.22 threshold misclassifies narrow-eyed patients | Yes — personal calibration adapts to each patient |
-| **Blink robustness** | No — one blink in the assessed frame → E1 | Yes — single blinks are a tiny fraction of 900 frames |
-| **Confidence indicator** | None — claimed E4 from first frame | Yes — provisional flag for first 10 seconds |
-| **Blendshape cross-check** | No — EAR only | Yes — blendshape overrides EAR during blink detection |
-| **Distinguishes partial from closed** | No — binary open/closed | Yes — three states: open, partial, closed |
-| **Scientific basis** | Arbitrary threshold | GCS clinical criteria (Teasdale & Jennett, 1974) |
+| Matches GCS definition | No | Yes (sustained behaviour) |
+| Individual anatomy | No (fixed 0.22) | Yes (personal calibration) |
+| Blink robustness | No (one blink → E1) | Yes |
+| Confidence indicator | None | Provisional for 10 s |
+| Blendshape cross-check | No | Yes |
+| Partial vs closed | No | Three states |
+| Patients who cannot open their eyes | Not handled | Handled (10-second calibration fallback) |
 
-### 8.3 Why Blendshapes Beat Raw Geometry for Both Methods
-
-**Geometric distances fail because of three unavoidable problems:**
-
-1. **Anatomical variation:** A brow that is naturally low on the face produces smaller brow-to-eye distances even when not furrowed. A person with naturally small eyes has low EAR even when fully open. Fixed thresholds cannot account for this.
-
-2. **Baseline dependency:** Geometric approaches need a personal baseline to detect changes. If that baseline is wrong (wrong default, poor calibration conditions), the entire system fails silently — it produces scores that look plausible but are based on wrong reference points.
-
-3. **Lighting sensitivity:** Landmarks are detected from edge and texture patterns in the image. Changing lighting shifts where the model thinks the landmark is, even if the face has not moved.
-
-**Blendshapes solve all three:**
-
-1. **Trained across diverse faces:** The neural network has seen thousands of faces, narrow and wide, brows high and low. It has learned to output "brow is 70% furrowed" regardless of where the brow is in resting position — it assesses the muscle activation relative to that person's neutral state.
-
-2. **No baseline required for stress:** PSPI is an absolute metric of muscle activation level. It does not need to know what your "normal" face looks like. The formula evaluates whether specific muscles are currently contracting.
-
-3. **Trained across lighting conditions:** The model training included diverse lighting, and the blendshape output is more robust to illumination changes than raw distance computations.
+### 8.3 Why blendshapes beat raw geometry
+Geometry fails on anatomical variation, on baseline dependency (a wrong default fails silently, as the stress V1 bug showed) and on lighting. Blendshapes were trained across many faces and lighting conditions, and PSPI needs no personal baseline at all.
 
 ---
 
-## 9. Complete Technical Pipeline
+## 9. How It Runs in the Browser — Complete Pipeline
 
+### Where the code lives
+
+| File | What it does |
+|---|---|
+| `frontend/src/components/cv/CVMonitorModal.jsx` (999 lines) | The whole monitor: model loading, camera, per-frame loop, scoring functions, the pop-up screen |
+| `frontend/src/components/cv/CVMonitorFAB.jsx` | The round floating button that opens it |
+| `frontend/src/pages/MonitorDashboard.jsx` | Holds the on/off state and the live values; passes them to the prediction loop |
+| `frontend/public/mediapipe/wasm/` | The six MediaPipe WebAssembly files |
+| `frontend/package.json` | Dependency `@mediapipe/tasks-vision` |
+
+The scoring functions `calcEAR`, `pspiFromBlendshapes`, `updateStress`, `eyeState`, `gcsFromWindow` and `stressLabel` are **exported** so they can be unit-tested.
+
+### Opening and starting up
+The monitor starts only when the pop-up opens (the purple eye button on the right edge of the monitor page). Startup runs in three stages, each shown on screen:
+
+| Stage | What happens | Screen message |
+|---|---|---|
+| `loading-model` | Load MediaPipe; download the ~12 MB face model (first launch only) | "Loading AI Model — Downloading MediaPipe FaceLandmarker (~12 MB) — first launch only" |
+| `loading-camera` | Ask the browser for the camera (ideal 1280×720, front-facing) | "Starting Camera — Please allow camera access when prompted" |
+| `running` | The detection loop runs | The live display |
+
+Settings: one face, video mode, GPU requested, minimum face-detection, face-presence and tracking confidence 0.50 each.
+
+If something fails, the screen shows a message and a **Retry** button: *"Camera permission denied. Please allow camera access in your browser."* · *"No camera found. Please connect a webcam and try again."* · *"Could not download face detection model — internet connection required for first use."* · or the error text itself.
+
+### The per-frame loop
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│  WEBCAM INPUT (1280×720, ~30fps)                                       │
-│  Each frame: BGR image array                                           │
-└──────────────────────────────┬─────────────────────────────────────────┘
-                               │ raw frame
-                               ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│  MEDIAPIPE FACELM DETECTION                                            │
-│  Input:  raw frame (BGR → RGB converted)                               │
-│  Output: 478 normalised 3D landmarks (x, y, z ∈ [0, 1])              │
-│          52 blendshape scores (each ∈ [0.0, 1.0])                     │
-│  If no face detected: skip frame, keep previous EMA value             │
-└───────────────┬────────────────────────────┬───────────────────────────┘
-                │ landmarks                  │ blendshapes
-                ▼                            ▼
-┌───────────────────────┐    ┌──────────────────────────────────────────┐
-│  EAR COMPUTATION      │    │  PSPI COMPUTATION                        │
-│                       │    │                                          │
-│  For each eye:        │    │  au4  = avg(browDown L+R) × 5            │
-│  6 landmarks (p0–p5)  │    │  au6  = avg(cheekSquint L+R) × 5        │
-│  EAR = (||p1–p5||     │    │  au7  = avg(eyeSquint L+R) × 5          │
-│       + ||p2–p4||) /  │    │  au9  = avg(noseSneer L+R) × 5          │
-│       (2×||p0–p3||)   │    │  au10 = avg(mouthUpperUp L+R) × 5       │
-│  Final: avg(L, R)     │    │  au43 = eyeBlink avg > 0.55 ? 1 : 0     │
-│  Smoothed: 20-frame   │    │                                          │
-│  rolling mean         │    │  smile = avg(mouthSmile L+R)            │
-│                       │    │                                          │
-└──────────┬────────────┘    │  PSPI = (au4 + max(au6,au7)             │
-           │                 │        + max(au9,au10) + au43)          │
-           │                 │        × (1 − smile)                    │
-           │                 └────────────────────┬─────────────────────┘
-           │                                      │ PSPI (0–16)
-           │                                      ▼
-           │                 ┌──────────────────────────────────────────┐
-           │                 │  HEAD MOVEMENT (AGITATION)               │
-           │                 │  Track nose tip (landmark 1)            │
-           │                 │  motion = mean ||nose[t]−nose[t−1]||    │
-           │                 │          over last 30 frames            │
-           │                 └────────────────────┬─────────────────────┘
-           │                                      │ motion energy
-           │                                      ▼
-           │                 ┌──────────────────────────────────────────┐
-           │                 │  STRESS SCORE (EMA)                      │
-           │                 │  frame_s = 10×(0.80×PSPI/16             │
-           │                 │             + 0.20×min(motion/0.02,1))  │
-           │                 │  EMA = 0.15×frame_s + 0.85×EMA_prev    │
-           │                 │  Output: Stress Score 0.0–10.0          │
-           │                 └──────────────────────────────────────────┘
-           │
-           ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│  GCS PERSONAL CALIBRATION (first ~3 seconds)                          │
-│                                                                        │
-│  For each frame where eyeBlink_blendshape < 0.30:                    │
-│    Record current EAR value                                           │
-│                                                                        │
-│  After 90 confirmed-open frames (~3 seconds):                         │
-│    baseline_EAR = median(recorded values)                             │
-│    Validate: 0.15 ≤ baseline_EAR ≤ 0.50                              │
-│    open_threshold    = baseline × 0.70                                │
-│    partial_threshold = baseline × 0.40                                │
-│    (If validation fails: use defaults 0.22 / 0.12)                    │
-└────────────────────────────────┬───────────────────────────────────────┘
-                                 │ personalised thresholds
-                                 ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│  PER-FRAME EYE STATE CLASSIFICATION                                   │
-│                                                                        │
-│  Priority 1 — blendshape override:                                    │
-│    if eyeBlink > 0.55 → state = "closed"                              │
-│                                                                        │
-│  Priority 2 — personalised EAR thresholds:                            │
-│    elif EAR ≥ open_threshold    → state = "open"                      │
-│    elif EAR ≥ partial_threshold → state = "partial"                   │
-│    else                         → state = "closed"                    │
-└────────────────────────────────┬───────────────────────────────────────┘
-                                 │ frame eye state
-                                 ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│  30-SECOND ROLLING WINDOW ASSESSMENT                                  │
-│                                                                        │
-│  Statistics computed:                                                  │
-│    open_frac     = count("open")   / total_frames                    │
-│    any_frac      = count(≠"closed") / total_frames                   │
-│    longest_run   = longest consecutive non-closed sequence            │
-│                                                                        │
-│  GCS Eye Score:                                                       │
-│    open_frac   ≥ 0.70       → E4 Spontaneous                         │
-│    any_frac    ≥ 0.30       → E3 To Voice                            │
-│    longest_run × frame_s ≥ 0.10s → E2 To Pain                        │
-│    otherwise               → E1 No Response                          │
-│                                                                        │
-│  Provisional flag:                                                     │
-│    if observed_seconds < 10.0 → mark score as provisional            │
-└────────────────────────────────────────────────────────────────────────┘
-                                 │
-                                 ▼
-                    Stress Score + GCS Eye Score
-                    → fed into 108-feature SOFA vector
+Repeat for every NEW camera frame (the loop runs at the screen's refresh rate, 60–120 Hz,
+but the camera gives ~30 frames/s, so a repeated frame is skipped: each real frame
+counts once towards calibration and the 30-second window):
+
+  1. Run FaceLandmarker on the frame (timestamps strictly increasing; a failed frame is
+     skipped, never fatal).
+  2. No face?  Clear the nose history. If no face for > 3 s: reset the observation
+     (Section 7.6) and tell the dashboard to drop the last reading.
+  3. Face found:
+       a. Read blendshapes → blink value (average of both eyes).
+       b. EAR for each eye → average → push into the 20-frame queue → smoothed EAR.
+       c. If calibration is not done: collect open-eye EARs; finish after 90 samples or
+          300 face frames (Section 7.2).
+       d. Head movement → agitation.
+       e. PSPI → stress (EMA) → rounded score, band, colour, session peak, 3 component bars.
+       f. Eye state → add to 30-s window → GCS score and provisional flag.
+       g. Send a reading to the dashboard (Section 11).
+       h. Draw the eye outlines and key points on the video.
 ```
 
----
+### The calibration screen
+Until calibration finishes, the monitor shows a progress bar ("Calibrating personal eye baseline — keep eyes open and expression neutral") and no scores. Progress is the **slower** of two things: the first 90 face frames, and the eye baseline (or its 300-frame fallback). Two reasons: blinks do not count towards the baseline, and a patient with closed eyes needs the fallback.
 
-## 10. Output Scores and Dashboard Display
+### Closing
+Closing the pop-up (Esc, the close button or the backdrop) stops the camera, closes the model, and sends `null` to the dashboard so predictions return to the recorded values. Switching patient also closes the monitor and drops the live values: the readings belong to whoever is in front of the camera.
 
-### Stress Score Display
-
-| Display | What it means | When to act clinically |
-|---|---|---|
-| `0.0–3.4` — **LOW** (green) | Patient appears calm, no visible distress | Routine monitoring |
-| `3.5–6.4` — **MODERATE** (amber) | Noticeable discomfort or agitation | Review analgesia and comfort measures |
-| `6.5–10.0` — **HIGH** (red) | Severe visible distress | Immediate clinical review for pain, dyspnoea, delirium |
-| `Session peak: X.X` | Highest score recorded since monitoring began | Useful even if the patient has calmed — peak may have clinical significance |
-
-**PSPI component bars also displayed:**
-- **Brow Furrow bar:** How active AU4 is (the pain frown) — the most reliable single pain indicator
-- **Eye Tension bar:** How active max(AU6, AU7) is (orbital squinting)
-- **Nose/Lip bar:** How active max(AU9, AU10) is (pain grimace around nose and lip)
-
-A HIGH stress score driven entirely by the Brow Furrow bar is more likely to represent genuine pain than one driven only by the Eye Tension bar (which can be caused by bright lighting).
-
-### GCS Eye Score Display
-
-| Display | Clinical Interpretation | What it suggests about consciousness |
-|---|---|---|
-| `E4 — Spontaneous` | Eyes open naturally, without prompting | Brainstem arousal intact — patient is alert |
-| `E3 — To Voice` | Eyes open intermittently or when the patient is spoken to | Partial arousal — patient needs stimulation to maintain wakefulness |
-| `E2 — To Pain` | Only brief eye flickers observed across 30-second window | Minimal arousal — patient is deeply sedated or significantly impaired |
-| `E1 — No Response` | Eyes remain continuously closed throughout window | No observable eye opening — deep coma state or heavy sedation |
-| `(provisional — < 10s)` | Score based on less than 10 seconds of data — may change | Interpret with caution until 10s elapsed |
-| `[calibrating...]` in title | Personal eye baseline not yet established | Thresholds are population defaults until calibration completes |
-| `(personal)` after thresholds | Thresholds adapted to this patient's anatomy | Most accurate state |
-| `(default)` after thresholds | Calibration incomplete or failed — using population averages | Accuracy reduced for patients with non-average eye anatomy |
+### Privacy
+All video analysis happens **in the browser on the user's own device**. No video or image is sent to any server. Only two small numbers (stress and GCS eye) go to the backend, as part of the next prediction. The only network traffic specific to the monitor is the one-time model download from Google.
 
 ---
 
-## 11. System Constants Explained
+## 10. What the Screen Shows
 
-Every constant in the system was chosen for a specific clinical or engineering reason. This section explains each one.
-
-| Constant | Value | Why This Value |
+### Stress Score card (labelled "Stress Score (PSPI)")
+| Display | Meaning | Suggested action |
 |---|---|---|
-| `_SMOOTH_WIN` | 20 frames | EAR smoothing window for GCS computation. At 30fps, 20 frames = 0.67 seconds — long enough to average out frame-to-frame noise, short enough to not lag behind genuine state changes. |
-| `_EMA_ALPHA` | 0.15 | Stress EMA smoothing factor. α = 0.15 gives ~0.2 seconds rise time (fast enough to detect acute pain) while not spiking from momentary expressions. Lower α = slower response; higher α = more noise. |
-| `_PSPI_MAX` | 16.0 | The theoretical maximum raw PSPI score if all Action Units activate simultaneously (5+5+5+1=16). Used as the denominator in PSPI/16 normalisation. |
-| `_BLINK_CLOSED` | 0.55 | eyeBlink blendshape threshold above which we classify the eye as closing/closed. 0.55 was chosen because genuine blinks produce blendshape values of 0.7–1.0, while partial squints stay below 0.5. The 0.55 threshold cleanly separates these ranges. |
-| `_MOTION_SAT` | 0.020 | The agitation signal saturates (reaches maximum = 1.0) at 2% of frame width per frame displacement. At 30fps and 1280px width, this equals 0.02 × 1280 = 25.6 pixels per frame = approximately 768 pixels/second of nose movement — vigorous head restlessness. |
-| `_FACIAL_W` | 0.80 | 80% of stress score from facial PSPI, 20% from motion. Facial expression is the primary validated pain indicator. Motion adds broader agitation signal. |
-| `_GCS_WIN_S` | 30.0 seconds | Duration of the GCS rolling window. Matches the typical clinical observation period for GCS assessment. Long enough to observe sustained behaviour patterns, not so long that it cannot track rapid deterioration. |
-| `_GCS_CALIB_N` | 90 frames | The number of confirmed open-eye frames required for personal calibration. At 30fps, 90 frames = 3 seconds. 90 frames provides enough EAR values for a statistically stable median estimate. |
-| `_GCS_CALIB_BLINK` | 0.30 | eyeBlink blendshape maximum for a calibration frame to count as "clearly open." Conservative threshold (well below the 0.55 closure threshold) ensures only frames where the eye is unambiguously open contribute to the baseline. |
-| `_GCS_CALIB_EAR_MIN` | 0.15 | Minimum physiologically plausible open-eye EAR across all human populations. Below 0.15 suggests a tracking error or impossible eye shape. |
-| `_GCS_CALIB_EAR_MAX` | 0.50 | Maximum physiologically plausible open-eye EAR. Above 0.50 suggests a detection error (e.g., wide-open mouth being tracked as an eye). |
-| `_GCS_OPEN_DEFAULT` | 0.22 | Population-average open-eye EAR threshold, used before personal calibration completes. Matches the value from published EAR literature for average human eye shape. |
-| `_GCS_PART_DEFAULT` | 0.12 | Population-average partial-open threshold. At roughly 55% of the 0.22 open threshold — corresponds to drooping or nearly-closed eyes. |
-| `_GCS_OPEN_FRAC` | 0.70 | Minimum fraction of the 30-second window where eyes must be "open" to score E4. 70% allows for normal blinking (~83% open for a healthy awake person) while excluding patients who are drowsy and only occasionally open their eyes. |
-| `_GCS_ANY_FRAC` | 0.30 | Minimum fraction of the window where eyes are open OR partial to score E3. 30% means eyes were open in some form for 9 of 30 seconds — meaningful but not sustained. |
-| `_GCS_FLICKER_S` | 0.10 seconds | Minimum duration of a continuous eye opening to count as E2. At 30fps, 0.10 seconds = 3 frames. Prevents single-frame noise from being counted as a genuine E2 flicker. |
-| `_GCS_MIN_OBS_S` | 10.0 seconds | Minimum observation window before GCS score becomes non-provisional. 10 seconds = 300 frames = sufficient data for stable statistics. |
+| `0.0–3.4` **LOW** (green) | Calm, no visible distress | Routine monitoring |
+| `3.5–6.4` **MODERATE** (amber) | Noticeable discomfort or agitation | Review pain relief and comfort measures |
+| `6.5–10.0` **HIGH** (red) | Severe visible distress | Immediate clinical review for pain, breathlessness or delirium |
+| **Session peak** | Highest score since monitoring began (after the first 90 face frames) | Useful even if the patient has since calmed |
+
+Three **component bars** show what is driving the score (each 0–100%, green below 35%, amber 35–65%, red above 65%):
+- **Brow Furrow:** AU4, the pain frown.
+- **Eye Tension:** `max(AU6, AU7)`, orbital squint.
+- **Nose / Lip:** `max(AU9, AU10)`, the grimace.
+
+A HIGH score driven by Brow Furrow is more likely to be genuine pain than one driven only by Eye Tension (which bright light can cause).
+
+### GCS Eye Score card (labelled "GCS Eye Score (Rolling 30s)")
+A scale of four dots E1–E4 with the current one lit, the label and colour (**E4 green, E3 amber, E2 and E1 red**), and:
+
+| Display | Meaning |
+|---|---|
+| `E4` Spontaneous | Eyes open unprompted: alert |
+| `E3` To Voice | Eyes open intermittently: partly aroused |
+| `E2` To Pain | Only brief flickers in the window: minimal arousal |
+| `E1` No Response | Eyes closed throughout the window |
+| amber line "Provisional — observing (< 10s window)" | Less than 10 s of data: the score may still change |
+| `(personal)` after the thresholds | Calibrated to this patient's eyes: most accurate |
+| `(default)` after the thresholds | Calibration used population defaults (for example a patient whose eyes stay closed): less accurate for non-average eyes |
+
+Below the dots the card shows "Eye Aspect Ratio (EAR)" (the smoothed value, to 3 decimals) and "Open≥ … Partial≥ …" (the two thresholds in use) followed by "(personal)" in green or "(default)" in amber. When the face is lost after calibration, the video shows "No face detected — centre your face in the camera". The footer reads: "PSPI formula · 30s GCS window · Live readings replace dataset GCS Eye & Stress in the next SOFA prediction".
+
+### The floating button
+`CVMonitorFAB`: a purple eye icon at the bottom right of the monitor page, second from the bottom (History sits 28 px from the bottom edge, the camera button 88 px, LLM validation 148 px, SOFA validation 208 px). It blinks slowly; when the monitor is active it blinks faster, glows and shows a red live dot, and its label reads "CV Live — Click to Close" (otherwise "Live CV Monitor"). The four floating buttons from bottom to top are History, Camera monitor, LLM validation and SOFA validation.
 
 ---
 
-## 12. Limitations and Clinical Disclaimer
+## 11. How the Two Numbers Reach the SOFA Model
+
+### Sending the readings
+The monitor sends a reading `{ stress, gcs_eye }` to the dashboard **only when**:
+- calibration is finished, **and**
+- at least the first 90 face frames have passed, **and**
+- at least 10 seconds of eye observation exist (the score is no longer provisional), **and**
+- at least 1 second has passed since the last send, **and**
+- the values actually changed since the last send.
+
+This throttle matters: sending every frame (30+ per second) re-rendered the whole dashboard that often. Readings taken during calibration are never sent because they are unreliable. When the monitor closes, or the face is lost for 3 seconds, `null` is sent so a stale reading is never reused.
+
+### Using them in the prediction
+The dashboard holds the latest live reading and passes it to the 90-second prediction loop. The next `POST /api/predict` then contains the two extra fields `cv_gcs_eye` (must be 1–4) and `cv_stress` (must be 0–10); otherwise the API returns an error. In `ml_service.py`, when the live values are present they **replace** the recorded GCS and stress from the sample row for that prediction. They go in as two of the 108 inputs (`GCS_eye_opening` and `stress_score`), and also reach:
+- the **vital cards** (GCS Eye and Stress),
+- the **SOFA floor** check (GCS eye = 2 adds 2, = 1 adds 3 to the minimum SOFA),
+- the **SHAP** explanations and key risks,
+- the **AI report** prompt (the neurological block) and its rules (Stress ≥ 6.5 must mention pain relief or sedation; GCS eye = 1 must mention a neurological assessment),
+- the **report cache and reportKey**, so a changed camera value triggers a fresh report.
+
+The vital cards read the values with their own bands: GCS eye is flagged when ≤ 2; Stress follows LOW/MODERATE/HIGH as above.
+
+### How much do the camera values actually change the prediction? (measured)
+Honest answer: **only a little.** On 2026-11-24 the same reading of each demo patient was run through the final model with different live camera values (on a copy of the database):
+
+| Patient (recorded GCS / stress) | Recorded | GCS 4, stress 0 | GCS 4, stress 8 | GCS 3, stress 2 | GCS 2, stress 8 | GCS 1, stress 10 |
+|---|---|---|---|---|---|---|
+| 1 Low Risk (4 / 2.0) | 2.6 | 2.8 | 2.3 | 3.2 | 3.3 | 3.4 |
+| 2 Moderate (3 / 6.0) | 3.6 | 3.1 | 2.8 | 3.9 | 3.7 | 3.6 |
+| 3 High Risk (2 / 9.0) | 8.1 | 7.8 | 7.7 | 9.2 | 8.3 | 7.7 |
+
+- The predicted SOFA moves by roughly **0.3 to 1.4 points** across the whole range of camera values, and **no risk band or alert flag changed** in any of the 18 cases.
+- The effect is **not always in the expected direction.** For Patient 3, "GCS 1, stress 10" gives a *lower* SOFA (7.7) than "GCS 4, stress 0" (7.8) or the recorded values (8.1). This reflects what the model learned from MIMIC-III (for example, high stress often accompanied *lower* SOFA because a distressed patient is awake), not a bug (see `docs/INPUT_OUTPUT.md`, Section 13).
+- **Why:** in the training data these two inputs carry modest weight. Stress comes from nurse-recorded pain scores, and 71% of stays have a stress of 0. GCS eye is 4 in 84% of stays. The network therefore relies mostly on the vitals and the note words.
+
+**Takeaway:** the camera monitor is a real, working live measurement and it is shown on the dashboard and used by the SOFA floor check and the AI report rules, but **it should not be presented as a major driver of the predicted SOFA.** Strongly weighting these inputs would need training data where they are better filled in (see Section 14).
+
+---
+
+## 12. System Constants Explained
+
+Every value below is in `CVMonitorModal.jsx`.
+
+| Constant | Value | Why this value |
+|---|---|---|
+| `SMOOTH_WIN` | 20 frames | EAR smoothing window (≈ 0.67 s at 30 fps): averages out frame noise without lagging real changes |
+| `EMA_ALPHA` | 0.15 | Stress smoothing factor: reacts to sustained pain in about 0.3 s, ignores single-frame twitches |
+| `PSPI_MAX` | 16.0 | Largest possible raw PSPI (5 + 5 + 5 + 1); the divisor in PSPI/16 |
+| `BLINK_CLOSED` | 0.55 | eyeBlink level above which an eye counts as closing. Genuine blinks give 0.7–1.0; squints stay below 0.5 |
+| `MOTION_SAT` | 0.020 | Nose movement per frame that counts as maximum agitation: 2% of picture width, about 25 pixels per frame on a 1280-pixel picture |
+| `FACIAL_W` | 0.80 | Share of the stress score from the face (the rest, 20%, is head movement) |
+| `GCS_WIN_S` | 30.0 s | The GCS window: long enough for sustained behaviour, short enough to follow deterioration |
+| `GCS_CALIB_N` | 90 frames | Open-eye samples needed for the personal baseline (≈ 3 s at 30 fps) |
+| `GCS_CALIB_BLINK` | 0.30 | A calibration frame counts only if eyeBlink is below this (clearly open; well below the 0.55 closure level) |
+| `GCS_CALIB_EAR_MIN` / `MAX` | 0.15 / 0.50 | Plausible range for a personal baseline; outside it is treated as a tracking error |
+| `GCS_OPEN_DEFAULT` | 0.22 | Population-average open threshold, used before or without calibration |
+| `GCS_PART_DEFAULT` | 0.12 | Population-average "partial" threshold |
+| `GCS_OPEN_FRAC` | 0.70 | Share of the window with open eyes needed for E4 (allows normal blinking) |
+| `GCS_ANY_FRAC` | 0.30 | Share with open or partly open eyes needed for E3 |
+| `GCS_FLICKER_S` | 0.10 s | Shortest continuous opening that counts as E2 (≥ 3 frames) |
+| `GCS_MIN_OBS_S` | 10.0 s | Observation needed before the score stops being provisional |
+| `CALIB_FACE_N` | 90 frames | Face frames before readings are trusted and the peak starts counting |
+| `GCS_CALIB_MAX_FACE_N` | 300 frames (≈ 10 s) | Calibration fallback for patients whose eyes stay closed |
+| `SEND_INTERVAL_MS` | 1000 ms | At most one reading per second sent to the dashboard |
+| `FACE_LOST_MS` | 3000 ms | No face for this long → fresh observation and stop sending the old reading |
+| Personal-threshold multipliers | 0.70 / 0.40 | Open = 70% and partial = 40% of the patient's own baseline EAR |
+| Landmark indices | left eye 33,160,158,133,153,144 · right eye 362,385,387,263,373,380 · nose tip 1 · inner brows 107, 336 | The six points per eye used for EAR; the nose tip for movement; the brow points are drawn on the video |
+
+---
+
+## 13. Tests
+
+The camera monitor has **26 automated tests** in `tests/cliniq/frontend/unit/components/cv/`, all passing (run with Vitest; see `docs/CLINIQ_TESTING.md`).
+
+| File | Tests | What it checks |
+|---|---|---|
+| `cvScoring.test.js` | 16 | The scoring maths (below) |
+| `CVMonitorModal.test.jsx` | 6 | The pop-up: hidden when closed; shown when open; the supplementary label; the footer states that live readings feed the next SOFA prediction; no score cards before the camera runs; **live readings are cleared when the monitor closes** |
+| `CVMonitorFAB.test.jsx` | 4 | The floating button |
+
+**`cvScoring.test.js` in detail:**
+- **PSPI (4):** a neutral face gives 0; the formula `AU4 + max(AU6,AU7) + max(AU9,AU10) + AU43` adds up correctly (example 7.5); the maximum is 16; a full smile cancels the score.
+- **Stress (4):** the first frame seeds the EMA (`updateStress(16, 0, null)` gives 8); maximum pain plus agitation gives 10; smoothing uses α = 0.15 (gives 1.2); the bands LOW < 3.5 ≤ MODERATE < 6.5 ≤ HIGH (checked at 3.4, 3.5, 6.4, 6.5).
+- **EAR (1):** height ÷ width for an open eye (0.3 for the test shape).
+- **Eye state (2):** the blink blendshape overrides EAR; thresholds give open, partial and closed.
+- **GCS window (5):** E4 at ≥ 70% open (blinks allowed); E3 at ≥ 30% open or partial; E2 for a flicker of at least 0.1 s; E1 when eyes stay closed; a single-frame twitch is not a flicker.
+
+The face model and camera are **not** exercised by automated tests (they need a real browser and webcam); that part is checked by hand. **The API side is not covered either:** no backend test sends `cv_gcs_eye` or `cv_stress` to `/api/predict`, so the 1–4 and 0–10 range checks and the "live values replace recorded values" path have no automated test, and the frontend API-client test does not call `runPredict` with camera data. This gap is also listed in `docs/CLINIQ_TESTING.md`, Section 14.
+
+---
+
+## 14. Limitations and Clinical Disclaimer
 
 ### What this system can reliably do
+- Continuous, non-contact, real-time monitoring of visible stress and eye behaviour.
+- Detect sustained facial changes linked to pain and distress using a validated formula.
+- Estimate GCS eye opening for patients with typical facial anatomy and good camera conditions.
+- Adapt to an individual's eyes through personal calibration, and still score patients whose eyes stay closed (using defaults).
+- Track the session-peak stress for review.
+- Keep all video on the user's own device.
 
-- Provide **continuous, non-contact, real-time monitoring** of visible stress and eye behaviour
-- Detect sustained changes in facial expression associated with pain and distress using a clinically validated formula
-- Produce GCS eye estimates that are accurate for patients with typical facial anatomy and good camera conditions
-- Adapt to individual patient eye anatomy via personal calibration
-- Track session peak stress for clinical review and escalation decisions
+### What it cannot do
 
-### What this system cannot do
+**The stimulus problem (GCS).** True E3 needs a spoken stimulus and true E2 a painful one; the camera can apply neither. **E4** is assessed reliably; **E3** is inferred from intermittent opening; **E2** from brief flickers and is the least certain. Treat camera E3/E2 as a prompt for a formal nurse GCS assessment.
 
-**GCS limitations — the stimulus problem:**
+**Stress limitations**
 
-True clinical GCS is defined by how the patient responds to stimuli:
-- **E3** requires a verbal stimulus (calling the patient's name) and observing whether eyes open in response
-- **E2** requires a painful pressure stimulus (sternal rub, nail bed pressure) and observing whether eyes open
-
-The camera cannot apply these stimuli. Therefore:
-- **E4** (spontaneous opening) is assessed reliably — the camera can observe eyes opening without any stimulus
-- **E3** is inferred from intermittent eye opening patterns — this is a proxy, not a true stimulus-response test
-- **E2** is inferred from brief flickers in the observation window — the most uncertain score
-
-In clinical practice, E3 and E2 camera scores should be treated as indicators that the patient may benefit from a formal nurse GCS assessment, not as replacements for one.
-
-**Stress score limitations:**
-
-| Limitation | Impact | When it occurs |
+| Limitation | Impact | When |
 |---|---|---|
-| Face obstruction | Reduced or impossible tracking | Oxygen masks, bandages, ventilator tubing across the face |
-| Poor lighting | MediaPipe detection fails or degrades | Dark rooms, strong backlighting from a window directly behind the patient |
-| Facial paralysis | PSPI activations do not reflect actual pain | Stroke, Bell's palsy, any condition affecting facial nerve function |
-| Stoic expression style | Under-estimates pain | Some patients suppress facial expression — particularly common in certain cultural contexts and among trained healthcare workers as patients |
-| PSPI validation population | Research was done on neurologically normal adults | Paediatric patients, patients with developmental differences, or severe neurological conditions may not fit the validated formula's assumptions |
+| Face obstruction | Tracking reduced or impossible | Oxygen masks, bandages, ventilator tubing across the face |
+| Poor lighting | Detection degrades | Dark rooms, strong backlight |
+| Facial paralysis | PSPI does not reflect pain | Stroke, Bell's palsy |
+| Stoic expression | Pain under-estimated | Some patients suppress expression |
+| Validation population | PSPI was validated on neurologically normal adults | Children, developmental differences, severe neurological conditions |
 
-**Coverage angle limitation:**
+**Angle.** FaceLandmarker needs a roughly frontal face; beyond about 45° of head turn, tracking becomes unreliable. Camera placement and patient position matter.
 
-MediaPipe FaceLandmarker requires a roughly frontal face view. If the patient's head is turned more than approximately 45° from the camera, landmark tracking becomes unreliable. Patient positioning and camera placement are important operational considerations.
+**Practical limits of this implementation**
+- **First use needs internet** (about 12 MB model download) and a camera; the browser must allow camera access.
+- **One face at a time** (the monitor is set to a single face).
+- **The monitor reads the person in front of the camera.** In the demo that is the person at the laptop, not the recorded MIMIC-III patient; the live values then **replace** the recorded ones for that prediction. This demonstrates the live pipeline; it does not mean the camera is watching the demo patient.
+- **Modest influence on the prediction** (Section 11): the live values change the predicted SOFA only a little, because the training data had few informative GCS and stress values.
+- **The first ~10 seconds are provisional** and nothing is sent to the dashboard until calibration and 10 seconds of observation are done.
+- **Browser-only:** there is no longer a standalone desktop version.
 
----
-
-### Clinical Use Guidance
+### Clinical use guidance
 
 > **This system is a decision-support tool, not a diagnostic instrument.**
 >
-> All Stress Scores and GCS Eye scores produced by this system should be interpreted by a qualified clinician alongside other clinical findings and direct patient assessment.
+> All Stress and GCS Eye scores must be interpreted by a qualified clinician alongside other findings and direct patient assessment.
 >
-> The GCS scores are camera-based proxies derived from observed behaviour. They do not replace clinical GCS assessment involving verbal and pain stimuli administered by a nurse or physician.
+> The GCS scores are camera-based proxies from observed behaviour. They do not replace a clinical GCS assessment with verbal and pain stimuli by a nurse or physician.
 >
-> A score suggesting high distress (Stress Score > 6.5) or GCS deterioration (E4 → E3 or lower) should prompt immediate clinical review and direct patient assessment.
+> A high-distress score (Stress ≥ 6.5) or a GCS deterioration (E4 → E3 or lower) should prompt immediate clinical review and direct assessment.
 >
-> This system's output is one input to the SOFA prediction model, which is itself a decision-support tool requiring clinical judgment before any action is taken.
+> The output is one input to the SOFA prediction model, which is itself decision support requiring clinical judgment before any action.
 
 ---
 
-*Documentation for ICU CDSS Capstone Project*
-*Stress scoring: PSPI formula (Prkachin & Solomon, 2008, Pain 137(2))*
-*GCS Eye scoring: Teasdale & Jennett (1974), adapted for continuous camera-based assessment*
-*Facial analysis: MediaPipe FaceLandmarker (Google, 2023) with 52 blendshapes*
+## 15. Glossary
+
+| Term | Plain meaning |
+|---|---|
+| **MediaPipe FaceLandmarker** | Google's face-analysis model; gives 478 landmarks and 52 blendshapes per frame |
+| **WebAssembly (WASM)** | A format that lets the face model run at near-native speed inside a web page |
+| **Landmark** | A tracked point on the face (eye corner, nose tip…) |
+| **Blendshape** | A 0–1 score for the strength of one facial-muscle action |
+| **EAR (Eye Aspect Ratio)** | Eye height ÷ eye width from six landmarks; high = open, low = closed |
+| **Action Unit (AU)** | One facial-muscle movement in FACS (AU4 = brow lowerer…) |
+| **FACS** | Facial Action Coding System: the catalogue of facial movements |
+| **PSPI** | Prkachin–Solomon Pain Intensity: pain score from four AU groups, 0–16 |
+| **EMA** | Exponential moving average: a smoothing that weights recent frames more |
+| **GCS** | Glasgow Coma Scale of consciousness (the monitor measures only the Eye part, E1–E4) |
+| **Calibration** | Learning a patient's own open-eye EAR so thresholds fit their eyes |
+| **Provisional** | A score based on less than 10 seconds of data |
+| **Session peak** | Highest stress score since monitoring began |
+| **Median** | The middle value of a sorted list; not thrown off by a few outliers |
+
+---
+
+*Documentation for the ClinIQ ICU CDSS capstone — last updated 2026-11-24.*
+*Stress scoring: PSPI formula (Prkachin & Solomon, 2008, Pain 137(2)).*
+*GCS Eye scoring: Teasdale & Jennett (1974), adapted for continuous camera-based assessment.*
+*Facial analysis: MediaPipe FaceLandmarker (Google) with 52 blendshapes, running in the browser.*
+*Implementation: `frontend/src/components/cv/CVMonitorModal.jsx`; 26 Vitest tests; measured effect on SOFA: about 0.3–1.4 points, no band or alert change (Section 11).*

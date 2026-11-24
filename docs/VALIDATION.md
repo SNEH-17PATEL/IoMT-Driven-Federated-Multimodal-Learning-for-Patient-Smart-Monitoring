@@ -1,6 +1,6 @@
 # Validation Framework — ClinIQ ICU CDSS
 **Multimodal Intelligence System with Federated Learning**
-**Last updated:** 2026-11-12
+**Last updated:** 2026-11-24
 
 ---
 
@@ -143,18 +143,35 @@ These numbers are calculated **once, at the end of training** (`train_federated.
 
 The results are saved to `models/training_metadata.json`. The backend sends this file with every prediction (as `_training_meta`), and Layer 1 ("Population Stats") of the dashboard's **SOFA Validation** drawer (`SOFAValidationDrawer.jsx`) reads **every number live from it**: AUROC, PR-AUC, MAE, R², the alert recall, specificity, missed cases and false alarms at the live threshold, the 3-band confusion matrix (and the 3-band accuracy computed from it), and the sample counts. Nothing is hard-coded any more, so after retraining the drawer updates by itself. If the metadata is missing, it shows "—". (An earlier version of the drawer had fixed numbers typed in, historical: 0.9461 / 0.6840 / 1.8968 / 0.5995 / 2,559 rows / 19.8% / 56.9%.)
 
-**Current results** (from the latest training run, test set of **10,450 ICU stays**, of which 602 are High Risk):
+### What data was the model tested on?
+
+| Item | Value | Plain meaning |
+|---|---|---|
+| Source | MIMIC-III (a public, de-identified ICU database) | Real intensive-care records, used retrospectively |
+| Unit of one row | **One ICU stay** (the newest reading window of that stay) | 52,248 stays from 38,304 patients |
+| Training set | **41,798 stays** (80%) | Used to teach the model |
+| Test set (the "final exam") | **10,450 stays** (20%) | Never seen during training |
+| High Risk stays in the test set | **602** (5.8%) | The rare, dangerous group we most want to catch |
+| Split method | Random 80/20 split, balanced so both sets keep the same share of High Risk stays | Keeps the exam fair for the rare group |
+| Hospitals in the federated simulation | 3, each with about 13,930 training stays (IID split) | Each "hospital" keeps its own data; only model weights are shared |
+| Model inputs | **108 numbers**: 18 vital-sign features + 90 note-word (TF-IDF) features | Fixed: the same 108 inputs in training and at the bedside |
+
+**Current results** (from the final training run, test set of **10,450 ICU stays**, of which 602 are High Risk):
 
 | Metric | Value | One-line meaning |
 |---|---|---|
-| MAE | **1.82** SOFA points | The average guess is about 1.8 points off |
-| R² | **0.47** | The model explains about 47% of why patients differ |
-| AUROC (High Risk) | **0.925** | Ranks a High Risk patient above a non-High Risk one 92.5% of the time |
-| PR-AUC (High Risk) | **0.646** | Finds the rare sick patients far better than chance (chance ≈ 0.06) |
-| Alert recall (pred ≥ 7) | **67.1%** | Of the truly High Risk patients, the alert caught 67% (404 of 602) |
-| Alert specificity (pred ≥ 7) | **96.3%** | Of the patients who were not High Risk, 96.3% got no false alarm |
+| MAE | **1.80** SOFA points | The average guess is about 1.8 points off |
+| R² | **0.48** | The model explains about 48% of why patients differ |
+| AUROC (High Risk) | **0.918** | Ranks a High Risk patient above a non-High Risk one 91.8% of the time |
+| PR-AUC (High Risk) | **0.647** | Finds the rare sick patients far better than chance (chance ≈ 0.06) |
+| Alert recall (pred ≥ 7) | **67.8%** | Of the truly High Risk patients, the alert caught 68% (408 of 602) |
+| Alert specificity (pred ≥ 7) | **96.6%** | Of the patients who were not High Risk, 96.6% got no false alarm |
+| Alert precision (pred ≥ 7) | **54.9%** | Of all alerts fired, 55% were real High Risk patients (408 of 743) |
+| 3-band accuracy | **73.2%** | The predicted band (Low / Moderate / High) was right for 7,647 of 10,450 stays |
 
-> **Note:** the model was trained with **federated learning**: 3 simulated hospitals, 100 rounds, FedAvg + FedProx, plain MSE loss, network 108 → 256 → 128 → 64 → 1 with dropout 0.3. The best round was round 26. The numbers above belong to that best model. How and why the training changed is explained in `docs/TRAIN_FEDERATED.md`, Section 15.
+> **Note:** the model was trained with **federated learning**: 3 simulated hospitals, 100 rounds of 3 local epochs, **FedAvg + FedProx (μ = 0.5)**, plain MSE loss, optimiser AdamW (learning rate 0.001, decay 0.99 per round), network **108 → 256 → 128 → 64 → 1** with ReLU and dropout 0.3 (69,121 trainable numbers). The server kept the round with the lowest validation error: **round 37**. The numbers above belong to that best model. Differential privacy was available but switched off. How and why the training changed is explained in `docs/TRAIN_FEDERATED.md`, Section 15.
+>
+> **Where each number can be re-checked:** every value above is stored in `models/training_metadata.json` (written at the end of `train_federated.py`). The test inputs and answers are saved in `models/fl_test_X.npy` and `models/fl_test_y.npy`, so anyone can reload the model and recompute them.
 
 ---
 
@@ -178,7 +195,7 @@ Patient D: actual 6,  predicted 9    → error 3
 MAE = (1 + 1 + 2 + 3) / 4 = 1.75
 ```
 
-**Our result: MAE = 1.82.** On a 0–24 scale, being about 2 points off is roughly 8% of the scale. By band: Low 1.33, Moderate 2.48, High 4.33. The error is biggest for the sickest patients, because the model under-predicts them. Because the risk bands are 5 points wide, a 2-point error usually keeps the patient in the right band, but not always (see 3.5).
+**Our result: MAE = 1.80.** On a 0–24 scale, being about 1.8 points off is roughly 7.5% of the scale. By band: Low 1.33 (7,027 stays), Moderate 2.44 (2,821 stays), High 4.36 (602 stays). The error is biggest for the sickest patients, because the model under-predicts them. Because the risk bands are 5 points wide, a 2-point error usually keeps the patient in the right band, but not always (see 3.5).
 
 **Why MAE and not MSE (mean *squared* error)?** MSE squares each error, so one big miss of 6 counts as 36. MAE treats it as 6. MAE is also what a doctor understands without explanation: "we are about 2 points off on average."
 
@@ -204,7 +221,7 @@ Our model "3, 6, 9":   squared errors =  1 + 0 +  1 =  2
 R² = 1 − 2/32 = 0.94   (we explain 94% of the differences)
 ```
 
-**Our result: R² = 0.47.** The model explains about 47% of the differences in SOFA between patients, using no blood tests at all. (For comparison, a centralized gradient-boosting model on the same inputs reaches about 0.49, so this is close to what these inputs allow.)
+**Our result: R² = 0.48.** The model explains about 48% of the differences in SOFA between patients, using no blood tests at all. (For comparison, a centralized gradient-boosting model on the same 108 inputs reaches about 0.50, so this is close to what these inputs allow. See Section 3.7.)
 
 #### R² inside each risk band can be negative, and that is expected
 
@@ -220,6 +237,8 @@ keeps the overall R² positive), but it cannot reliably tell 1 from 3.
 Inside such a narrow band, "always guess the band average" is very hard to
 beat, which pushes the within-band R² below zero.
 ```
+
+**Our within-band values** (test set): Low −0.71, Moderate −3.53, High −1.75. They are all negative, exactly as described above, while the overall R² is +0.48.
 
 **The takeaway:** the overall R² shows the model separates sick from healthy patients. The within-band R² shows it cannot fine-rank patients inside a band without lab data. Both are honest and expected.
 
@@ -237,7 +256,7 @@ beat, which pushes the within-band R² below zero.
 **Interpreting it:**
 - **1.0** → always ranks the sick patient higher (perfect).
 - **0.5** → a coin flip.
-- **Our 0.925** → in about 92.5 out of 100 random pairs, the sicker patient gets the higher predicted SOFA.
+- **Our 0.918** → in about 92 out of 100 random pairs, the sicker patient gets the higher predicted SOFA.
 
 **Example:**
 ```
@@ -249,7 +268,7 @@ Repeat for every possible pair → the fraction ranked correctly = AUROC
 
 **Why use the raw number and not the alert?** Where to draw the alert line is a policy choice. AUROC measures whether the model's **ordering** is right, whatever line you pick.
 
-**Why AUROC alone is not enough:** only about 6% of test patients are High Risk (602 of 10,450). When the sick group is that small, AUROC can look good even if the model is poor at actually finding them. That is why we also report PR-AUC.
+**Why AUROC alone is not enough:** only about 6% of test patients are High Risk (602 of 10,450, about 5.8%). When the sick group is that small, AUROC can look good even if the model is poor at actually finding them. That is why we also report PR-AUC.
 
 ---
 
@@ -272,7 +291,7 @@ Recall    = 6 / 10 = 0.60   (we caught 6 of the 10 sick patients)
 
 PR-AUC summarises this trade-off across every possible cut-off.
 
-**Our result: PR-AUC = 0.646.** The baseline to compare against is the share of sick patients, about **0.06**: a model guessing randomly would score about 0.06. Scoring 0.646 means the model genuinely finds High Risk patients rather than just predicting "not sick" for everyone.
+**Our result: PR-AUC = 0.647.** The baseline to compare against is the share of sick patients, about **0.06** (602 of 10,450): a model guessing randomly would score about 0.06. Scoring 0.647 means the model genuinely finds High Risk patients rather than just predicting "not sick" for everyone.
 
 ---
 
@@ -284,14 +303,14 @@ PR-AUC summarises this trade-off across every possible cut-off.
 
 | Actual ↓ / Predicted → | Low | Moderate | High | Total |
 |---|---|---|---|---|
-| **Low** | **6,617** ✓ | 305 | 7 | 6,929 |
-| **Moderate** | 2,159 | **669** ✓ | 91 | 2,919 |
-| **High** | 112 | 203 | **287** ✓ | 602 |
+| **Low** | **6,714** ✓ | 306 | 7 | 7,027 |
+| **Moderate** | 2,086 | **669** ✓ | 66 | 2,821 |
+| **High** | 119 | 219 | **264** ✓ | 602 |
 
-The diagonal (bold) holds the correct predictions: 6,617 + 669 + 287 = 7,573 of 10,450, a **3-band accuracy of 72.5%**. How to read the rest:
-- **Low patients:** 6,617 of 6,929 (95.5%) were put in the right band.
-- **Moderate patients:** only 669 of 2,919 (22.9%) were right; most mistakes (2,159) went down to Low.
-- **High patients:** 287 of 602 (47.7%) were *predicted* as High; 203 were predicted as Moderate and 112 as Low.
+The diagonal (bold) holds the correct predictions: 6,714 + 669 + 264 = 7,647 of 10,450, a **3-band accuracy of 73.2%**. How to read the rest:
+- **Low patients:** 6,714 of 7,027 (95.5%) were put in the right band.
+- **Moderate patients:** only 669 of 2,821 (23.7%) were right; most mistakes (2,086, about 74%) went down to Low.
+- **High patients:** 264 of 602 (43.9%) were *predicted* as High; 219 were predicted as Moderate and 119 as Low.
 
 **Why this table matters even with a good MAE:**
 ```
@@ -299,17 +318,19 @@ A patient with actual SOFA 10 is predicted as 8.
 Error = 2 points (looks fine for MAE)
 But the band changes from High to Moderate.
 ```
-The table shows exactly how often that kind of band-crossing happens. The most dangerous cells are **actual High predicted as Low or Moderate** (112 + 203 = 315 patients).
+The table shows exactly how often that kind of band-crossing happens. The most dangerous cells are **actual High predicted as Low or Moderate** (119 + 219 = 338 patients).
 
 **Per-band scores** (what the drawer shows):
 
 | Band | Precision | Recall | F1 |
 |---|---|---|---|
-| Low | 0.74 | 0.95 | 0.84 |
-| Moderate | 0.57 | 0.23 | 0.33 |
-| High | 0.75 | 0.48 | 0.58 |
+| Low | 0.75 | 0.96 | 0.84 |
+| Moderate | 0.56 | 0.24 | 0.33 |
+| High | 0.78 | 0.44 | 0.56 |
 
-**Reading the High row:** when the model *does* predict High, it is usually right (precision 0.75). But it predicts High for fewer than half of the truly High patients (recall 0.48), because it **under-predicts** severe cases: for truly High Risk patients the average prediction is only about 9.7, just under the band line of 10. This is the main reason for the lower alert threshold in the next section.
+(Precision = of the stays predicted in this band, the share truly in it. Recall = of the stays truly in this band, the share predicted in it.)
+
+**Reading the High row:** when the model *does* predict High, it is usually right (precision 0.78). But it predicts High for fewer than half of the truly High patients (recall 0.44), because it **under-predicts** severe cases: for truly High Risk patients the average actual SOFA is about 13.1, yet the average prediction is only about 9.5, just under the band line of 10. This is the main reason for the lower alert threshold in the next section.
 
 **Reading the Moderate row:** Moderate is the hardest band. Most Moderate patients are predicted as Low, because what lifts a patient from 3–4 to 5–9 is often a lab value (platelets, bilirubin, creatinine) that the model cannot see.
 
@@ -325,40 +346,72 @@ The threshold is one constant, `ALERT_THRESHOLD = 7.0`, defined in `model_utils.
 
 | | Truly High Risk (actual ≥ 10) | Not High Risk |
 |---|---|---|
-| **Alert fired** (pred ≥ 7) | ✅ True positive: **404** | ⚠️ False alarm: **360** |
-| **No alert** | ❌ Missed: **198** | ✅ True negative: **9,488** |
+| **Alert fired** (pred ≥ 7) | ✅ True positive: **408** | ⚠️ False alarm: **335** |
+| **No alert** | ❌ Missed: **194** | ✅ True negative: **9,513** |
 
 ```
-Recall (sick patients caught)     = 404 / (404 + 198)     = 67.1%
-Specificity (healthy left alone)  = 9,488 / (9,488 + 360) = 96.3%
-Precision (alarms that were real) = 404 / (404 + 360)     = 52.9%
-F1 (balance of the two)           = 0.59
+Recall (sick patients caught)     = 408 / (408 + 194)     = 67.8%
+Specificity (healthy left alone)  = 9,513 / (9,513 + 335) = 96.6%
+Precision (alarms that were real) = 408 / (408 + 335)     = 54.9%
+F1 (balance of the two)           = 0.61
 ```
 
 #### Why the alert fires at 7 and not 10
 
-The model tends to **guess too low for severe patients** (average prediction for truly High Risk patients ≈ 9.7). If the alert waited for a prediction of 10, it would fire for only the 47.7% of sick patients the model predicts as High (Section 3.5). Lowering the line catches many of the patients the model under-scored.
+The model tends to **guess too low for severe patients** (average prediction for truly High Risk patients ≈ 9.5, while their true average is ≈ 13.1). If the alert waited for a prediction of 10, it would fire for only the 43.9% of sick patients the model predicts as High (Section 3.5). Lowering the line catches many of the patients the model under-scored.
 
 **Why 7 and not 8 (the earlier value)?** Until 2026-11-12 the line was at 8. Moving it to 7 was a trade:
 ```
-Alert at 8 → missed 234 High Risk patients, 220 false alarms   (recall 61.1%, specificity 97.8%)
-Alert at 7 → missed 198 High Risk patients, 360 false alarms   (recall 67.1%, specificity 96.3%)
-→ 36 more sick patients caught, for 140 more false alarms
+Alert at 8 → missed 243 High Risk patients, 207 false alarms   (recall 59.6%, specificity 97.9%)
+Alert at 7 → missed 194 High Risk patients, 335 false alarms   (recall 67.8%, specificity 96.6%)
+→ 49 more sick patients caught, for 128 more false alarms
 ```
 
-The full sweep on the current model:
+The full sweep on the final model:
 
-| Alert when predicted SOFA ≥ | Recall | Specificity |
-|---|---|---|
-| 8 | 61.1% | 97.8% |
-| 7.5 | 64.3% | 97.1% |
-| **7 (current)** | **67.1%** | **96.3%** |
-| 6.5 | 69.9% | 95.3% |
-| 6 | 73.1% | 93.9% |
+| Alert when predicted SOFA ≥ | Recall | Specificity | False alarms among non-High stays | Missed High Risk |
+|---|---|---|---|---|
+| 10 | 43.9% | 99.3% | 0.7% (73) | 338 |
+| 9 | 51.5% | 98.8% | 1.2% (117) | 292 |
+| 8 | 59.6% | 97.9% | 2.1% (207) | 243 |
+| 7.5 | 64.3% | 97.3% | 2.7% (263) | 215 |
+| **7 (current)** | **67.8%** | **96.6%** | **3.4% (335)** | **194** |
+| 6.5 | 70.6% | 95.6% | 4.4% (436) | 177 |
+| 6 | 73.1% | 94.1% | 5.9% (578) | 162 |
 
-In an ICU, **missing a dying patient is far worse than an extra alarm**, so we accept more false alarms to catch more sick patients. Below 7 the false alarms grow quickly for small gains, so 7 is the balance point. The threshold changes only the yes/no alert; AUROC, PR-AUC and MAE stay the same.
+In an ICU, **missing a dying patient is far worse than an extra alarm**, so we accept more false alarms to catch more sick patients. Below 7 the false alarms grow quickly for small gains (going from 7 to 6 adds 243 false alarms to catch 32 more patients), so 7 is the balance point. The threshold changes only the yes/no alert; AUROC, PR-AUC and MAE stay the same.
 
-**The honest number to remember:** even at 7, **198 truly High Risk patients (33%) got no alert.** This is why ClinIQ is a decision-support tool, not a replacement for clinical judgement.
+**The honest number to remember:** even at 7, **194 truly High Risk patients (32%) got no alert.** This is why ClinIQ is a decision-support tool, not a replacement for clinical judgement.
+
+---
+
+### 3.7 Is R² = 0.48 good? A same-inputs reference check
+
+**In one line:** we tested whether a different, stronger kind of model could do better on the same inputs. It could not, so the limit is the inputs, not our network.
+
+A gradient-boosting model (a different, tree-based technique) was trained **centrally** (all data in one place, no federation) on the **same 108 inputs** and scored on the **same test stays**:
+
+| Model | MAE | R² | AUROC (High Risk) |
+|---|---|---|---|
+| Federated neural network (ClinIQ, final) | **1.80** | **0.48** | **0.918** |
+| Centralised gradient boosting, same 108 inputs | 1.79 | 0.50 | 0.922 |
+
+The two are almost identical. That tells us three things in plain words:
+1. Federated training did **not** cost meaningful accuracy compared with pooling all the data.
+2. No cleverer model would fix the accuracy problem; the missing information (lab values) is what limits it.
+3. To improve accuracy further, the inputs would have to change (for example by adding lab tests), which is outside this project's fixed 108-input design.
+
+**How the scores improved during development** (same test-set method each time):
+
+| Step | MAE | R² | AUROC | Alert recall |
+|---|---|---|---|---|
+| Original dataset, FedYogi, weighted loss, narrow 128-64-32 network, alert at 8 | 1.80 | 0.398 | 0.879 | 23% |
+| Rebuilt dataset (one row per ICU stay), same model | 1.91 | 0.426 | 0.915 | 53.8% |
+| + FedAvg and plain MSE | 1.85 | 0.457 | 0.921 | 59.3% |
+| + wider network with dropout 0.3 | 1.83 | 0.473 | 0.925 | 61.1% (at 8) |
+| **Final run (alert at 7)** | **1.80** | **0.481** | **0.918** | **67.8%** |
+
+(The first row used a different, smaller test set, so it is not strictly comparable with the others. The biggest single gain came from rebuilding the dataset correctly.)
 
 ---
 
@@ -505,12 +558,12 @@ New patient: model predicts 7.0
 Range = 7.0 − 3.9 to 7.0 + 3.9 = 3.1 to 10.9
 ```
 
-**Our value:** with the current model, **q̂ = 3.34** (computed when the backend starts, from the training data). A prediction of 7.0 is shown as roughly **3.7 to 10.3**. On the dashboard it is the **"Conformal prediction interval"** bar under the SOFA gauge. If the training data is unavailable, the code falls back to **q̂ = 2.9**.
+**Our value:** with the current model, **q̂ = 3.28** (computed when the backend starts, as the 90th percentile of the absolute errors over the 41,798 training stays). A prediction of 7.0 is shown as roughly **3.7 to 10.3**. On the dashboard it is the **"Conformal prediction interval"** bar under the SOFA gauge. If the training data is unavailable, the code falls back to **q̂ = 2.9**.
 
 **Why the range is useful:**
 ```
 "±MAE" says:     "most people are about 1.8 off, so you probably are too"
-Conformal says:  "90% of past patients were within 3.34 — here is that range"
+Conformal says:  "90% of past patients were within 3.28 — here is that range"
 ```
 A wide range is a signal for caution: the model is telling you it is not sure.
 
@@ -1037,7 +1090,7 @@ Saying clearly what a system **cannot** do is part of validating it.
 | # | Limitation | Effect | Possible fix |
 |---|---|---|---|
 | 1 | No lab data (blood gases, platelets, bilirubin, creatinine) | SOFA is estimated from indirect clues; precision inside a band is weak | Connect to the hospital lab system |
-| 2 | The model under-predicts severe patients (average prediction for truly High Risk ≈ 9.7) | 33% of truly High Risk patients (198 of 602) get no alert, even at threshold 7 | Real lab inputs; simply weighting severe cases more in the loss was tried and did not help |
+| 2 | The model under-predicts severe patients (average prediction for truly High Risk ≈ 9.5, true average ≈ 13.1) | 32% of truly High Risk patients (194 of 602) get no alert, even at threshold 7 | Real lab inputs; simply weighting severe cases more in the loss was tried and did not help |
 | 3 | The conformal q̂ is measured on training data | Real coverage on new patients is probably a little under 90% | Hold back a separate calibration set |
 | 4 | One row per ICU stay, split 80/20 by ICU stay, not by patient | A patient with several stays can appear in both training and test data, which can flatter the scores. These are retrospective MIMIC-III results, not independent clinical validation | Split by patient ID; validate prospectively on new data |
 | 5 | The judge model also wrote the report | The judge may rate the report too kindly | Use a different model as the judge |
@@ -1054,6 +1107,8 @@ Saying clearly what a system **cannot** do is part of validating it.
 |---|---|---|
 | MAE, R², AUROC, PR-AUC, confusion matrices | `compute_sofa_risk_metrics`, end of training script | `model_utils.py`, `train_federated.py` |
 | Saved metrics | — | `models/training_metadata.json` |
+| Alert threshold (7.0) | `ALERT_THRESHOLD` | `model_utils.py` |
+| Test set used for the numbers | — | `models/fl_test_X.npy`, `models/fl_test_y.npy` |
 | SOFA floor | `compute_sofa_floor` | `backend/services/ml_service.py` |
 | Vital combinations | `vital_consistency_flags` | `backend/services/ml_service.py` |
 | Trajectory jump | `check_trajectory` | `backend/services/ml_service.py` |
@@ -1069,18 +1124,18 @@ Saying clearly what a system **cannot** do is part of validating it.
 
 ### Q: How do you validate the SOFA prediction?
 **Three layers.**
-1. **Offline:** on 10,450 ICU stays the model never saw, MAE = 1.82, R² = 0.47, AUROC = 0.925 and PR-AUC = 0.646, plus two confusion matrices (3 bands, and the alert). The SOFA Validation drawer reads these live from the training metadata.
+1. **Offline:** on 10,450 ICU stays the model never saw, MAE = 1.80, R² = 0.48, AUROC = 0.918 and PR-AUC = 0.647, plus two confusion matrices (3 bands, and the alert). The SOFA Validation drawer reads these live from the training metadata.
 2. **At runtime:** on every prediction, three checks flag anything physically implausible: a minimum SOFA from MAP, SpO₂ and GCS; dangerous vital combinations; and unexplained jumps.
-3. **Uncertainty:** a conformal range of about ±3.34 points around each prediction, so the clinician can see how sure the model is.
+3. **Uncertainty:** a conformal range of about ±3.28 points around each prediction, so the clinician can see how sure the model is.
 
 ### Q: How do you validate the AI report?
 With **9 methods**. Seven are instant rules that check the report against the real vitals and ICU guidelines: mentions abnormal vitals, recommends the standard treatment, agrees with the model's main factors, has all sections, uses the right tone, avoids dangerous drugs, and quotes correct numbers. Two use an AI judge that grades quality and lists unsupported claims. They combine into one 0–1 reliability score with a list of specific problems.
 
-### Q: Why is the High Risk recall only 67%?
-The model under-predicts severe cases (their average prediction is about 9.7), mainly because SOFA depends on lab values and drug doses that our non-invasive inputs do not include. That is why the alert fires at a predicted 7 instead of 10, which raises how many sick patients are caught from 47.7% to 67.1%, while 96.3% of non-High patients still get no false alarm. The remaining misses are why the system supports doctors instead of replacing them.
+### Q: Why is the High Risk recall only 68%?
+The model under-predicts severe cases (their average prediction is about 9.5 although the true average is about 13), mainly because SOFA depends on lab values and drug doses that our non-invasive inputs do not include. That is why the alert fires at a predicted 7 instead of 10, which raises how many sick patients are caught from 43.9% to 67.8%, while 96.6% of non-High patients still get no false alarm. The remaining misses are why the system supports doctors instead of replacing them.
 
 ### Q: Why is R² negative inside the risk bands?
-Inside a narrow band, the differences come mostly from blood-test organs (clotting, liver, kidneys) that we cannot measure. The model places patients in the right band, which keeps the overall R² at 0.47, but it cannot reliably rank them within a band.
+Inside a narrow band, the differences come mostly from blood-test organs (clotting, liver, kidneys) that we cannot measure. The model places patients in the right band, which keeps the overall R² at 0.48, but it cannot reliably rank them within a band.
 
 ### Q: What if the reliability score is high but the report is still wrong?
 That can happen, and we say so openly. To reduce the risk:
@@ -1088,6 +1143,12 @@ That can happen, and we say so openly. To reduce the risk:
 - every specific problem is listed, not just the number;
 - the SOFA alert fires independently of the report;
 - every report carries a disclaimer that clinical decisions need a qualified professional.
+
+### Q: Could a better model give better accuracy?
+We checked. A centralised gradient-boosting model on the same 108 inputs scores R² 0.50 and AUROC 0.922, almost the same as our federated network (0.48 and 0.918). So the limit is the missing lab data, not the model, and federated training cost almost nothing in accuracy (Section 3.7).
+
+### Q: Can the scores be trusted as proof the system works clinically?
+No. They are retrospective results on MIMIC-III. The split is by ICU stay, so a patient with several stays can appear in both training and test data, which can flatter the scores. They show the approach is sound; they are not independent clinical validation (Section 17, limitation 4).
 
 ### Q: Why 9 methods instead of one?
 Each one catches a mistake the others miss:
@@ -1154,4 +1215,4 @@ Each one catches a mistake the others miss:
 
 ---
 
-*This document describes the validation framework as implemented on 2026-11-12. Metrics come from `models/training_metadata.json` (best round 26 of 100). The SOFA Validation drawer reads that file live, but if the model is retrained, update the numbers written in Sections 3, 5, 17 and 19 of this document.*
+*This document describes the validation framework as implemented on 2026-11-24. Metrics come from `models/training_metadata.json` (final run, best round 37 of 100); the threshold sweep, per-band error and within-band R² were recomputed from the saved test set (`fl_test_X.npy`, `fl_test_y.npy`) and the saved model, and match the metadata exactly. The SOFA Validation drawer reads that file live, but if the model is retrained, update the numbers written in Sections 3, 5, 17 and 19 of this document.*

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
+import CVLivePanel from './CVLivePanel.jsx'
 
 /* ── Design tokens ─────────────────────────────────────────────────────────── */
 const PURPLE = '#a78bfa'
@@ -226,7 +227,11 @@ function StatusPanel({ status, errorMsg, onRetry }) {
 /* ══════════════════════════════════════════════════════════════════════════════
    MAIN MODAL
 ══════════════════════════════════════════════════════════════════════════════ */
-export default function CVMonitorModal({ open, onClose, onCVResults }) {
+export default function CVMonitorModal({
+  open, onClose, onCVResults,
+  // Optional: when given, a right-hand panel shows the live SOFA and model inputs.
+  predictData = null, cvLiveData = null, isRefreshing = false, countdown = 90,
+}) {
   const videoRef   = useRef(null)
   const canvasRef  = useRef(null)
   const flRef      = useRef(null)       // FaceLandmarker instance
@@ -652,7 +657,7 @@ export default function CVMonitorModal({ open, onClose, onCVResults }) {
             position: 'fixed',
             top: '50%', left: '50%',
             transform: 'translate(-50%, -50%)',
-            width: 'min(94vw, 980px)',
+            width: 'min(96vw, 1320px)',
             maxHeight: '92vh',
             zIndex: 930,
           }}>
@@ -745,7 +750,8 @@ export default function CVMonitorModal({ open, onClose, onCVResults }) {
             </div>
 
             {/* ══ Content ═══════════════════════════════════════════════════════ */}
-            <div style={{ flex: 1, overflowY: 'auto', padding: '20px' }}>
+            <div style={{ flex: 1, overflowY: 'auto', padding: '20px', display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-start' }}>
+            <div style={{ flex: '2 1 480px', minWidth: 0 }}>
 
               {/* ── Video + Canvas stack ── */}
               <div style={{
@@ -975,7 +981,16 @@ export default function CVMonitorModal({ open, onClose, onCVResults }) {
               )}
             </div>
 
-            {/* ══ Footer ═════════════════════════════════════════════════════════ */}
+            {/* ── Right-hand vertical panel: live model input → output ── */}
+            <CVLivePanel
+              predictData={predictData}
+              cvLiveData={cvLiveData}
+              isRefreshing={isRefreshing}
+              countdown={countdown}
+            />
+            </div>
+
+            {/* ══ Footer═════════════════════════════════════════════════════════ */}
             <div style={{
               padding: '10px 22px',
               background: 'var(--s1)',
