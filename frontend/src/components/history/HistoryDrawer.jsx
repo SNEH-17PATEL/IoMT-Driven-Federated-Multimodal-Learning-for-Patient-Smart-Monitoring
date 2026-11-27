@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { AnimatePresence, motion } from 'framer-motion'
 import { getHistory } from '../../api/client.js'
@@ -104,6 +105,14 @@ export default function HistoryDrawer({ patientId, open, onClose }) {
     enabled: open && patientId != null,
     staleTime: 30_000,
   })
+
+  // Escape closes the drawer, same as the SOFA / LLM validation drawers and the camera window
+  useEffect(() => {
+    if (!open) return
+    const onKey = e => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
 
   const totalCols = COLS.reduce((s, c) => s + c.w, 0)
 

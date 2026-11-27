@@ -1,7 +1,7 @@
 # ClinIQ — Complete Project Context
 # ICU Clinical Decision Support System with Federated Learning
 
-**Last updated:** 2026-11-24
+**Last updated:** 2026-11-27
 
 > This is the single reference for the whole project: what it is, why it exists, how the data is built, how the model is trained, how the dashboard works, how to run it, and how to explain it. Every number here comes from the current code and from `models/training_metadata.json` (the final training run). Anyone who has never seen the project should be able to read this file and understand all of it.
 
@@ -642,6 +642,7 @@ The camera feature runs entirely in the browser (React plus **MediaPipe FaceLand
 - **Stress score (0–10)** from facial muscle movements using the **PSPI** pain formula (brow lowering, cheek/eye squeeze, nose and upper-lip raising, eye closing, reduced by smiling), mixed 80% facial and 20% head movement, then smoothed with an exponential average (α = 0.15). Bands: LOW < 3.5, MODERATE < 6.5, HIGH ≥ 6.5.
 - **GCS eye score (1–4)** from how often the eyes are open over a rolling **30-second** window: ≥ 70% open → 4 (spontaneous); ≥ 30% of the time at least partly open → 3 (to voice); a brief flicker → 2 (to pain); otherwise 1 (no response). A short personal calibration (about 3–10 s) sets this person's open-eye level.
 - Readings are sent at most once a second and stop if no face is seen for 3 seconds.
+- **Live model panel (right side of the camera window).** It shows the predicted SOFA, a countdown to the next prediction, the two camera inputs as **"Live from camera" next to "Used in last SOFA"** (with a badge: WAITING FOR CAMERA, SENDS NEXT CYCLE, or IN MODEL ✓), the clinical note and the vitals. A line under the timer says whether the next prediction will use **CAMERA** values (a calibrated camera sees a face) or **DATABASE** values (any other time). It makes visible that the camera values really are model inputs.
 - Details: `docs/CV_MONITOR.md`.
 
 ### Database (SQLite, `models/icu_monitor.db`)
@@ -712,7 +713,7 @@ icu_monitor/
 │           ├── trends/      TrendChart, TrendsSection
 │           ├── report/      ReportContainer, ReportSection, ReportToggle, SHAPPanel, ReliabilityBadge
 │           ├── history/     HistoryDrawer, HistoryFAB
-│           ├── cv/          CVMonitorModal, CVMonitorFAB
+│           ├── cv/          CVMonitorModal, CVLivePanel, CVMonitorFAB
 │           ├── validation/  SOFAValidationDrawer/FAB, LLMValidationDrawer/FAB
 │           └── ErrorBoundary.jsx
 │
@@ -734,10 +735,10 @@ icu_monitor/
 │   └── sample_patients/       ← 3 demo CSVs (30 recorded readings each)
 │
 └── tests/
-    ├── fl/ (unit, integration, system)            ← federated learning, DB, model tests
+    ├── fl/ (unit, integration, system)            ← federated learning, DB, model tests (360)
     └── cliniq/
-        ├── backend/ (api, unit, system)            ← API and service tests
-        └── frontend/ (unit, integration, e2e)      ← component, hook and e2e specs
+        ├── backend/ (api, unit, system)            ← API and service tests (390)
+        └── frontend/ (unit, integration, e2e)      ← component, hook and e2e specs (664 + 33)
 ```
 
 Training no longer writes CSV files: the three hospitals' data lives in the `fl_training` table. There is no standalone `cv_monitor.py`; the camera monitor is built into the dashboard.
@@ -779,6 +780,7 @@ Training no longer writes CSV files: the three hospitals' data lives in the `fl_
 | `components/report/ReportContainer.jsx` | Fetches reports per care mode, caches them per reading, prefetches the other mode |
 | `components/report/SHAPPanel.jsx` | Animated SHAP bars; keeps the last good factors if SHAP fails once |
 | `components/cv/CVMonitorModal.jsx` | MediaPipe camera monitor: PSPI stress, 30-second GCS window, calibration |
+| `components/cv/CVLivePanel.jsx` | The right-hand panel in the camera window: live SOFA, the two camera inputs (live vs used), the clinical note, the vitals and the countdown |
 | `components/validation/SOFAValidationDrawer.jsx` | Shows offline metrics live from `_training_meta`, runtime checks, conformal range; "—" if metadata missing |
 | `components/validation/LLMValidationDrawer.jsx` | Shows the nine-method breakdown and every violation |
 | `components/layout/AlertBanner.jsx` | Red / amber banner by risk level |
@@ -988,13 +990,13 @@ python train_federated.py
 
 ### Run the tests
 ```bash
-pytest tests                                  # Python: 513 tests (295 FL + 218 backend)
+pytest tests                                  # Python: 750 tests (360 FL + 390 backend)
 
 # Frontend tests live in tests/, outside frontend/, so packages need a symlink (create once; gitignored):
 ln -s frontend/node_modules node_modules
-cd frontend && npx vitest run                 # Vitest: 232 tests in 27 files
+cd frontend && npx vitest run                 # Vitest: 664 tests in 53 files
 ```
-Total: **745 tests**. The three Playwright e2e specs in `tests/cliniq/frontend/e2e/` need a running app and are not part of this count.
+Total: **1,414 tests** (750 + 664), with **99%** Python statement coverage and **100%** frontend statement coverage (`docs/CLINIQ_TESTING.md`, Section 13). The four Playwright e2e specs in `tests/cliniq/frontend/e2e/` hold **33 more** and need a running backend on port 8000; they are not part of this count.
 
 ---
 
@@ -1021,6 +1023,8 @@ Total: **745 tests**. The three Playwright e2e specs in `tests/cliniq/frontend/e
 **Phase 10 — Validation framework.** The three-run self-consistency check was replaced by nine methods (seven rule checks and two AI-judge checks). Three runtime checks and a conformal range were added for the SOFA score, and the SOFA validation drawer was made to read the training metadata live.
 
 **Phase 11 — Final retrain and documentation (2026-11-24).** Final run: MAE 1.80, R² 0.48, AUROC 0.918, alert recall 67.8% at 96.6% specificity. All documents were updated to match. No further model changes are planned.
+
+**Phase 12 — Live camera panel and test expansion (2026-11-27).** The camera window gained a right-hand panel that shows the live SOFA, the two camera inputs (live value next to the value the last SOFA used), the clinical note, the vitals and a countdown, so it is visible that the camera values go into the model. The test suite grew from 745 to **1,414** unit, integration and system tests (plus 33 browser tests), taking Python coverage from 83% to **99%** and frontend statement coverage from 79% to **100%**. Four small fixes followed: `setup.py` now prints the real dashboard address (5173, not 5174), the history drawer closes on Escape, a failed AI report no longer replaces the last good one, and two unused components were removed. No model or backend logic changed.
 
 ---
 

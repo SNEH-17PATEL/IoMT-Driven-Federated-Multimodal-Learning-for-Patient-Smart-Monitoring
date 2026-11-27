@@ -64,22 +64,39 @@ describe('per-frame eye state', () => {
 })
 
 describe('GCS eye score from the 30 s window', () => {
-  const win = (states, fps = 30) => states.map((state, i) => ({ ts: i / fps, state }))
+  const win = (states, fps = 30, browDown = 0) =>
+    states.map((state, i) => ({ ts: i / fps, state, browDown }))
   const repeat = (s, n) => Array(n).fill(s)
+  // 100 frames: `open` frames then `closed` frames, repeated `times`
+  const flicker = (times) =>
+    Array.from({ length: times }, () => [...repeat('open', 6), ...repeat('closed', 24)]).flat()
 
-  it('E4 when eyes are open ≥ 70 % of the time (blinks allowed)', () => {
+  it('E4 when eyes are completely open (blinks allowed)', () => {
+    expect(gcsFromWindow(win(repeat('open', 100))).score).toBe(4)
     expect(gcsFromWindow(win([...repeat('open', 80), ...repeat('closed', 20)])).score).toBe(4)
   })
-  it('E3 when open or partly open ≥ 30 % of the time', () => {
-    expect(gcsFromWindow(win([...repeat('partial', 40), ...repeat('closed', 60)])).score).toBe(3)
+  it('E3 when eyes are completely closed with a calm face', () => {
+    expect(gcsFromWindow(win(repeat('closed', 100), 30, 0.05)).score).toBe(3)
   })
-  it('E2 for a brief flicker of at least 0.1 s', () => {
-    expect(gcsFromWindow(win([...repeat('closed', 95), ...repeat('open', 5)])).score).toBe(2)
+  it('E2 when the eyes flicker open repeatedly', () => {
+    expect(gcsFromWindow(win(flicker(4), 30, 0.05)).score).toBe(2)
   })
-  it('E1 when the eyes stay closed', () => {
-    expect(gcsFromWindow(win(repeat('closed', 100))).score).toBe(1)
+  it('E1 when the eyes are closed and the eyebrows are narrowed', () => {
+    expect(gcsFromWindow(win(repeat('closed', 100), 30, 0.5)).score).toBe(1)
   })
-  it('a single-frame twitch is not a flicker', () => {
-    expect(gcsFromWindow(win([...repeat('closed', 99), 'open'])).score).toBe(1)
+  it('E1 appears right after an earlier flicker once the eyes shut with narrowed brows', () => {
+    const frames = [...win(flicker(3), 30, 0.05), ...win(repeat('closed', 150), 30, 0.2).map(f => ({ ...f, ts: f.ts + 3 }))]
+    expect(gcsFromWindow(frames).score).toBe(1)
+  })
+  it('a slight brow lowering (0.15) while eyes are shut is enough for E1', () => {
+    expect(gcsFromWindow(win(repeat('closed', 100), 30, 0.15)).score).toBe(1)
+  })
+  it('one or two openings are not a flicker', () => {
+    expect(gcsFromWindow(win(flicker(2), 30, 0.05)).score).toBe(3)
+  })
+  it('single-frame twitches are not openings', () => {
+    const frames = repeat('closed', 100)
+    ;[20, 50, 80].forEach(i => { frames[i] = 'open' })
+    expect(gcsFromWindow(win(frames, 30, 0.5)).score).toBe(1)
   })
 })

@@ -10,18 +10,6 @@ const AMBER  = 'var(--warn-l)'
 const PURPLE = '#a78bfa'
 
 /* ── Small reusable pieces ── */
-function Eyebrow({ children }) {
-  return (
-    <p style={{
-      fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em',
-      textTransform: 'uppercase', color: 'var(--t4)',
-      fontFamily: 'var(--font-display)', marginBottom: 10,
-    }}>
-      {children}
-    </p>
-  )
-}
-
 function MetricTile({ label, value, sub, accent }) {
   return (
     <div style={{

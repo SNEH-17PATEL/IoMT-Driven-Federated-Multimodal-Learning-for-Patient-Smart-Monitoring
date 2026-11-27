@@ -38,60 +38,6 @@ function InfoBox({ children, accent }) {
   )
 }
 
-/* ── Method score bar ── */
-function MethodBar({ icon, name, weight, score, note }) {
-  const pct = Math.round((score ?? 0) * 100)
-  const color =
-    score >= 0.85 ? GREEN :
-    score >= 0.65 ? AMBER :
-    RED
-
-  return (
-    <div style={{
-      background: 'var(--s2)', border: '1px solid var(--b1)',
-      borderRadius: 'var(--r-sm)', padding: '10px 12px',
-      borderLeft: `3px solid ${color}`,
-    }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0, flex: 1 }}>
-          <span style={{ fontSize: 14, flexShrink: 0 }}>{icon}</span>
-          <span style={{ fontSize: '12px', fontWeight: 600, color: 'var(--t1)', fontFamily: 'var(--font-display)', minWidth: 0 }}>
-            {name}
-          </span>
-          <span style={{
-            fontSize: '10px', color: 'var(--t4)', background: 'var(--s3)',
-            borderRadius: 10, padding: '2px 7px', flexShrink: 0,
-            fontFamily: 'var(--font-display)', fontWeight: 600,
-          }}>
-            {weight}
-          </span>
-        </div>
-        <span className="num" style={{
-          fontSize: '12px', fontWeight: 700, color, minWidth: 40,
-          textAlign: 'right', fontFamily: 'var(--font-display)',
-        }}>
-          {score != null ? score.toFixed(2) : '—'}
-        </span>
-      </div>
-
-      <div style={{ height: 5, background: 'var(--s3)', borderRadius: 3, overflow: 'hidden' }}>
-        <motion.div
-          initial={{ width: 0 }}
-          animate={{ width: `${pct}%` }}
-          transition={{ duration: 0.7, ease: [0.4, 0, 0.2, 1], delay: 0.1 }}
-          style={{ height: '100%', borderRadius: 3, background: color }}
-        />
-      </div>
-
-      {note && (
-        <p style={{ fontSize: '11px', color: 'var(--t3)', marginTop: 5, fontFamily: 'var(--font-display)', lineHeight: 1.4 }}>
-          {note}
-        </p>
-      )}
-    </div>
-  )
-}
-
 /* ── Overview tab ── */
 function OverviewTab({ reportData }) {
   const score = reportData?.reliability_score

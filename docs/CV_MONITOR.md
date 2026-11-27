@@ -1,7 +1,7 @@
 # CV Monitor — Technical Documentation
 **Module:** ClinIQ ICU Clinical Decision Support System — Camera (Computer Vision) Monitor
 **Status:** Fully implemented and verified
-**Last updated:** 2026-11-24
+**Last updated:** 2026-11-27
 **Purpose:** Measure two values from a webcam using facial analysis, with no contact with the patient: a **Stress Score (0–10)** and a **GCS Eye-Opening score (1–4)**.
 
 > **What changed since the first version of this document.** The monitor used to be a separate Python program (`cv_monitor.py`, OpenCV). **That file no longer exists.** The monitor is now built into the dashboard and runs **entirely in the web browser**: React plus Google's MediaPipe FaceLandmarker compiled to WebAssembly. The scoring formulas are the same ones described here; they were ported one-to-one into JavaScript. Everything in this document describes the current browser implementation, in `frontend/src/components/cv/CVMonitorModal.jsx`.
@@ -394,9 +394,10 @@ Geometry fails on anatomical variation, on baseline dependency (a wrong default 
 
 | File | What it does |
 |---|---|
-| `frontend/src/components/cv/CVMonitorModal.jsx` (999 lines) | The whole monitor: model loading, camera, per-frame loop, scoring functions, the pop-up screen |
+| `frontend/src/components/cv/CVMonitorModal.jsx` (1,014 lines) | The whole monitor: model loading, camera, per-frame loop, scoring functions, the pop-up screen |
+| `frontend/src/components/cv/CVLivePanel.jsx` | The **right-hand panel** beside the camera: live SOFA, the two camera inputs, the clinical note, the vitals and a timer (Section 10, "The live model panel") |
 | `frontend/src/components/cv/CVMonitorFAB.jsx` | The round floating button that opens it |
-| `frontend/src/pages/MonitorDashboard.jsx` | Holds the on/off state and the live values; passes them to the prediction loop |
+| `frontend/src/pages/MonitorDashboard.jsx` | Holds the on/off state and the live values; passes them to the prediction loop, and passes the latest prediction, the countdown and the live values to the window so the panel can show them |
 | `frontend/public/mediapipe/wasm/` | The six MediaPipe WebAssembly files |
 | `frontend/package.json` | Dependency `@mediapipe/tasks-vision` |
 
@@ -480,6 +481,35 @@ A scale of four dots E1–E4 with the current one lit, the label and colour (**E
 
 Below the dots the card shows "Eye Aspect Ratio (EAR)" (the smoothed value, to 3 decimals) and "Open≥ … Partial≥ …" (the two thresholds in use) followed by "(personal)" in green or "(default)" in amber. When the face is lost after calibration, the video shows "No face detected — centre your face in the camera". The footer reads: "PSPI formula · 30s GCS window · Live readings replace dataset GCS Eye & Stress in the next SOFA prediction".
 
+### The live model panel (right-hand side)
+Added 2026-11-27. The camera window is now wide: the **camera picture and the two score cards on the left**, and a **vertical panel on the right** (`CVLivePanel`) whose job is to **prove that the camera values go into the model and to show the result**. On a narrow screen the panel wraps below the picture. It has five blocks, top to bottom:
+
+| Block | What it shows |
+|---|---|
+| **Predicted SOFA (output)** | The score out of 24, the risk level, the 90% range and an ALERT tag when the alert fires. This is the latest prediction from the dashboard |
+| **Next SOFA prediction (timer)** | The dashboard's 90-second countdown as `m:ss` with a progress bar, or "Predicting now" while a request is running. Under it, **one line says which values the next prediction will use** (see below) |
+| **Input 1 and 2: camera features** | For *stress* and for *GCS eye*: **"Live from camera"** (what the camera measures now) next to **"Used in last SOFA"** (what the backend really received for the last prediction), with a badge |
+| **Input 3: clinical note** | The note text for this reading (it becomes the 90 TF-IDF features), or "No clinical notes on record for this reading." |
+| **Other inputs: vitals** | HR, RR, SpO₂, Temp, SBP, DBP and MAP, coloured normal or abnormal |
+
+**The badge on each camera input**
+
+| Badge | Meaning |
+|---|---|
+| **WAITING FOR CAMERA** | There is no live reading yet (still calibrating, no face, or the camera is closed) |
+| **SENDS NEXT CYCLE** | The camera has a live value that differs from what the last SOFA used; it goes into the model when the timer ends |
+| **IN MODEL ✓** | The live value equals the one the last SOFA used: the camera value **is** in the model result you are looking at |
+
+**The timer line: database or camera?**
+- **"At 0 → CAMERA values go into the model"** (purple) while the camera is calibrated and sees a face.
+- **"At 0 → DATABASE values go into the model"** (grey) in every other case, including when the camera window is closed.
+
+This is how the dashboard already behaved (Section 11); the panel only makes it visible. The values are read **at the moment the timer ends**, not averaged over the 90 seconds.
+
+**A demo that shows the whole path:** (1) open the camera with no one in front of it: the badges say WAITING FOR CAMERA and the line says DATABASE; (2) face the camera until calibration ends: the line turns purple and the live values appear; (3) wait for the timer to reach zero: the SOFA updates, "Used in last SOFA" now equals the live values, and the badge reads **IN MODEL ✓**; (4) close the camera: the next prediction goes back to the database values. The effect on the SOFA is small (Section 11).
+
+**One thing to know:** while the window is open, its dark backdrop covers the floating camera button, so the button cannot be clicked again. Close the window with Esc, the ✕, or by clicking outside it.
+
 ### The floating button
 `CVMonitorFAB`: a purple eye icon at the bottom right of the monitor page, second from the bottom (History sits 28 px from the bottom edge, the camera button 88 px, LLM validation 148 px, SOFA validation 208 px). It blinks slowly; when the monitor is active it blinks faster, glows and shows a red live dot, and its label reads "CV Live — Click to Close" (otherwise "Live CV Monitor"). The four floating buttons from bottom to top are History, Camera monitor, LLM validation and SOFA validation.
 
@@ -557,12 +587,14 @@ Every value below is in `CVMonitorModal.jsx`.
 
 ## 13. Tests
 
-The camera monitor has **26 automated tests** in `tests/cliniq/frontend/unit/components/cv/`, all passing (run with Vitest; see `docs/CLINIQ_TESTING.md`).
+The camera monitor has **94 automated unit tests** in `tests/cliniq/frontend/unit/components/cv/` (all passing, run with Vitest), plus API tests in the backend and **12 browser tests** that open the window for real. See `docs/CLINIQ_TESTING.md` for the full guide.
 
 | File | Tests | What it checks |
 |---|---|---|
 | `cvScoring.test.js` | 16 | The scoring maths (below) |
 | `CVMonitorModal.test.jsx` | 6 | The pop-up: hidden when closed; shown when open; the supplementary label; the footer states that live readings feed the next SOFA prediction; no score cards before the camera runs; **live readings are cleared when the monitor closes** |
+| `CVMonitorModalFlow.test.jsx` | 35 | The **whole start-up and detection flow** with a fake camera, fake face detector and fake clock (below) |
+| `CVLivePanel.test.jsx` | 33 | The right-hand panel (below) |
 | `CVMonitorFAB.test.jsx` | 4 | The floating button |
 
 **`cvScoring.test.js` in detail:**
@@ -572,7 +604,21 @@ The camera monitor has **26 automated tests** in `tests/cliniq/frontend/unit/com
 - **Eye state (2):** the blink blendshape overrides EAR; thresholds give open, partial and closed.
 - **GCS window (5):** E4 at ≥ 70% open (blinks allowed); E3 at ≥ 30% open or partial; E2 for a flicker of at least 0.1 s; E1 when eyes stay closed; a single-frame twitch is not a flicker.
 
-The face model and camera are **not** exercised by automated tests (they need a real browser and webcam); that part is checked by hand. **The API side is not covered either:** no backend test sends `cv_gcs_eye` or `cv_stress` to `/api/predict`, so the 1–4 and 0–10 range checks and the "live values replace recorded values" path have no automated test, and the frontend API-client test does not call `runPredict` with camera data. This gap is also listed in `docs/CLINIQ_TESTING.md`, Section 14.
+**`CVMonitorModalFlow.test.jsx` in detail** (added 2026-11-27). It drives the real detection loop with a scripted face detector, so no webcam and no 12 MB model are needed:
+- **Start-up (9):** the loading messages in order; `NotAllowedError` and `NotFoundError` give the friendly messages; a download failure explains "internet connection required"; any other message passes through; **Retry** starts again.
+- **Closing (6):** Esc, ✕ and the backdrop close it; unmounting stops the camera, closes the model and sends `null`; closing during start-up never starts the camera; a camera stream that arrives late is released.
+- **Calibration (6):** progress is shown; "centre your face" with no face; **nothing is sent during calibration**; duplicate frames are skipped; a frame where detection throws does not stop the loop.
+- **After calibration (8):** the stress and GCS cards appear; **nothing is sent until the 10-second window is full**, then `{stress, gcs_eye}` is; open eyes give E4 and closed eyes give E1 (and that is what is sent); a strained face raises stress; an unchanged reading is not resent; the default thresholds are used when the eyes never open enough to calibrate.
+- **Face lost (3):** the warning appears; **after 3 seconds the reading is cleared (`null`)**; a reading that was never sent is never cleared.
+- **Panel wiring (2):** the panel receives the prediction, the countdown and the live values.
+
+**`CVLivePanel.test.jsx` in detail** (added): the predicted SOFA, risk, range and ALERT; the timer as `m:ss`, "Predicting now" and the progress bar; the **DATABASE / CAMERA line**; the three camera badges (WAITING FOR CAMERA, IN MODEL ✓, SENDS NEXT CYCLE), each feature decided on its own; the plain-words description of the live reading; the note text and its empty message; the seven vitals.
+
+**API and client tests** (added): `test_api_error_paths.py` sends `cv_gcs_eye` of 0, 5, −1, 99 and `cv_stress` of −0.1, 10.1, 11, −5 to `/api/predict` and expects **400** for each; `test_ml_service_branches.py` proves that **live camera values replace the stored ones and change the model input** (the SOFA differs) and that the prediction is logged with them; `clientCameraFields.test.js` proves `runPredict` sends the camera fields **only when the camera has a value** (a stress of exactly 0 is sent).
+
+**Browser tests** (`cv_live_panel.spec.js`, 12): Chromium is given a synthetic webcam and the model download is answered locally. They check that the window opens with the panel on its right, that the panel shows the predicted SOFA, both camera inputs, the note and the vitals, that **with no camera reading it says DATABASE values will be used**, that Esc and the backdrop close it, and that the floating camera button is covered while the window is open.
+
+**What is still checked only by hand:** the **real** MediaPipe model and a real face. The unit tests use a fake detector, and the browser tests use a synthetic webcam (which never shows a face), so how well the real model reads a real face is judged by eye, not by an automated test.
 
 ---
 
@@ -645,8 +691,8 @@ The face model and camera are **not** exercised by automated tests (they need a 
 
 ---
 
-*Documentation for the ClinIQ ICU CDSS capstone — last updated 2026-11-24.*
+*Documentation for the ClinIQ ICU CDSS capstone — last updated 2026-11-27.*
 *Stress scoring: PSPI formula (Prkachin & Solomon, 2008, Pain 137(2)).*
 *GCS Eye scoring: Teasdale & Jennett (1974), adapted for continuous camera-based assessment.*
 *Facial analysis: MediaPipe FaceLandmarker (Google) with 52 blendshapes, running in the browser.*
-*Implementation: `frontend/src/components/cv/CVMonitorModal.jsx`; 26 Vitest tests; measured effect on SOFA: about 0.3–1.4 points, no band or alert change (Section 11).*
+*Implementation: `frontend/src/components/cv/CVMonitorModal.jsx` and `CVLivePanel.jsx`; 94 Vitest tests, 12 browser tests and API tests; measured effect on SOFA: about 0.3–1.4 points, no band or alert change (Section 11).*

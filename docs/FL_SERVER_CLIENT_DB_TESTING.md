@@ -1,23 +1,24 @@
 # FL System — Complete Testing Guide
 **What every federated-learning test does, why it exists, and how the suite fits together**
 
-**Last updated:** 2026-11-24
-**Result:** **295 FL tests, all passing** (264 fast + 31 slow) · whole Python suite **513 passed** · Vitest **232 passed**
-**Measured line coverage of the FL modules:** 80% overall (details in Section 17)
+**Last updated:** 2026-11-27
+**Result:** **360 FL tests, all passing** (287 fast + 73 slow) · whole Python suite **750 passed** · Vitest **664 passed**
+**Measured statement coverage of the FL modules:** **97%** with the FL tests alone, **99%** counting `db.py` at its whole-suite figure (details in Section 17)
 
 > **Scope:** `model_utils.py`, `db.py` (the FL helpers), `fl_dashboard.py`, `client.py`, `server.py`, `train_federated.py`, `migrate_to_db.py`
 > **All tests live in:** `icu_monitor/tests/fl/`
 > **Not covered here:** the ClinIQ dashboard and its API (see `CLINIQ_TESTING.md`)
-> **Everything below was checked against the real test files and a real run on 2026-11-24.** Every test name, count and number comes from the code, not from memory.
+> **Everything below was checked against the real test files and a real run on 2026-11-27.** Every test name, count and number comes from the code, not from memory.
 
 ---
 
 ## How to Read This Document
 
 - **Sections 1–5** explain *why* the tests are built the way they are, the tools, and the shared setup every test uses.
-- **Sections 6–15** describe the **10 phases** of tests, one phase per section. Each phase lists its tests with the reason each one exists.
+- **Sections 6–15** describe the **first 10 phases** of tests, one phase per section. Each phase lists its tests with the reason each one exists.
 - **Sections 16–18** give the run commands, real coverage numbers and the status table.
 - **Section 19** lists things the tests deliberately do **not** check, and known quirks, so nothing is hidden.
+- **Section 20** (added 2026-11-27) describes **Phases 11–13**: the tests that run the project's scripts for real, in a sandbox, which is how the coverage rose from 80% to 97%.
 
 If you only want to run the tests, jump to [Section 16](#16-run-commands).
 
@@ -38,12 +39,13 @@ If you only want to run the tests, jump to [Section 16](#16-run-commands).
 11. [Phase 6 — Train Federated Helpers (32 tests)](#11-phase-6--train-federated-helpers-32-tests)
 12. [Phase 7 — Database ↔ Model Integration (10 tests)](#12-phase-7--database--model-integration-10-tests)
 13. [Phase 8 — FL Round Integration (14 tests)](#13-phase-8--fl-round-integration-14-tests)
-14. [Phase 9 — Migration Integration (19 tests)](#14-phase-9--migration-integration-19-tests)
+14. [Phase 9 — Migration Integration (23 tests)](#14-phase-9--migration-integration-23-tests)
 15. [Phase 10 — System Tests (17 tests)](#15-phase-10--system-tests-17-tests)
 16. [Run Commands](#16-run-commands)
 17. [Coverage — Measured, Not Guessed](#17-coverage--measured-not-guessed)
 18. [Implementation Status](#18-implementation-status)
 19. [What the Tests Do Not Cover, and Known Quirks](#19-what-the-tests-do-not-cover-and-known-quirks)
+20. [Phases 11–13 — Script Entry Points, Training Script and Dashboard Page (added 2026-11-27)](#20-phases-1113--script-entry-points-training-script-and-dashboard-page-added-2026-11-27)
 
 ---
 
@@ -110,18 +112,21 @@ icu_monitor/tests/fl/
 │   ├── test_fl_dashboard_fns.py     ←  50 tests  pure functions of fl_dashboard.py
 │   ├── test_client_logic.py         ←  22 tests  client.py
 │   ├── test_server_strategy.py      ←  19 tests  server.py
-│   └── test_train_federated_fns.py  ←  32 tests  train_federated.py
-│                                       (235 unit tests)
+│   ├── test_train_federated_fns.py  ←  32 tests  train_federated.py
+│   └── test_script_entrypoints.py   ←  19 tests  client.py, server.py run as scripts; setup.py checked; model_utils edges  (added)
+│                                       (254 unit tests)
 ├── integration/                     ← several pieces working together
 │   ├── test_db_model_integration.py ←  10 tests  DB → dataset → train → evaluate
 │   ├── test_fl_round_integration.py ←  14 tests  a full FL round without Flower  [slow]
-│   └── test_migrate_to_db.py        ←  19 tests  migrate() on a temporary database
-│                                       (43 integration tests)
+│   └── test_migrate_to_db.py        ←  23 tests  migrate() on a temporary database (4 added)
+│                                       (47 integration tests)
 └── system/                          ← the whole simulation from start to finish
-    └── test_fl_system.py            ←  17 tests  fl_thread with synthetic hospitals [slow]
-                                        (17 system tests)
+    ├── test_fl_system.py            ←  17 tests  fl_thread with synthetic hospitals [slow]
+    ├── test_train_federated_script.py ← 24 tests  train_federated.py run for real in a sandbox [slow]  (added)
+    └── test_fl_dashboard_app.py     ←  18 tests  the Streamlit page driven by AppTest [slow]  (added)
+                                        (59 system tests)
 
-235 + 43 + 17 = 295 tests.   Slow tests: 14 (round integration) + 17 (system) = 31.
+254 + 47 + 59 = 360 tests.   Slow tests: 14 (round integration) + 17 + 24 + 18 (system) = 73.
 ```
 
 **Why three levels?**
@@ -173,10 +178,10 @@ Floating-point numbers are not exact (`0.1 + 0.2 != 0.3` in Python). `npt.assert
 ### `@pytest.mark.slow`
 Tests that run real training are marked `slow`. Run only the fast ones during development:
 ```bash
-pytest tests/fl -m "not slow"     # 264 tests, about 7 seconds
-pytest tests/fl -m slow           # 31 tests, about 6 seconds
+pytest tests/fl -m "not slow"     # 287 tests, about 10 seconds
+pytest tests/fl -m slow           # 73 tests, about 1.5 minutes
 ```
-(On this machine both groups are quick because the synthetic networks are tiny; "slow" is relative to the unit tests.)
+(The original 31 slow tests are quick because the synthetic networks are tiny. The 42 added on 2026-11-27 run whole scripts and a Streamlit page, so the slow group as a whole now takes about 1.5 minutes.)
 
 ---
 
@@ -739,11 +744,11 @@ Groups: 8A manual training and aggregation **5** · 8B `fl_thread` state trackin
 
 ---
 
-## 14. Phase 9 — Migration Integration (19 tests)
+## 14. Phase 9 — Migration Integration (23 tests)
 
 **File:** `tests/fl/integration/test_migrate_to_db.py` · **Goal:** test `migrate_to_db.migrate()`, the one-time import of the CSV files into the SQLite database.
 
-> **The count is 19.** The file's docstring says "17 tests" and lists groups that add up to 17; the file also has the two `_check_cwd` tests, bringing it to 19.
+> **The count is 23.** The file's docstring says "17 tests" and lists groups that add up to 17; the file also has the two `_check_cwd` tests (19), and on 2026-11-27 **four more** were added for the skip and failure paths (group 9G, below).
 
 ### What `migrate()` does
 It first calls `_check_cwd()` (aborts unless run from `icu_monitor/`), then `init_db()`, then imports:
@@ -762,7 +767,7 @@ A missing file is reported and skipped. A hospital that already has rows in `fl_
 ### How the tests stay safe
 `monkeypatch.chdir(tmp_path)` makes the relative CSV paths resolve inside a temporary folder; both `db.DB_PATH` and `migrate_to_db.DB_PATH` point to a temporary database; `_check_cwd` is switched off inside the temporary folder (it has its own tests). Small CSV builders (`_vitals_df`, `_hist_df`, `_sp_df`, `_fl_df`) and `_create_all_csvs()` create a full stub tree. The fixtures are `patched_env`, `migrated_db` (one `migrate()` call) and `conn`.
 
-Groups: 9A happy path **5** · 9B idempotency **1** · 9C column renames **3** · 9D `client_id` **2** · 9E edge cases **2** · 9F structure and working-directory guard **6** (4 structure checks plus the 2 `_check_cwd` tests). Total 19.
+Groups: 9G skip and failure paths **4** (added) · 9A happy path **5** · 9B idempotency **1** · 9C column renames **3** · 9D `client_id` **2** · 9E edge cases **2** · 9F structure and working-directory guard **6** (4 structure checks plus the 2 `_check_cwd` tests). Total 19.
 
 | Test | Why it matters |
 |---|---|
@@ -782,6 +787,15 @@ Groups: 9A happy path **5** · 9B idempotency **1** · 9C column renames **3** �
 | `db_file_size_reported_without_crash` | The size report in the summary cannot crash |
 | **`check_cwd_exits_outside_icu_monitor`** | Running from another folder aborts with exit code 1, instead of "succeeding" with empty tables (every "not found" is otherwise swallowed) |
 | `check_cwd_passes_inside_icu_monitor` | From the project folder the guard allows the run |
+
+**9G — skip and failure paths (4 tests, added 2026-11-27)**
+
+| Test | Why it matters |
+|---|---|
+| `empty_prediction_history_csv_is_skipped_with_a_warning` | A header-only history file is reported ("… is empty") and skipped; the other patients are still imported |
+| `sample_csv_missing_required_columns_is_skipped` | A sample-patient file missing required columns (for example `stress_score`, `GCS_eye_opening`) is **not imported**, and the message names the missing columns. Note that `clinical_note` is not a required column |
+| `fl_import_survives_an_unreadable_table_info_query` | If the database's table-info query fails, the migration carries on and still imports all 9 FL rows |
+| `running_the_file_as_a_script_hits_the_wrong_directory_guard` | `python migrate_to_db.py` reaches `migrate()` through its `__main__` guard; from a folder that is not `icu_monitor/` the safety check stops it with exit code 1 |
 
 **Why the column renames matter:** the backend's SQL uses the clean names (`SELECT SpO2 …`). If the import left `SpO₂` in place, those queries would fail with "no such column".
 
@@ -840,28 +854,28 @@ Groups: 10A single round **5** · 10B client and weight metrics **4** · 10C mul
 cd icu_monitor
 
 # ── FL tests ────────────────────────────────────────────────────────────
-pytest tests/fl                       # all 295 FL tests         (≈ 9 s)
-pytest tests/fl -m "not slow"         # 264 fast tests           (≈ 7 s)
-pytest tests/fl -m slow               # 31 slow tests            (≈ 6 s)
+pytest tests/fl                       # all 360 FL tests         (≈ 20 s)
+pytest tests/fl -m "not slow"         # 287 fast tests           (≈ 10 s)
+pytest tests/fl -m slow               # 73 slow tests            (≈ 1.5 min)
 
-pytest tests/fl/unit                  # 235 unit tests
-pytest tests/fl/integration           # 43 integration tests
-pytest tests/fl/system                # 17 system tests
+pytest tests/fl/unit                  # 254 unit tests
+pytest tests/fl/integration           # 47 integration tests
+pytest tests/fl/system                # 59 system tests
 
 # one file, or one test
 pytest tests/fl/unit/test_model_utils.py -v
 pytest tests/fl/unit/test_model_utils.py::test_train_model_default_is_plain_mse -v
 
 # ── Everything (ClinIQ backend + FL) ────────────────────────────────────
-pytest tests                          # 513 passed
-pytest tests -m "not slow"            # 472 passed, 41 deselected
-#   (the 41 slow tests = 31 FL + 10 that call the real Groq LLM)
+pytest tests                          # 750 passed   (≈ 2 min)
+pytest tests -m "not slow"            # 667 passed, 83 deselected   (≈ 1.7 min)
+#   (the 83 slow tests = 73 FL + 10 that call the real Groq LLM)
 
 # ── Frontend (Vitest) ───────────────────────────────────────────────────
 # Frontend test files live in icu_monitor/tests/, outside frontend/, so packages
 # need a symlink (ignored by git; create it once):
 ln -s frontend/node_modules node_modules
-cd frontend && npx vitest run         # 232 passed (27 files)
+cd frontend && npx vitest run         # 664 passed (53 files)
 ```
 
 **Recommended workflow**
@@ -877,26 +891,25 @@ Before a demo or submission:       pytest tests            (and the Vitest run)
 
 ## 17. Coverage — Measured, Not Guessed
 
-Earlier versions of this document listed *target* percentages. The numbers below are **measured** on 2026-11-24 with the `coverage` package (the `pytest-cov` plugin is not installed, so coverage is run as `python -m coverage run -m pytest …`). They are **line coverage** for each module.
+The first measured version (2026-11-24) gave **80%** for the FL modules, with `train_federated.py` at 65% and `fl_dashboard.py` at 78%. The numbers below were **measured again on 2026-11-27** after Phases 11–13 were added. They are **statement coverage**, measured with the `coverage` package run as `python -m coverage run -m pytest …` (the `pytest-cov` plugin is not installed).
 
-| Module | Lines | Missed | Covered by `tests/fl` only | Covered by the whole non-slow suite |
-|---|---|---|---|---|
-| `model_utils.py` | 159 | 2 | **99%** | 99% |
-| `migrate_to_db.py` | 158 | 7 | **96%** | 96% |
-| `server.py` | 66 | 3 | **95%** | 95% |
-| `client.py` | 68 | 4 | **94%** | 94% |
-| `fl_dashboard.py` | 458 | 102 | **78%** | 62% |
-| `db.py` | 97 | 29 | **70%** | 100% |
-| `train_federated.py` | 400 | 140 | **65%** | 65% |
-| **All seven** | **1,406** | **287** | **80%** | — |
-
-(The second-to-last column counts every FL test including the slow ones; the last column is the non-slow suite, which is why `fl_dashboard.py` is lower there, since its `fl_thread` tests are slow.)
+| Module | Statements | Missed | `tests/fl` only (360) | Whole suite (750) | Before (2026-11-24, `tests/fl` only) |
+|---|---|---|---|---|---|
+| `model_utils.py` | 159 | 0 | **100%** | 100% | 99% |
+| `migrate_to_db.py` | 158 | 0 | **100%** | 100% | 96% |
+| `server.py` | 66 | 0 | **100%** | 100% | 95% |
+| `client.py` | 68 | 0 | **100%** | 100% | 94% |
+| `train_federated.py` | 400 | 4 | **99%** | 99% | 65% |
+| `fl_dashboard.py` | 458 | 13 | **97%** | 97% | 78% |
+| `db.py` | 97 | 29 | **70%** | 100% | 70% |
+| **All seven** | **1,406** | **46** | **96.7%** | — | 80% |
 
 **Reading the numbers**
-- **`db.py` is 70% with the FL tests alone** because the ClinIQ database functions (vitals, history, sample patients) are tested in `tests/cliniq/`. Together the two suites cover **100%** of `db.py`.
-- **`train_federated.py` is 65%.** Its un-covered lines are the heavy module-level steps: the real BigQuery download and TF-IDF (Phase 0), the real 100-round simulation, and the final evaluation. The import-time guards (Section 4) deliberately replace those with stand-ins, since running them would need BigQuery and about 40 minutes. The testable parts (`make_noniid_split`, `HospitalClient`, `SaveBestStrategy`, the constants) are covered.
-- **`fl_dashboard.py` is 78%.** The rest is Streamlit page rendering, which cannot run without a browser and is checked by hand during demos.
-- **`client.py` and `server.py`** are above 94%; the few missed lines are the actual network connection and the "Training complete" print block.
+- **`db.py` is 70% with the FL tests alone** because the ClinIQ database functions (vitals, history, sample patients) are tested in `tests/cliniq/`. Together the two suites cover **100%** of `db.py`. Counting `db.py` at its whole-suite figure of 100%, only 17 of the 1,406 statements are missed: **98.8%**.
+- **`train_federated.py` went from 65% to 99%.** The new Phase 12 tests run the real script in a sandbox with a fake BigQuery, a temporary database and a fake simulation engine, so the Phase 0 download, TF-IDF, split and save steps, the server strategy, the non-IID and differential-privacy options and every error path are now exercised. The 4 missed lines are line 214 (the text cleaner's "if the note is not text, return an empty string" guard, which a fake table with only text notes never triggers) and lines 561–563 (a fallback to the combined training rows inside the non-IID branch, used only when no held-out pool exists).
+- **`fl_dashboard.py` went from 78% to 97%.** The new Phase 13 tests run the real Streamlit page with Streamlit's own test runner (`AppTest`), putting it into the idle, running, stopped, done and error views. The 13 missed lines are the zero-fill of feature columns missing from the database (357), the data-loading helper's empty-data branches (378–384, 418, 426, 467, 496) and the `sleep(1)` that ends a running page (1532, which the tests deliberately interrupt).
+- **`client.py`, `server.py` and `migrate_to_db.py` are 100%.** Phase 11 runs `client.py` and `server.py` as scripts, which reaches the argument check, the zero-fill warning and the metadata merge.
+- **The slow tests carry this.** With the 73 slow FL tests skipped, `fl_dashboard.py` is **62%** and `train_federated.py` **65%** again (the whole non-slow suite is 85%, against 99% with everything).
 
 ---
 
@@ -912,11 +925,14 @@ Earlier versions of this document listed *target* percentages. The numbers below
 | 6 — Train-federated helpers | 32 | ✅ Passing | `tests/fl/unit/test_train_federated_fns.py` |
 | 7 — DB ↔ model integration | 10 | ✅ Passing | `tests/fl/integration/test_db_model_integration.py` |
 | 8 — FL round integration | 14 | ✅ Passing (slow) | `tests/fl/integration/test_fl_round_integration.py` |
-| 9 — Migration integration | 19 | ✅ Passing | `tests/fl/integration/test_migrate_to_db.py` |
+| 9 — Migration integration | 23 | ✅ Passing | `tests/fl/integration/test_migrate_to_db.py` |
 | 10 — System tests | 17 | ✅ Passing (slow) | `tests/fl/system/test_fl_system.py` |
-| **Total FL** | **295** | **✅ all passing** | |
+| 11 — Script entry points | 19 | ✅ Passing | `tests/fl/unit/test_script_entrypoints.py` |
+| 12 — Training script | 24 | ✅ Passing (slow) | `tests/fl/system/test_train_federated_script.py` |
+| 13 — Dashboard page | 18 | ✅ Passing (slow) | `tests/fl/system/test_fl_dashboard_app.py` |
+| **Total FL** | **360** | **✅ all passing** | |
 
-Totals: **295 FL + 218 ClinIQ backend = 513 Python tests**, plus **232 Vitest** frontend tests = **745 tests**. (The three Playwright specs in `tests/cliniq/frontend/e2e/` need a running app and are not in these counts.)
+Totals: **360 FL + 390 ClinIQ backend = 750 Python tests**, plus **664 Vitest** frontend tests = **1,414 tests**. (The four Playwright specs in `tests/cliniq/frontend/e2e/` hold 33 more and need a running app; they are not in these counts.)
 
 ---
 
@@ -926,11 +942,13 @@ Stating limits is part of testing honestly.
 
 **Not covered by automated tests**
 - **Real network federated learning.** No test starts a real Flower server and clients over gRPC. The real demo (`server.py` + three `client.py` processes) is tried by hand. The tests cover the logic of each piece, not the connection between them.
-- **The real 100-round training run and Phase 0.** The BigQuery download, the TF-IDF fitting and the full simulation are replaced by stand-ins (Section 4). They are exercised by actually running `python train_federated.py`.
-- **Streamlit page rendering.** Only the pure functions are tested.
+- **The real 100-round training run and a real BigQuery download.** Phase 12 runs the whole script, but with a fake BigQuery client returning a small table and a fake simulation engine, so the real download and the real 100 rounds are exercised only by actually running `python train_federated.py`.
+- **How the Streamlit page looks in a browser.** Phase 13 runs the real page and checks what it writes, but not its colours, layout or animation; those are checked by hand during demos.
 - **Model quality.** These tests check that the code is correct and stable, **not** that the model is accurate. Accuracy (MAE 1.80, R² 0.48, AUROC 0.918) is measured once at the end of training and stored in `models/training_metadata.json`; see `VALIDATION.md`.
 
 **Known quirks (documented, not hidden)**
+- **`test_fl_dashboard_app.py` needs the real `streamlit`, but three older files replace it with a mock** (`test_fl_dashboard_fns.py`, `test_fl_round_integration.py`, `test_fl_system.py` set `sys.modules["streamlit"]` when pytest collects them). The new file swaps the real one in for its own tests and restores the previous state afterwards, so the order of files does not matter.
+- **The Streamlit page keeps its state in a cached singleton**, which a test cannot reach directly. The Phase 13 tests replace `st.cache_resource` with a memoiser they own, which also gives every test a fresh state.
 - **Stale numbers in three test docstrings.** `test_model_utils.py` says "87 tests" (91), `test_client_logic.py` says "19" (22), `test_train_federated_fns.py` says "30" (32) and `test_migrate_to_db.py` says "17" (19). The tests themselves are correct; only the headings are out of date. This document uses the real counts.
 - **Historical placeholder numbers inside tests.** A few tests use MAE 1.8968 / R² 0.5995 (the `load_training_metadata` fallback and the server metadata-merge example). They belong to an earlier model and are test data only.
 - **`fl_dashboard.py` still shows "FedYogi + FedProx" as its default algorithm label and old fallback metadata** if `training_metadata.json` is missing. The tests lock those defaults, so changing them means updating the tests too.
@@ -939,7 +957,61 @@ Stating limits is part of testing honestly.
 
 ---
 
-*Documentation for the ClinIQ ICU CDSS capstone — last updated 2026-11-24.*
-*FL test suite: 21 DB + 91 model_utils + 50 dashboard + 22 client + 19 server + 32 train_federated + 10 DB↔model + 14 FL round + 19 migration + 17 system = **295 tests, all passing**.*
-*Whole Python suite (`pytest tests`): 513 passed · Frontend Vitest: 232 passed (27 files) · Measured FL line coverage: 80%.*
+## 20. Phases 11–13 — Script Entry Points, Training Script and Dashboard Page (added 2026-11-27)
+
+**Why these exist.** Before 2026-11-27 the FL guide recorded honestly that `train_federated.py` was 65% covered and `fl_dashboard.py` 78%, because both do their work the moment they are run and the old tests had to **replace** that work with stand-ins. These three phases take the opposite approach: **run the real script or page, but inside a sandbox**.
+
+### The sandbox idea (different from the import-time guards in Section 4)
+Instead of stubbing out the heavy steps, each test gives the script a **throw-away world** to run in:
+
+| What the script touches | What the test gives it |
+|---|---|
+| The `models/` folder (`scaler.pkl`, `federated_model.pth`, `training_metadata.json`, …) | A **temporary folder** with its own copy of the sklearn files, set as the working directory, so every file the script writes lands there |
+| The SQLite database | A **temporary database** (`db.DB_PATH` redirected) filled with small synthetic hospital rows |
+| Google BigQuery | A **fake `bigquery` module** whose `Client().query(...)` returns small DataFrames |
+| Flower's simulation engine | A **fake `start_simulation`** that drives the script's own server strategy and client factory for two scripted rounds |
+| The network (`start_numpy_client`, `start_server`) | A no-op that records its arguments |
+
+The script's source is run with `exec`, which lets one test **flip a setting** (for example `USE_DP = True`) without editing the real file. **The real `models/` folder and `icu_monitor.db` are never read for writing.** After the runs, the model files still carry their original timestamps and the metadata still reads MAE 1.8006, best round 37.
+
+### Phase 11 — Script entry points (19 tests) — `tests/fl/unit/test_script_entrypoints.py`
+Runs `client.py` and `server.py` as scripts, checks edge cases in `model_utils.py`, and (added 2026-11-27) checks what `setup.py` tells the user.
+
+| Group | Tests | What is checked and why |
+|---|---|---|
+| `model_utils` edges (4) | `train_model` with no data returns 0.0 and **leaves the weights untouched**; a `None` or `NaN` vital is "normal"; the low / normal / high bands | An empty hospital must not break training |
+| **`server.py` (5)** | `_fit_config` passes the round number to clients; Flower is started with **100 rounds, 3 clients** at `127.0.0.1:8080`; the metadata is written (into the sandbox only); **metrics from an earlier training run are kept** (and unknown keys are not); **a corrupt metadata file does not stop the server** | The server writes `training_metadata.json`, so it only ever runs in a temporary folder |
+| **`setup.py` (2)** | The final lines print the real dashboard address, **`http://localhost:5173`** (never 5174); `setup.py`, `playwright.config.js` and the backend's allowed origins all agree on 5173 | `setup.py` used to print 5174, sending first-time users to a page that does not exist |
+| **`client.py` (8)** | Hospital ids 3, 5 and −1 are refused with "must be 0, 1, or 2"; the id argument is required; ids 0, 1, 2 each connect to the local server; **a table missing most feature columns is zero-filled with a warning** and still has all 108 columns | The argument check and the schema-mismatch warning were the last uncovered lines |
+
+### Phase 12 — The training script, run for real (24 tests, all slow) — `tests/fl/system/test_train_federated_script.py`
+Runs the whole of `train_federated.py` in the sandbox.
+
+| Group | Tests | What is checked and why |
+|---|---|---|
+| **Training from an existing table (9)** | End to end: `federated_model.pth`, `shap_background.npy` and `training_metadata.json` are written, with 108 inputs, 100 rounds and `FedAvg + FedProx`; the strategy keeps the **best round** (a loss of 1.0 beats a later 2.1); **no saved test set triggers the "inflated metrics" warning**, a saved one is loaded from disk; **missing feature columns are zero-filled with a warning**; each of the three sklearn files missing stops the run with a clear message; **no weights produced** raises a clear error; a failing metrics call is reported but is not fatal; the risk metrics are stored when they work | This is the real script, in every state a user can put it in |
+| **Settings (3)** | `USE_DP = True` writes the privacy numbers and noises the client's upload; `USE_NONIID_SPLIT = True` gives hospital 2 the most high-SOFA patients; `USE_FEDYOGI = True` switches the strategy class | Each option the README mentions actually changes behaviour |
+| **Non-IID guard (1)** | Too few rows for a non-IID split raises "empty client" | |
+| **Strategy and client pieces (4)** | `client_fn` returns the right hospital; `configure_fit` sends the round number to every client; `aggregate_fit` stores the aggregated weights and, when nothing comes back, **keeps the previous weights** | |
+| **Phase 0, with a fake BigQuery (6)** | With an **empty** `fl_training` table the script runs Phase 0: it connects to `mimic-project-2` / `US`; builds a TF-IDF vocabulary (cleaning MIMIC placeholders and numbers); merges notes and vitals; splits **80/20 stratified by high risk**; fits the scaler; splits the training rows into **three near-equal hospitals with the same high-risk share**; writes `scaler.pkl`, `tfidf_vectorizer.pkl`, `feature_columns.pkl`, the test arrays and the database table; **re-running replaces a hospital's rows** instead of doubling them; and **a missing BigQuery library gives an install hint** | This is the data pipeline that created the 41,798 training rows, now tested end to end on a small table |
+
+### Phase 13 — The Streamlit page, run for real (18 tests, all slow) — `tests/fl/system/test_fl_dashboard_app.py`
+Runs `fl_dashboard.py` with Streamlit's own test runner, `AppTest`, so every `st.*` call really executes.
+
+| Group | Tests | What is checked and why |
+|---|---|---|
+| **Guard screens (2)** | With no training table and no scaler the page stops with a clear "Missing data" message and **shows no buttons**; if loading the data fails it reports "Failed to load training data" with the reason | A fresh clone has no `fl_training`, so this is what a first-time user sees |
+| **Idle page (7)** | The controls are **Rounds 5–15 (default 10)**, **Speed**, the four **algorithms** (default FedYogi + FedProx) and **Start / Stop / Reset** (Stop disabled); the "How federated learning works" guide; the algorithm banner shows only for the default; the Model Info tab shows the metadata (and the fallback numbers without a file, and the **differential-privacy block** when enabled); the three hospitals are summarised | This pins the real control ranges, which the README now documents correctly |
+| **Buttons (2)** | **Start launches the background run with the chosen settings** (6 rounds, 2.5 s, FedAvg) and marks the state "running"; **Reset** returns to idle | |
+| **Result views (7)** | The done, stopped and error views render with a round history, weight statistics and the best round marked; a view with no completed round shows the "appear after Round 1" placeholder; **a running view disables the sliders, the algorithm picker, Start and Reset and enables Stop**; **clicking Stop sets the stop flag** | |
+
+**Two tricks worth knowing.** (1) The page keeps its simulation state in a cached singleton that a test cannot reach, so the tests replace `st.cache_resource` with a memoiser they own; that also gives each test a fresh state. (2) A *running* page ends with `sleep(1)` then a rerun, which would loop forever, so the tests make `sleep` raise **only when called from `fl_dashboard.py`**; everything above that line has already been drawn by then.
+
+**What these phases do not do:** they do not start a real Flower server and clients over the network, call the real BigQuery, run the real 100-round training, or judge how the page looks in a browser (Section 19).
+
+---
+
+*Documentation for the ClinIQ ICU CDSS capstone — last updated 2026-11-27.*
+*FL test suite: 21 DB + 91 model_utils + 50 dashboard + 22 client + 19 server + 32 train_federated + 10 DB↔model + 14 FL round + 23 migration + 17 system + 19 script entry points + 24 training script + 18 dashboard page = **360 tests, all passing**.*
+*Whole Python suite (`pytest tests`): 750 passed · Frontend Vitest: 664 passed (53 files) · Measured FL statement coverage: 96.7% (FL tests alone) / 98.8% (with `db.py` from the whole suite).*
 *Tools actually used: pytest, `unittest.mock` (`MagicMock`, `patch`, `mock_open`), `monkeypatch`, `numpy.testing`. Not used: `pytest-mock`, `pytest-cov`.*

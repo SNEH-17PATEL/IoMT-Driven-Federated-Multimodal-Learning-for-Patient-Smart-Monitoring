@@ -1,7 +1,7 @@
 # Project Context — Complete Implementation Guide
 ## ClinIQ: ICU Clinical Decision Support System with Federated Learning
 
-**Last updated:** 2026-11-24
+**Last updated:** 2026-11-27
 
 > This document explains the whole project from start to finish: what was built, how it was built, why each design decision was made, what was tried and failed, and what the final approach is. A reader who has never seen the project should understand all of it. Every number for the current model comes from `models/training_metadata.json` (the final training run) and from the current code.
 
@@ -787,6 +787,7 @@ One shared file keeps the client and the simulation on identical training, DP an
 | `components/report/ReportContainer.jsx` | Per-mode report fetching, per-reading cache, prefetch of the other mode |
 | `components/report/SHAPPanel.jsx` | Animated SHAP bars (anime.js); keeps last good factors if SHAP fails once |
 | `components/cv/CVMonitorModal.jsx` | Browser camera monitor (Section 23) |
+| `components/cv/CVLivePanel.jsx` | Right-hand panel of the camera window: live SOFA, camera inputs (live vs used), note, vitals, countdown (Section 23) |
 | `components/validation/SOFAValidationDrawer.jsx` | Offline metrics read live from `_training_meta`, runtime checks, conformal range; "—" if metadata missing |
 | `components/validation/LLMValidationDrawer.jsx` | Nine-method breakdown and every violation |
 | `components/layout/HeaderBar.jsx`, `AlertBanner.jsx`, `ThemeToggle.jsx` | Header, risk banner, theme switch |
@@ -808,7 +809,7 @@ One shared file keeps the client and the simulation on identical training, DP an
 | `icu_monitor.db` | SQLite database (MIMIC-III derived; gitignored) |
 
 ### Other
-`data/sample_patients/` holds the 3 demo CSVs (30 recorded readings each). `tests/` holds 745 tests: 513 Python (295 federated learning + 218 backend) and 232 Vitest (27 files), plus 3 Playwright e2e specs that need a running app.
+`data/sample_patients/` holds the 3 demo CSVs (30 recorded readings each). `tests/` holds **1,414** tests: 750 Python (360 federated learning + 390 backend) and 664 Vitest (53 files), plus 4 Playwright e2e specs (33 browser tests) that need a running app. Measured coverage is 99% of Python statements and 100% of frontend statements.
 
 ---
 
@@ -1043,6 +1044,15 @@ A short **personal calibration** (about 3 seconds, at most about 10 seconds for 
 - When active, the live values replace the recorded GCS and stress in the next prediction.
 - Because these two inputs carry modest weight in the trained model (Section 6), the SOFA changes only slightly with them.
 
+### The live model panel (added 2026-11-27)
+The camera window has a **vertical panel on its right** that shows what goes into the model and what comes out:
+- **Output:** the predicted SOFA, the risk level, the 90% range and the alert.
+- **Timer:** the 90-second countdown, and a line saying whether the next prediction will use **camera values** (a calibrated camera sees a face) or **database values** (any other time, including when the window is closed). The values are read at the moment the timer ends.
+- **Inputs 1 and 2:** stress and GCS eye, each as **"Live from camera"** next to **"Used in last SOFA"**, with a badge: *WAITING FOR CAMERA*, *SENDS NEXT CYCLE* (the camera differs from what the last SOFA used) or *IN MODEL ✓* (the same).
+- **Input 3 and the rest:** the clinical note (the text behind the 90 TF-IDF features) and the seven vitals.
+
+It changes nothing in the model or the backend; it only makes the existing hand-off visible, which is useful for showing that the camera values really are inputs. Details: `docs/CV_MONITOR.md`.
+
 ---
 
 ## 24. Limitations
@@ -1132,9 +1142,9 @@ A short **personal calibration** (about 3 seconds, at most about 10 seconds for 
 | Prediction history kept | newest 50 per patient |
 | Server aggregation | FedAvg (`USE_FEDYOGI = False`; optional FedYogi η = 0.001) |
 | FedProx μ | 0.5 |
-| Tests | 745 (513 Python + 232 Vitest) |
+| Tests | 1,414 (750 Python + 664 Vitest), plus 33 browser tests |
 
 ---
 
 *End of Project Context Document.*
-*Last updated: 2026-11-24 — final model: `dataset_v2`, FedAvg + FedProx, plain MSE, 256-128-64 with dropout 0.3, alert ≥ 7. ClinIQ (React + FastAPI) is the production dashboard; the old Streamlit `app.py` is gone. When the model is retrained, update Sections 20 and 16 and the Appendix from `models/training_metadata.json`.*
+*Last updated: 2026-11-27 (camera live panel and test counts; model unchanged since 2026-11-24) — final model: `dataset_v2`, FedAvg + FedProx, plain MSE, 256-128-64 with dropout 0.3, alert ≥ 7. ClinIQ (React + FastAPI) is the production dashboard; the old Streamlit `app.py` is gone. When the model is retrained, update Sections 20 and 16 and the Appendix from `models/training_metadata.json`.*

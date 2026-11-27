@@ -30,7 +30,11 @@ const GCS_OPEN_DEFAULT  = 0.22
 const GCS_PART_DEFAULT  = 0.12
 const GCS_OPEN_FRAC     = 0.70
 const GCS_ANY_FRAC      = 0.30
-const GCS_FLICKER_S     = 0.10
+const GCS_FLICKER_S     = 0.10   // an opening must last this long to count
+const GCS_FLICKER_OPENINGS = 3   // openings in the window that make a flicker (E2)
+const GCS_BROW_NARROW   = 0.12   // mean browDown while eyes are shut = narrowed brows (E1); lower = more sensitive
+const GCS_E1_RECENT_S   = 4.0    // E1 is judged on the last few seconds so it reacts quickly
+const GCS_E1_ANY_FRAC   = 0.20   // eyes must be shut at least 80 % of those seconds
 const GCS_MIN_OBS_S     = 10.0
 const CALIB_FACE_N      = 90
 // A patient whose eyes stay closed (the E1/E2 case) never yields 90 clearly-open
@@ -83,25 +87,46 @@ export function eyeState(ear, blinkScore, openTh, partialTh) {
   return 'closed'
 }
 
+// GCS eye — the four cases the monitor recognises:
+//   E4  eyes completely open
+//   E3  eyes completely closed, calm face
+//   E2  eyes flickering fast (repeated short openings)
+//   E1  eyes closed with the eyebrows narrowed (brows pulled down)
 export function gcsFromWindow(history) {
   if (!history.length) return { score: 4, label: 'Spontaneous' }
-  const states    = history.map(h => h.state)
-  const n         = states.length
-  const openFrac  = states.filter(s => s === 'open').length / n
-  const anyFrac   = states.filter(s => s !== 'closed').length / n
+  const n        = history.length
+  const openFrac = history.filter(h => h.state === 'open').length / n
+  const anyFrac  = history.filter(h => h.state !== 'closed').length / n
 
   if (openFrac >= GCS_OPEN_FRAC) return { score: 4, label: 'Spontaneous' }
-  if (anyFrac  >= GCS_ANY_FRAC)  return { score: 3, label: 'To Voice' }
 
-  const obsSecs  = history.length >= 2 ? history[history.length - 1].ts - history[0].ts : 0
-  const frameSec = n > 1 ? obsSecs / (n - 1) : 1 / 30
-  let run = 0, longest = 0
-  for (const s of states) {
-    run     = s !== 'closed' ? run + 1 : 0
-    longest = Math.max(longest, run)
+  // E1: eyes shut with the eyebrows narrowed, judged on the most recent seconds
+  // (checked before the flicker rule so an earlier E2 does not hide it).
+  const lastT   = history[n - 1].ts
+  const recent  = history.filter(h => lastT - h.ts <= GCS_E1_RECENT_S)
+  const recentClosed = recent.filter(h => h.state === 'closed')
+  if (recent.length >= 5 && recentClosed.length / recent.length >= 1 - GCS_E1_ANY_FRAC) {
+    const browMean = recentClosed.reduce((sum, h) => sum + (h.browDown ?? 0), 0) / recentClosed.length
+    if (browMean >= GCS_BROW_NARROW) return { score: 1, label: 'No Response' }
   }
-  if (longest * frameSec >= GCS_FLICKER_S) return { score: 2, label: 'To Pain' }
-  return { score: 1, label: 'No Response' }
+
+  // Flicker: several separate openings, each lasting at least GCS_FLICKER_S.
+  let openings = 0
+  let runStart = null
+  let lastTs   = null
+  for (const h of history) {
+    if (h.state !== 'closed') {
+      if (runStart === null) runStart = h.ts
+    } else if (runStart !== null) {
+      if (lastTs - runStart >= GCS_FLICKER_S) openings++
+      runStart = null
+    }
+    lastTs = h.ts
+  }
+  if (runStart !== null && lastTs - runStart >= GCS_FLICKER_S) openings++
+  if (openings >= GCS_FLICKER_OPENINGS) return { score: 2, label: 'To Pain' }
+
+  return { score: 3, label: 'To Voice' }
 }
 
 // Stress bands: LOW < 3.5 ≤ MODERATE < 6.5 ≤ HIGH. Shared with VitalsGrid,
@@ -468,7 +493,7 @@ export default function CVMonitorModal({
       // GCS window
       const nowS = Date.now() / 1000
       const est  = eyeState(earSm, blinkV, st.gcsOpenTh, st.gcsPartialTh)
-      st.gcsHistory.push({ ts: nowS, state: est })
+      st.gcsHistory.push({ ts: nowS, state: est, browDown: pairFn('browDown') })
       while (st.gcsHistory.length > 0 && nowS - st.gcsHistory[0].ts > GCS_WIN_S) {
         st.gcsHistory.shift()
       }

@@ -16,11 +16,11 @@
   "test_samples": 10450,
   "input_features": 108,
   "model_architecture": "108 \u2192 256 \u2192 128 \u2192 64 \u2192 1  (ReLU, Dropout 0.3, FedProx)",
-  "best_round": 46,
-  "final_mae": 1.8067,
-  "final_r2": 0.4804,
-  "pred_range_min": 1.84,
-  "pred_range_max": 22.99,
+  "best_round": 37,
+  "final_mae": 1.8006,
+  "final_r2": 0.4806,
+  "pred_range_min": 1.78,
+  "pred_range_max": 23.07,
   "oversample": false,
   "loss_weights": "None \u2014 plain MSE",
   "optimizer": "AdamW (weight_decay=1e-4)",
@@ -45,50 +45,50 @@
       ],
       "confusion_matrix": [
         [
-          6717,
-          304,
-          6
+          6714,
+          306,
+          7
         ],
         [
-          2046,
-          712,
-          63
+          2086,
+          669,
+          66
         ],
         [
-          118,
-          220,
+          119,
+          219,
           264
         ]
       ],
       "per_class": {
         "Low (<5)": {
-          "precision": 0.7563337461997522,
-          "recall": 0.9558844457094066,
-          "sensitivity": 0.9558844457094066,
-          "specificity": 0.3678060181127666,
-          "f1": 0.8444807643952729
+          "precision": 0.7527749747729566,
+          "recall": 0.9554575209904653,
+          "sensitivity": 0.9554575209904653,
+          "specificity": 0.3558282208588957,
+          "f1": 0.842092060704879
         },
         "Moderate (5-<10)": {
-          "precision": 0.5760517799352751,
-          "recall": 0.25239276852180076,
-          "sensitivity": 0.25239276852180076,
-          "specificity": 0.9313147201468083,
-          "f1": 0.35099827458713334
+          "precision": 0.5603015075376885,
+          "recall": 0.23714994682736618,
+          "sensitivity": 0.23714994682736618,
+          "specificity": 0.9311836413684624,
+          "f1": 0.3332503113325031
         },
         "High (>=10)": {
-          "precision": 0.7927927927927928,
+          "precision": 0.7833827893175074,
           "recall": 0.43853820598006643,
           "sensitivity": 0.43853820598006643,
-          "specificity": 0.9929935012185215,
-          "f1": 0.5647058823529412
+          "specificity": 0.992587327376117,
+          "f1": 0.5623003194888179
         }
       },
       "macro": {
-        "precision": 0.70839277297594,
-        "recall": 0.5489384734037579,
-        "sensitivity": 0.5489384734037579,
-        "specificity": 0.7640380798260321,
-        "f1": 0.5867283071117825
+        "precision": 0.698819757209384,
+        "recall": 0.5437152245992993,
+        "sensitivity": 0.5437152245992993,
+        "specificity": 0.7598663965344917,
+        "f1": 0.5792142305087333
       }
     },
     "high_risk_alert": {
@@ -96,28 +96,28 @@
       "actual_high_risk_threshold": 10.0,
       "confusion_matrix": [
         [
-          9516,
-          332
+          9513,
+          335
         ],
         [
-          205,
-          397
+          194,
+          408
         ]
       ],
-      "true_negative": 9516,
-      "false_positive": 332,
-      "false_negative": 205,
-      "true_positive": 397,
-      "precision": 0.5445816186556928,
-      "recall": 0.659468438538206,
-      "sensitivity": 0.659468438538206,
-      "specificity": 0.9662875710804224,
-      "f1": 0.5965439519158527,
-      "auroc": 0.9189919331985719,
-      "pr_auc": 0.640944035561991
+      "true_negative": 9513,
+      "false_positive": 335,
+      "false_negative": 194,
+      "true_positive": 408,
+      "precision": 0.5491251682368775,
+      "recall": 0.6777408637873754,
+      "sensitivity": 0.6777408637873754,
+      "specificity": 0.965982940698619,
+      "f1": 0.6066914498141264,
+      "auroc": 0.9181203799412195,
+      "pr_auc": 0.6465900873840437
     }
   },
   "evaluation_limitation": "One row per ICU stay, split 80/20 by ICU stay \u2014 a patient with several stays can appear in both train and test. Retrospective MIMIC-III results, not independent clinical validation.",
-  "sklearn_version": "1.9.1",
-  "torch_version": "2.15.0+cpu"
+  "sklearn_version": "1.9.0",
+  "torch_version": "2.13.0"
 }

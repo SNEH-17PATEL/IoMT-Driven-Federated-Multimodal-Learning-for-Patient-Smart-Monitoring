@@ -227,7 +227,13 @@ export default function ReportContainer({ predictData, careMode, onReportData })
   const cachedNow = predictData
     ? cacheRef.current.get(`${reportKey(predictData)}|${careMode}`)?.data ?? null
     : null
-  const display = cachedNow ?? reportData ?? prevReportData
+  // A reply with no sections (a soft failure) must not replace the last good report of the
+  // SAME care mode. Prefer a reply that has content; otherwise keep the last good one; only
+  // when there is nothing better show the failed reply (which renders the "unavailable" screen).
+  const goodNow  = hasSections(reportData) ? reportData : null
+  const lastGood = prevReportData && (!prevReportData.care_mode || prevReportData.care_mode === careMode)
+    ? prevReportData : null
+  const display = cachedNow ?? goodNow ?? lastGood ?? reportData ?? prevReportData
   // Never show (or publish) one care mode's report under the other mode's tab
   const wrongMode = !!display?.care_mode && display.care_mode !== careMode
   const shown = wrongMode ? null : display

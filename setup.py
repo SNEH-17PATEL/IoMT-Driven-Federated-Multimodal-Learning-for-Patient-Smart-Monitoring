@@ -275,7 +275,7 @@ def print_summary(use_venv: bool, npm: "str | None") -> None:
     if npm:
         print(f"\n  {_c('1', '2. Start the React frontend')}  (Terminal 2)")
         print(f"     {_c('32', 'cd frontend && npm run dev')}")
-        print(f"     Dashboard  →  {_c('36', 'http://localhost:5174')}")
+        print(f"     Dashboard  →  {_c('36', 'http://localhost:5173')}")
     else:
         print(f"\n  {_c('33', '2. React frontend: install Node.js first, then re-run setup.py')}")
 

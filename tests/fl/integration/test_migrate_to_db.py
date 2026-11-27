@@ -335,3 +335,96 @@ def test_check_cwd_exits_outside_icu_monitor(tmp_path, monkeypatch):
 def test_check_cwd_passes_inside_icu_monitor(monkeypatch):
     monkeypatch.chdir(Path(mig.__file__).resolve().parent)
     mig._check_cwd()  # must not exit
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9G — Skip / failure paths (added for branch coverage)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _rows(db_path, table):
+    c = sqlite3.connect(db_path)
+    try:
+        return c.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    finally:
+        c.close()
+
+
+def test_empty_prediction_history_csv_is_skipped_with_a_warning(patched_env, capsys):
+    """A header-only prediction-history CSV is reported and skipped, not imported."""
+    tmp_path, db_path = patched_env
+    _create_all_csvs(tmp_path)
+    ph = tmp_path / "models" / "prediction_history" / "prediction_history_01.csv"
+    _hist_df().iloc[0:0].to_csv(ph, index=False)          # header only, zero rows
+    mig.migrate()
+    assert "prediction_history_01.csv is empty" in capsys.readouterr().out
+    c = sqlite3.connect(db_path)
+    try:
+        by_patient = dict(c.execute("SELECT patient, COUNT(*) FROM prediction_history GROUP BY patient"))
+    finally:
+        c.close()
+    assert 1 not in by_patient and by_patient.get(2) == 1
+
+
+def test_sample_csv_missing_required_columns_is_skipped(patched_env, capsys):
+    """A sample-patient CSV without the required columns must not be imported."""
+    tmp_path, db_path = patched_env
+    _create_all_csvs(tmp_path)
+    bad = tmp_path / "data" / "sample_patients" / "sample_patient02_data.csv"
+    _sp_df(3).drop(columns=["stress_score", "GCS_eye_opening"]).to_csv(bad, index=False)
+    mig.migrate()
+    out = capsys.readouterr().out
+    assert "sample_patient02_data.csv missing required columns" in out
+    assert "stress_score" in out and "GCS_eye_opening" in out
+    c = sqlite3.connect(db_path)
+    try:
+        by_patient = dict(c.execute("SELECT patient, COUNT(*) FROM sample_patients GROUP BY patient"))
+    finally:
+        c.close()
+    assert 2 not in by_patient and by_patient.get(1) == 3 and by_patient.get(3) == 3
+
+
+def test_fl_import_survives_an_unreadable_table_info_query(patched_env, monkeypatch):
+    """If PRAGMA table_info fails, migration must continue and still import FL data."""
+    tmp_path, db_path = patched_env
+    _create_all_csvs(tmp_path)
+
+    real_get_conn = mig.get_conn
+
+    class _FlakyCursor:
+        def __init__(self, cur):
+            self._cur = cur
+
+        def execute(self, sql, *a, **k):
+            if "PRAGMA table_info(fl_training)" in sql:
+                raise sqlite3.OperationalError("simulated PRAGMA failure")
+            return self._cur.execute(sql, *a, **k)
+
+        def __getattr__(self, name):
+            return getattr(self._cur, name)
+
+    class _FlakyConn:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def cursor(self):
+            return _FlakyCursor(self._conn.cursor())
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    monkeypatch.setattr(mig, "get_conn", lambda: _FlakyConn(real_get_conn()))
+    mig.migrate()                                          # must not raise
+    assert _rows(db_path, "fl_training") == 9              # 3 clients x 3 rows
+
+
+def test_running_the_file_as_a_script_hits_the_wrong_directory_guard(patched_env, monkeypatch):
+    """`python migrate_to_db.py` goes through the __main__ guard into migrate(); from a
+    folder that is not icu_monitor/ the safety check stops it with exit code 1 instead of
+    silently creating an empty database."""
+    import runpy
+    tmp_path, db_path = patched_env
+    monkeypatch.undo()                       # drop the _check_cwd stub from patched_env
+    monkeypatch.chdir(tmp_path)              # a folder with no db.py / migrate_to_db.py
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_path(os.path.join(_ROOT, "migrate_to_db.py"), run_name="__main__")
+    assert exc.value.code == 1

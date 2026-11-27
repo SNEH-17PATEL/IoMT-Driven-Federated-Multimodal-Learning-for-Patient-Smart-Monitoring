@@ -1,7 +1,7 @@
 # ClinIQ — ICU Clinical Decision Support System
 ### AI-Powered Real-Time Patient Monitoring with Federated Learning
 
-*Last updated: 2026-11-24 · matches the final trained model (round 37 of 100)*
+*Last updated: 2026-11-27 · matches the final trained model (round 37 of 100)*
 
 ---
 
@@ -44,7 +44,7 @@
 - **Writes a 4-section AI clinical assessment** (Current Condition → Probable Cause → Risk Forecast → Immediate Actions) with `openai/gpt-oss-120b` via Groq, then **grades its own reliability** with a 9-method score.
 - **Visualises vital-sign trends** over the last 20 readings.
 - **Supports two care modes**: **Hospital** and **Home Care** — the LLM writes mode-specific recommendations.
-- **Optional camera monitor**: the browser webcam estimates a **stress score** and **GCS eye-opening** and feeds them into the prediction (it moves the SOFA by only about 0.3–1.4 points and never changes the risk band or alert).
+- **Optional camera monitor**: the browser webcam estimates a **stress score** and **GCS eye-opening** and feeds them into the prediction (it moves the SOFA by only about 0.3–1.4 points and never changes the risk band or alert). The camera window has a **live panel** on its right that shows the predicted SOFA, a countdown, the two camera inputs next to the values the model actually used, the clinical note and the vitals, so you can see the camera values go in and the result come out.
 
 > **Important:** this is a research prototype and decision-support tool only. It does not diagnose disease and does not replace clinical judgment. All results are retrospective MIMIC-III results, not independent clinical validation.
 
@@ -71,7 +71,8 @@ The patient database is derived from **MIMIC-III**, which may only be shared wit
 | Dashboard: patient list, SOFA, SHAP, risk, alert, trends, history, camera, validation drawers | ✅ works | ✅ |
 | AI Clinical Report | ✅ with your own Groq key (without one the API answers `500 GROQ_API_KEY not configured`) | ✅ |
 | Uncertainty interval | uses a fallback of **± 2.9** (the real value **± 3.28** needs `fl_training`) | ± 3.28 |
-| Python tests that need only code | ✅ | ✅ |
+| New tests added 2026-11-27 (backend branches, training script, Streamlit page, migration) | ✅ all pass: they build their own temporary data | ✅ |
+| Older API and FL tests | ⚠ need the sample database that `setup.py` creates (and 4 FL files need the `fl_training` table) | ✅ |
 | Retraining (`train_federated.py`), real Flower demo (`server.py` / `client.py`) | ❌ need the `fl_training` table (BigQuery access for credentialed users — see `docs/SQL_COMMANDS.md`) | ✅ |
 | Streamlit simulator (`fl_dashboard.py`) | ✅ (it is a simulation; it does not need the data) | ✅ |
 | Database demo with 41,798 rows | ❌ | ✅ |
@@ -234,7 +235,7 @@ icu_monitor/
 │   │   │   │                        SHAPPanel, ReportToggle
 │   │   │   ├── trends/           ← TrendsSection, TrendChart
 │   │   │   ├── history/          ← HistoryDrawer, HistoryFAB
-│   │   │   ├── cv/               ← CVMonitorModal (in-browser webcam), CVMonitorFAB
+│   │   │   ├── cv/               ← CVMonitorModal (in-browser webcam), CVLivePanel (live right-hand panel), CVMonitorFAB
 │   │   │   └── validation/       ← SOFA + LLM validation drawers and FABs
 │   │   ├── hooks/useMonitor.js   ← 90 s polling loop + countdown
 │   │   ├── contexts/             ← ThemeContext (light/dark)
@@ -261,10 +262,10 @@ icu_monitor/
 │   └── fl_training/              ← Local training CSVs (git-ignored)
 │
 ├── tests/
-│   ├── fl/                       ← FL tests: unit + integration + system (295 tests)
+│   ├── fl/                       ← FL tests: unit + integration + system (360 tests)
 │   └── cliniq/
-│       ├── backend/              ← FastAPI tests (218 tests)
-│       └── frontend/             ← Vitest (232) + Playwright E2E (21)
+│       ├── backend/              ← FastAPI tests (390 tests)
+│       └── frontend/             ← Vitest (664) + Playwright E2E (33)
 │
 ├── docs/                         ← Technical documentation (see Documentation Index)
 │
@@ -338,7 +339,7 @@ Do [Installation](#installation) Steps 1–4 above. `setup.py` performs these 7 
 6. Create `models/icu_monitor.db` with `migrate_to_db.py` **only if it does not already exist** (a fresh clone gets the 90-row sample database; you will see a harmless warning that `patient_vitals` is empty — it fills up when you use the dashboard)
 7. Create `.env` from `.env.example` if missing
 
-> **Known cosmetic issue:** the last lines of `setup.py` print the dashboard URL as `http://localhost:5174`. The real URL is **http://localhost:5173** (Vite's default). If 5173 is busy, Vite picks 5174 and tells you in its own output.
+> **Dashboard address:** `setup.py` finishes by printing **http://localhost:5173** (Vite's default; an older version printed 5174 by mistake, now fixed). If 5173 is busy, Vite picks the next free port and tells you in its own output; the backend accepts 5173, 5174 and 5175.
 
 ---
 
@@ -374,6 +375,7 @@ npm run dev
 - **Vital Trends (last 20 readings)** — Recharts line charts with normal-range bands.
 - **AI Clinical Report** — four section cards (Condition, Cause, Forecast, Actions), the **Hospital ↔ Home Care** toggle, **SHAP panel** (top-5 drivers with animated bars) and the **Reliability badge** (9-method score).
 - **Four floating buttons** on the right edge (bottom to top): **History** (past predictions), **Camera** (stress + GCS eye), **LLM validation** and **SOFA validation** (the evidence behind the model and the report).
+- **Camera window with the live panel:** click the camera button. The picture is on the left; the **panel on the right** shows the predicted SOFA, a countdown to the next prediction, the two camera inputs (**live from camera** next to **used in last SOFA**, with a badge), the clinical note and the vitals. A line under the timer says whether the next prediction will use **camera** or **database** values. Close it with Esc, the ✕ or by clicking outside.
 - **Dark / light** theme toggle.
 - Wait one 90-second cycle: vitals, gauge, SHAP and (if values changed) the report all refresh.
 
@@ -530,31 +532,32 @@ python -m pytest tests/fl/unit/ -v                  # FL unit tests (fast)
 python -m pytest tests/fl/integration/ -v           # FL integration
 python -m pytest tests/fl/system/ -v -m slow        # FL end-to-end system tests
 python -m pytest tests/cliniq/backend/ -v           # ClinIQ backend API tests
-python -m pytest tests/ -v                          # all 513 Python tests
-python -m pytest tests/ -m "not slow" -v            # skip the 41 slow ones
+python -m pytest tests/ -v                          # all 750 Python tests (about 2 minutes)
+python -m pytest tests/ -m "not slow" -v            # skip the 83 slow ones (667 tests)
 
-cd frontend && npx vitest run && cd ..              # 232 Vitest tests
+cd frontend && npx vitest run && cd ..              # 664 Vitest tests (about 16 seconds)
 
 cd frontend
 npx playwright install chromium                     # one-time
-npm run test:e2e                                    # 21 Playwright tests
+npm run test:e2e                                    # 33 Playwright tests (3–4 minutes)
 cd ..
 ```
 
 **Expected results**
 
 ```
-Python (pytest)      513 passed   (295 FL + 218 backend; 41 marked slow, 10 of those call the Groq API)
-Frontend (Vitest)    232 passed   (27 test files)
+Python (pytest)      750 passed   (360 FL + 390 backend; 83 marked slow, 10 of those call the Groq API)
+Frontend (Vitest)    664 passed   (53 test files)
 ─────────────────────────────────
-Unit/integration     745 passed
-Browser (Playwright)  21 passed   (6 need the Groq API)
+Unit/integration    1,414 passed
+Browser (Playwright)  33 tests    (6 need the Groq API; 2 of those can time out in a full run)
 ─────────────────────────────────
-Grand total          766 passed
+Grand total        1,447 tests
 ```
 
 > Some tests need a full folder (the held-out test files / `fl_training`). On a fresh clone those are skipped or unavailable; see `docs/CLINIQ_TESTING.md`.
 > The Playwright tests need the ClinIQ backend on **port 8000**. If something else already uses that port they time out.
+> In a full Playwright run the two slowest report tests (`report section shows 4 content cards after load` and `reliability badge appears with report`) can time out at 30 seconds when Groq is slow after many calls in a row; they pass when re-run on their own.
 
 ---
 
@@ -606,12 +609,25 @@ Grand total          766 passed
 
 ## Camera Monitor (Stress + GCS Eye)
 
-- Opens from the **Camera** floating button.
+- Opens from the **Camera** floating button, in a window with the camera picture on the left and a **live model panel** on the right (see below).
 - **Runs entirely in your browser** (MediaPipe FaceLandmarker compiled to WebAssembly). Video is never uploaded. The camera permission is a **browser** permission, not a Terminal/OS-app one.
 - Estimates a **stress score (0–10)** from facial action units (PSPI) and a **GCS eye-opening score (1–4)** over a **30-second window**, then sends them to `/api/predict` as `cv_stress` and `cv_gcs_eye`.
 - They are 2 of the model's 108 inputs; effect on SOFA is small (about 0.3–1.4 points) and does not change the risk band or the alert.
 - First use downloads a ~12 MB face model from the internet.
 - Full explanation: `docs/CV_MONITOR.md`.
+
+### The live model panel (right-hand side of the camera window)
+It exists to show that the camera values really go into the model and what comes out. From top to bottom:
+
+| Block | What it shows |
+|---|---|
+| **Predicted SOFA (output)** | The score, risk level, 90% range and an ALERT tag |
+| **Next SOFA prediction (timer)** | The 90-second countdown (`m:ss`) and a line: **"At 0 → CAMERA values go into the model"** while a calibrated camera sees a face, otherwise **"At 0 → DATABASE values go into the model"** |
+| **Input 1 and 2: camera features** | Stress and GCS eye, each as **Live from camera** next to **Used in last SOFA**, with a badge: *WAITING FOR CAMERA*, *SENDS NEXT CYCLE* or *IN MODEL ✓* |
+| **Input 3: clinical note** | The note text behind the 90 text features |
+| **Other inputs: vitals** | HR, RR, SpO₂, Temp, SBP, DBP, MAP |
+
+**To demonstrate it:** open the camera with no one in front of it (badges say WAITING, the line says DATABASE) → face the camera until calibration ends (the line turns purple) → wait for the timer to reach zero (the SOFA updates and the badge turns **IN MODEL ✓**) → close the camera (the next prediction uses the database values again). The SOFA changes only a little (about 0.3–1.4 points), by design of the trained model.
 
 ---
 
@@ -847,15 +863,23 @@ SELECT client_id, COUNT(*) AS rows FROM fl_training GROUP BY client_id;
 
 | Layer | Command | Tests |
 |---|---|---|
-| FL (unit + integration + system) | `python -m pytest tests/fl/ -v` | 295 |
-| ClinIQ backend | `python -m pytest tests/cliniq/backend/ -v` | 218 |
-| **All Python** | `python -m pytest tests/ -v` (add `-m "not slow"` to skip 41) | **513** |
-| React (Vitest) | `cd frontend && npx vitest run` | **232** (27 files) |
-| Browser E2E (Playwright) | `cd frontend && npm run test:e2e` | **21** |
+| FL (unit + integration + system) | `python -m pytest tests/fl/ -v` | 360 |
+| ClinIQ backend | `python -m pytest tests/cliniq/backend/ -v` | 390 |
+| **All Python** | `python -m pytest tests/ -v` (add `-m "not slow"` to skip 83) | **750** |
+| React (Vitest) | `cd frontend && npx vitest run` | **664** (53 files) |
+| Browser E2E (Playwright) | `cd frontend && npm run test:e2e` | **33** |
 
-**745** unit/integration tests (513 + 232) plus **21** browser tests = **766** in total.
+**1,414** unit, integration and system tests (750 + 664) plus **33** browser tests = **1,447** in total.
 
-**Measured coverage:** backend 87% (67% when the 10 slow Groq tests are skipped), frontend 79%, FL modules 80%. `App.jsx` and `ErrorBoundary.jsx` are at 0%. Full report and caveats (e.g. the camera API fields are not covered by backend tests): `docs/CLINIQ_TESTING.md`.
+**Measured coverage (2026-11-27):**
+
+| Area | Coverage |
+|---|---|
+| Python, whole suite (750 tests) | **99%** of statements; 100% of every backend file, 99% of `train_federated.py`, 97% of `fl_dashboard.py` |
+| Python without the 83 slow tests | 85% (the Streamlit simulator and the full training path need the slow tests) |
+| Frontend (664 tests) | **100%** of statements, **96.7%** of branches, **100%** of functions; every source file is at or above 90% |
+
+These were 83% (Python) and 79.8% / 71.0% (frontend statements / branches) before 2026-11-27. The 17 uncovered Python lines are edge branches that the synthetic test data never reaches. Full report, what each test checks, and the known gaps: `docs/CLINIQ_TESTING.md` (ClinIQ) and `docs/FL_SERVER_CLIENT_DB_TESTING.md` (federated learning).
 
 **E2E prerequisites:** the ClinIQ backend must run on port 8000, and the specs (which live outside `frontend/`) need a symlink: from the project root run `ln -s frontend/node_modules node_modules` (git-ignored).
 
@@ -910,7 +934,7 @@ taskkill /PID <pid> /F
 
 **Warning "patient_vitals is empty" during setup** — harmless; the table fills when the dashboard runs.
 
-**`setup.py` prints `localhost:5174`** — cosmetic; use **http://localhost:5173** (or the URL Vite prints).
+**Dashboard does not open at the address `setup.py` printed** — it prints **http://localhost:5173**. If another program already uses 5173, Vite starts on the next free port (5174, 5175…) and prints the real address in its own output; use that one.
 
 **sklearn `InconsistentVersionWarning` on startup** — harmless; the scaler and TF-IDF were pickled with scikit-learn 1.9.0 (`requirements.txt` pins a compatible version).
 
